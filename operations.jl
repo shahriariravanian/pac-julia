@@ -15,6 +15,8 @@
 
 using Libdl
 
+include(joinpath(@__DIR__, "types.jl"))
+
 mul_i(z::Complex{Float64}) = complex(-imag(z), real(z))  # i × z
 
 # the operand's components as locals
@@ -111,7 +113,7 @@ function vertex!(out, type::String, mode::String, l, r, u, v, coupling::Complex{
 end
 
 # out[j] = value ("=") or out[j] = out[j] + value ("+=")
-function store!(out, j::Int, value::Complex{Float64}, mode::String)
+function store!(out, j::ComponentIndex, value::Complex{Float64}, mode::String)
     if mode == "="
         out[j] = value
     elseif mode == "+="
@@ -257,20 +259,21 @@ kernel_inputs(codes, l, r, out, u, v, factor::Complex{Float64}, arena)::Vector{F
 function kernel!(out, lib::KernelLibrary, binding_inputs, binding_outputs, direct::Bool, mode::String,
                  l, r, u, v, factor::Complex{Float64}, arena)
     values = kernel_call(lib, kernel_inputs(binding_inputs, l, r, out, u, v, factor, arena))
-    return kernel_store!(out, values, binding_outputs, direct, mode, factor)
+    return kernel_store!(out, values, [ComponentIndex(j) + 1 for j in binding_outputs], direct, mode, factor)
 end
 
 # The kernel's outputs `values` (re, im of each pair) into `out`: pair n × factor (mode)=
-# out[outputs[n]] (0-based components), or the pair as it is with `direct` and factor exactly 1 + 0i
-function kernel_store!(out, values::Vector{Float64}, outputs, direct::Bool, mode::String, factor::Complex{Float64})
+# out[outputs[n]], or the pair as it is with `direct` and factor exactly 1 + 0i
+function kernel_store!(out, values::Vector{Float64}, outputs::Vector{ComponentIndex}, direct::Bool, mode::String,
+                       factor::Complex{Float64})
     as_is = direct && reinterpret(UInt64, real(factor)) == reinterpret(UInt64, 1.0) &&
             reinterpret(UInt64, imag(factor)) == reinterpret(UInt64, 0.0)
     for (n, j) in enumerate(outputs)
         pair = complex(values[2n-1], values[2n])
         if as_is
-            out[j+1] = pair
+            out[j] = pair
         else
-            store!(out, j + 1, pair * factor, mode)
+            store!(out, j, pair * factor, mode)
         end
     end
     return out

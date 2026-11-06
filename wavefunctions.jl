@@ -9,14 +9,16 @@
 #   get_scale(arena, "s<i>")  -> Complex{Float64}  a scale (the mass is its real part)
 #   get_factor(arena, "x<i>") -> Complex{Float64}  a factor
 
+include(joinpath(@__DIR__, "types.jl"))
+
 struct Source
     wavefunction::String
     family::String
     orientation::String
-    leg::Union{Int,Nothing}
+    leg::Union{Int,Nothing}  # main.json's leg (0-based), or null
     momentum::String
-    helicity::Int
-    chirality::Int
+    helicity::Helicity
+    chirality::Chirality
     mass::String
     factor::String
 end
@@ -30,7 +32,7 @@ scalar()::Vector{Complex{Float64}} = [complex(1.0, 0.0)]
 
 # ---- Weyl spinors (ext_quark_weyl_array, ext_antiquark_weyl_array) -------------------------------
 
-function weyl_particle(k, h::Int, ch::Int)::Vector{Complex{Float64}}
+function weyl_particle(k, h::Helicity, ch::Chirality)::Vector{Complex{Float64}}
     (E, px, py, pz) = k
 
     if E > 0
@@ -60,7 +62,7 @@ function weyl_particle(k, h::Int, ch::Int)::Vector{Complex{Float64}}
     end
 end
 
-function weyl_antiparticle(k, h::Int, ch::Int)::Vector{Complex{Float64}}
+function weyl_antiparticle(k, h::Helicity, ch::Chirality)::Vector{Complex{Float64}}
     (E, px, py, pz) = k
 
     if E > 0
@@ -95,7 +97,7 @@ weyl_antiparticle(source, arena) = weyl_antiparticle(source_momentum(source, are
 
 # ---- massless Dirac spinors (ext_quark_dirac, ext_antiquark_dirac) -------------------------------
 
-function quark_dirac(k, h::Int)::Vector{Complex{Float64}}
+function quark_dirac(k, h::Helicity)::Vector{Complex{Float64}}
     (E, px, py, pz) = k
 
     if E > 0
@@ -121,7 +123,7 @@ function quark_dirac(k, h::Int)::Vector{Complex{Float64}}
     end
 end
 
-function antiquark_dirac(k, h::Int)::Vector{Complex{Float64}}
+function antiquark_dirac(k, h::Helicity)::Vector{Complex{Float64}}
     (E, px, py, pz) = k
 
     if E > 0
@@ -153,7 +155,7 @@ antiquark_dirac(source, arena) = antiquark_dirac(source_momentum(source, arena),
 # ---- Dirac spinors (ext_quark_dirac_massive, ext_antiquark_dirac_massive) ------------------------
 # |mass| < 1e-8 falls back to the massless spinors; the runner calls these for every Dirac source.
 
-function quark_dirac_massive(k, h::Int, mass::Float64)::Vector{Complex{Float64}}
+function quark_dirac_massive(k, h::Helicity, mass::Float64)::Vector{Complex{Float64}}
     if abs(mass) < 1.0e-8
         return quark_dirac(k, h)
     end
@@ -182,7 +184,7 @@ function quark_dirac_massive(k, h::Int, mass::Float64)::Vector{Complex{Float64}}
     end
 end
 
-function antiquark_dirac_massive(k, h::Int, mass::Float64)::Vector{Complex{Float64}}
+function antiquark_dirac_massive(k, h::Helicity, mass::Float64)::Vector{Complex{Float64}}
     if abs(mass) < 1.0e-8
         return antiquark_dirac(k, h)
     end
@@ -218,7 +220,7 @@ antiquark_dirac_massive(source, arena) =
 
 # ---- massless vectors: gluon, photon (ext_gluon) --------------------------------------------------
 
-function gluon(k, h::Int)::Vector{Complex{Float64}}
+function gluon(k, h::Helicity)::Vector{Complex{Float64}}
     (E, px, py, pz) = k
     sqh = √0.5
 
@@ -255,7 +257,7 @@ gluon(source, arena) = gluon(source_momentum(source, arena), source.helicity)
 
 # ---- massive vectors: Z, W (ext_massive_vector) ---------------------------------------------------
 
-function massive_vector(k, helicity::Int, mass::Float64)::Vector{Complex{Float64}}
+function massive_vector(k, helicity::Helicity, mass::Float64)::Vector{Complex{Float64}}
     (E, px, py, pz) = k
 
     if E < 0
@@ -298,7 +300,7 @@ massive_vector(source, arena) =
 
 # The wavefunction of a source as the runner picks it (`source_values`): by family and orientation;
 # a Dirac source always through the massive spinors, a vector by whether its mass is exactly 0.
-function wavefunction(family::String, orientation::String, k, h::Int, ch::Int, mass::Float64)::Vector{Complex{Float64}}
+function wavefunction(family::String, orientation::String, k, h::Helicity, ch::Chirality, mass::Float64)::Vector{Complex{Float64}}
     anti = orientation == "antiparticle"
     if family == "scalar"
         return scalar()

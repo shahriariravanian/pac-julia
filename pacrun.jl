@@ -8,6 +8,7 @@
 using JSON
 using Libdl
 
+include("types.jl")
 include("wavefunctions.jl")
 include("operations.jl")
 include("arena.jl")
@@ -19,16 +20,23 @@ function index(name::AbstractString, prefix::String)::Int
     return parse(Int, name[length(prefix)+1:end]) + 1
 end
 
+ci(name)::CurrentIndex = index(name, "c")
+qi(name)::FormIndex = index(name, "q")
+ai(name)::AmplitudeIndex = index(name, "a")
+si(name)::ScaleIndex = index(name, "s")
+xi(name)::FactorIndex = index(name, "x")
+bi(name)::BindingIndex = index(name, "b")
+
 cplx(v) = complex(Float64(v[1]), Float64(v[2]))
 
 #################################### Form ########################################
 
 # q = Σ coef × p[leg] over the terms, the first term added to 0.0, in term order
 struct Form
-    terms::Vector{Tuple{Int,Float64}}  # (leg, 1-based; coefficient)
+    terms::Vector{Tuple{LegIndex,Float64}}  # (leg, coefficient)
 end
 
-load_forms(prog) = [Form([(Int(t[1]) + 1, Float64(t[2])) for t in f.terms]) for f in prog.inputs.forms]
+load_forms(prog) = [Form([(LegIndex(t[1]) + 1, Float64(t[2])) for t in f.terms]) for f in prog.inputs.forms]
 
 ################################### Current #########################################
 
@@ -36,11 +44,11 @@ load_forms(prog) = [Form([(Int(t[1]) + 1, Float64(t[2])) for t in f.terms]) for 
 struct CurrentSource
     family::String
     orientation::String
-    form::Int
-    helicity::Int
-    chirality::Int
-    mass::Int    # a scale; its real part is the mass
-    factor::Int
+    form::FormIndex
+    helicity::Helicity
+    chirality::Chirality
+    mass::ScaleIndex  # its real part is the mass
+    factor::FactorIndex
 end
 
 struct Current
@@ -51,12 +59,11 @@ end
 function load_currents(prog)
     currents = Current[]
     for (i, c) in enumerate(prog.currents)
-        index(c.name, "c") == i || error("currents[$i] is $(c.name)")
+        ci(c.name) == i || error("currents[$i] is $(c.name)")
         init = c.initial
         if init == "source"
             s = c.source
-            src = CurrentSource(s.family, s.orientation, index(s.momentum, "q"), s.helicity, s.chirality,
-                                index(s.mass, "s"), index(s.factor, "x"))
+            src = CurrentSource(s.family, s.orientation, qi(s.momentum), s.helicity, s.chirality, si(s.mass), xi(s.factor))
             push!(currents, Current(c.components, src))
         elseif init == "zero" || init == "written"  # written: the body's first write is "="
             push!(currents, Current(c.components, nothing))
@@ -75,19 +82,19 @@ end
 
 struct KernelInput
     kind::InputKind
-    n::Int      # the component (1-based) or the scale
+    n::Int      # a ComponentIndex, or the ScaleIndex of SCALE (0 for FACTOR)
     im::Bool    # the imaginary part
 end
 
 function load_input(code::AbstractString)::KernelInput
     if (m = match(r"^(re|im) in\[([01])\]\[(\d+)\]$", code)) !== nothing
-        return KernelInput(m[2] == "0" ? IN_L : IN_R, parse(Int, m[3]) + 1, m[1] == "im")
+        return KernelInput(m[2] == "0" ? IN_L : IN_R, parse(ComponentIndex, m[3]) + 1, m[1] == "im")
     elseif (m = match(r"^(re|im) out\[(\d+)\]$", code)) !== nothing
-        return KernelInput(OUT, parse(Int, m[2]) + 1, m[1] == "im")
+        return KernelInput(OUT, parse(ComponentIndex, m[2]) + 1, m[1] == "im")
     elseif (m = match(r"^momenta\[([01])\]\[(\d+)\]$", code)) !== nothing
-        return KernelInput(m[1] == "0" ? MOMENTUM_U : MOMENTUM_V, parse(Int, m[2]) + 1, false)
+        return KernelInput(m[1] == "0" ? MOMENTUM_U : MOMENTUM_V, parse(ComponentIndex, m[2]) + 1, false)
     elseif (m = match(r"^s(\d+)$", code)) !== nothing
-        return KernelInput(SCALE, parse(Int, m[1]) + 1, false)
+        return KernelInput(SCALE, parse(ScaleIndex, m[1]) + 1, false)
     elseif (m = match(r"^(re|im) factor$", code)) !== nothing
         return KernelInput(FACTOR, 0, m[1] == "im")
     else
@@ -99,7 +106,7 @@ struct Binding
     kernel::KernelLibrary
     direct::Bool
     inputs::Vector{KernelInput}
-    outputs::Vector{Int}  # 0-based components of out, one per output pair
+    outputs::Vector{ComponentIndex}  # the components of out, one per output pair
 end
 
 # the kernels of main.json, by name; each needs its shared library (pac2json --sjb2obj)
@@ -116,8 +123,9 @@ end
 function load_bindings(prog, kernels)
     bindings = Binding[]
     for (i, b) in enumerate(prog.bindings)
-        index(b.name, "b") == i || error("bindings[$i] is $(b.name)")
-        push!(bindings, Binding(kernels[b.kernel], b.direct, [load_input(c) for c in b.inputs], Int.(b.outputs)))
+        bi(b.name) == i || error("bindings[$i] is $(b.name)")
+        push!(bindings, Binding(kernels[b.kernel], b.direct, [load_input(c) for c in b.inputs],
+                              [ComponentIndex(j) + 1 for j in b.outputs]))
     end
     return bindings
 end
@@ -128,62 +136,58 @@ abstract type Operation end
 
 struct Vertex <: Operation
     type::String
-    out::Int
+    out::CurrentIndex
     mode::String
-    l::Int
-    r::Int
-    u::Int   # momenta[0], a form
-    v::Int   # momenta[1]
-    coupling::Int
-    factor::Int
+    l::CurrentIndex
+    r::CurrentIndex
+    u::FormIndex  # momenta[0]
+    v::FormIndex  # momenta[1]
+    coupling::ScaleIndex
+    factor::FactorIndex
 end
 
 struct Propagator <: Operation
     type::String
-    current::Int
-    momentum::Int
-    factor::Int
+    current::CurrentIndex
+    momentum::FormIndex
+    factor::FactorIndex
 end
 
 struct Scale <: Operation
-    current::Int
+    current::CurrentIndex
     components::Int
-    factor::Int
+    factor::FactorIndex
 end
 
 struct Clear <: Operation
-    current::Int
+    current::CurrentIndex
     components::Int
 end
 
 struct Closure <: Operation
-    amplitude::Int
-    l::Int
-    r::Int
-    component_factors::Vector{Int}
-    factor::Int
+    amplitude::AmplitudeIndex
+    l::CurrentIndex
+    r::CurrentIndex
+    component_factors::Vector{FactorIndex}
+    factor::FactorIndex
 end
 
 struct Kernel <: Operation
-    binding::Int
-    out::Int
+    binding::BindingIndex
+    out::CurrentIndex
     mode::String
-    l::Int
-    r::Int
-    u::Int
-    v::Int
-    factor::Int
+    l::CurrentIndex
+    r::CurrentIndex
+    u::FormIndex  # momenta[0]
+    v::FormIndex  # momenta[1]
+    factor::FactorIndex
 end
-
-ci(name) = index(name, "c")
-qi(name) = index(name, "q")
-xi(name) = index(name, "x")
 
 function load_operation(o)::Operation
     op = o.op
     if op == "vertex"
         return Vertex(o.type, ci(o.out), o.mode, ci(o.in[1]), ci(o.in[2]), qi(o.momenta[1]), qi(o.momenta[2]),
-                      index(o.coupling, "s"), xi(o.factor))
+                      si(o.coupling), xi(o.factor))
     elseif op == "propagator"
         return Propagator(o.type, ci(o.current), qi(o.momentum), xi(o.factor))
     elseif op == "scale"
@@ -191,9 +195,9 @@ function load_operation(o)::Operation
     elseif op == "clear"
         return Clear(ci(o.current), o.components)
     elseif op == "closure"
-        return Closure(index(o.amplitude, "a"), ci(o.in[1]), ci(o.in[2]), [xi(f) for f in o.component_factors], xi(o.factor))
+        return Closure(ai(o.amplitude), ci(o.in[1]), ci(o.in[2]), [xi(f) for f in o.component_factors], xi(o.factor))
     elseif op == "kernel"
-        return Kernel(index(o.binding, "b"), ci(o.out), o.mode, ci(o.in[1]), ci(o.in[2]), qi(o.momenta[1]), qi(o.momenta[2]),
+        return Kernel(bi(o.binding), ci(o.out), o.mode, ci(o.in[1]), ci(o.in[2]), qi(o.momenta[1]), qi(o.momenta[2]),
                       xi(o.factor))
     else
         error("unknown instruction $op")
@@ -209,17 +213,17 @@ struct Program
     colour::String
     expression::String
     legs::Int
-    crossing::Union{Nothing,Vector{Tuple{Int,Float64}}}  # p<l> = sign × the caller's leg (1-based)
+    crossing::Union{Nothing,Vector{Tuple{LegIndex,Float64}}}  # p<l> = sign × the caller's leg
     forms::Vector{Form}
     scales::Vector{Complex{Float64}}
     factors::Vector{Complex{Float64}}
     alpha_s::Union{Nothing,Tuple{Float64,Int}}  # (value, power): the scales are at this value
-    helicities::Vector{Vector{Int}}             # output h: the helicity of each leg
+    helicities::Vector{Vector{Helicity}}        # output h: the helicity of each leg
     currents::Vector{Current}
-    amplitudes::Int
+    amplitudes::Int                             # the number of amplitudes
     bindings::Vector{Binding}
     body::Vector{Operation}
-    reduction::Vector{Vector{Tuple{Int,Float64}}}  # output h: (amplitude, weight) terms
+    reduction::Vector{Vector{Tuple{AmplitudeIndex,Float64}}}  # output h: (amplitude, weight) terms
     group_factor::Tuple{Int,Int}
 end
 
@@ -229,20 +233,20 @@ Arena(p::Program) = Arena(length(p.forms), [c.components for c in p.currents], p
 
 function load_program(prog, kernels)::Program
     inputs = prog.inputs
-    crossing = inputs.crossing === nothing ? nothing : [(Int(c.leg) + 1, Float64(c.sign)) for c in inputs.crossing]
+    crossing = inputs.crossing === nothing ? nothing : [(LegIndex(c.leg) + 1, Float64(c.sign)) for c in inputs.crossing]
     for (k, s) in enumerate(inputs.scales)
-        index(s.name, "s") == k || error("scales[$k] is $(s.name)")
+        si(s.name) == k || error("scales[$k] is $(s.name)")
     end
     for (k, f) in enumerate(inputs.factors)
-        index(f.name, "x") == k || error("factors[$k] is $(f.name)")
+        xi(f.name) == k || error("factors[$k] is $(f.name)")
     end
     for (k, a) in enumerate(prog.amplitudes)
-        index(a.name, "a") == k && a.initial == 0 || error("amplitudes[$k] is $(a.name), initial $(a.initial)")
+        ai(a.name) == k && a.initial == 0 || error("amplitudes[$k] is $(a.name), initial $(a.initial)")
     end
-    reduction = Vector{Tuple{Int,Float64}}[]
+    reduction = Vector{Tuple{AmplitudeIndex,Float64}}[]
     for (h, r) in enumerate(prog.reduction)
         r.output == h - 1 || error("reduction[$h] is output $(r.output)")
-        push!(reduction, [(index(t[1], "a"), Float64(t[2])) for t in r.terms])
+        push!(reduction, [(ai(t[1]), Float64(t[2])) for t in r.terms])
     end
     out = prog.output
     alpha_s = inputs.alpha_s === nothing ? nothing : (Float64(inputs.alpha_s.value), Int(inputs.alpha_s.power))
@@ -256,7 +260,7 @@ function load_program(prog, kernels)::Program
         [cplx(s.value) for s in inputs.scales],
         [cplx(f.value) for f in inputs.factors],
         alpha_s,
-        [h.legs === nothing ? Int[] : Int.(h.legs) for h in out.helicities],
+        [h.legs === nothing ? Helicity[] : Helicity.(h.legs) for h in out.helicities],
         load_currents(prog),
         length(prog.amplitudes),
         load_bindings(prog, kernels),
