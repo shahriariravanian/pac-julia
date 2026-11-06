@@ -1,50 +1,19 @@
+# The values of one phase-space point while a Program runs. Every name of main.json is an index
+# here (1-based): c<i> → currents[i + 1], a<i> → amplitudes[i + 1], q<i> → forms[i + 1]. The scales
+# and factors are constants of the Program (Program.scales, Program.factors).
+
 struct Arena
-    scalars::Dict{String, Complex{Float64}}
-    vectors::Dict{String, Vector{Complex{Float64}}}
-
-    function Arena()
-        new(Dict(), Dict())
-    end
+    forms::Vector{NTuple{4,Float64}}            # the momentum forms q<i>, (E, px, py, pz)
+    currents::Vector{Vector{Complex{Float64}}}  # the currents c<i>, `components` each
+    amplitudes::Vector{Complex{Float64}}        # the amplitudes a<i>
 end
 
-function set_scalar(arena::Arena, name::String, x::Complex{Float64})
-    l = findfirst(isequal('['), name)
-    if l != nothing
-        v = get_vector(arena, name[1:l-1])
-        k = parse(Int, name[l+1:end-1]) + 1
-        v[k] = x
-    else
-        arena.scalars[name] = x
-    end
-end
+# an arena sized for programs of `forms` forms, currents of `components` components, `amplitudes`
+# amplitudes; Arena(p::Program) in pacrun.jl
+Arena(forms::Int, components::Vector{Int}, amplitudes::Int) =
+    Arena(fill((0.0, 0.0, 0.0, 0.0), forms), [zeros(Complex{Float64}, n) for n in components], zeros(Complex{Float64}, amplitudes))
 
-set_float(arena::Arena, name::String, x::Float64) = set_scalar(arena, name, complex(x, 0))
+const NO_CURRENT = Complex{Float64}[]  # a null operand (an operand the instruction does not read)
 
-function set_vector(arena::Arena, name::String, xs::Vector{Complex{Float64}})
-    arena.vectors[name] = xs
-end
-
-function get_scalar(arena::Arena, name::String)::Complex{Float64}
-    l = findfirst(isequal('['), name)
-    if l != nothing
-        v = arena.vectors[name[1:l-1]]
-        k = parse(Int, name[l+1:end-1]) + 1
-        return v[k]
-    else
-        return arena.scalars[name]
-    end
-end
-
-function get_float(arena::Arena, name::String)::Float64
-    if startswith(name, "re ")
-        return real(get_scalar(arena, name[4:end]))
-    elseif startswith(name, "im ")
-        return imag(get_scalar(arena, name[4:end]))
-    else
-        return real(arena.scalars[name])
-    end
-end
-
-function get_vector(arena::Arena, name::String)::Vector{Float64}
-    return arena.vectors[name]
-end
+current(a::Arena, i::Int) = i == 0 ? NO_CURRENT : a.currents[i]
+form(a::Arena, i::Int) = a.forms[i]
