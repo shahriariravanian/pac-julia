@@ -5,7 +5,7 @@
 # symjit 2.27.3 AVX kernels round differently from the scalar kernel libraries, see
 # test_operations.jl). The folder must have the kernels' shared libraries (pac2json --sjb2obj).
 # usage: julia test_pacrun.jl PAC2JSON_DIR
-include(joinpath(@__DIR__, "..", "pacrun.jl"))
+include(joinpath(@__DIR__, "..", "PacRunner.jl"))
 include(joinpath(@__DIR__, "minijson.jl"))
 include(joinpath(@__DIR__, "interpreter.jl"))
 
