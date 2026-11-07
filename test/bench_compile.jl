@@ -5,7 +5,7 @@
 # -ffp-contract=off, so the outputs are those of test_compile.jl bit for bit), then run on its
 # examples.json points, best of 5 trials. The C runs on one point per call, single-threaded; for
 # steady numbers pin it to one core of a quiet machine, e.g.  taskset -c 4 julia bench_compile.jl
-# usage: julia bench_compile.jl SJB2OBJ [PAC2JSON_DIR...]     (CC: the C compiler, default cc)
+# usage: julia --project test/bench_compile.jl SJB2OBJ [PAC2JSON_DIR...]     (CC: the C compiler, default cc)
 include(joinpath(@__DIR__, "compile_common.jl"))
 
 const DRIVER = joinpath(@__DIR__, "bench_driver.c")
@@ -64,5 +64,8 @@ function main(args)
     return 0
 end
 
-length(ARGS) >= 1 || (println("usage: julia bench_compile.jl SJB2OBJ [PAC2JSON_DIR...]"); exit(2))
-exit(main(ARGS))
+# as a script (runtests.jl includes this file for its functions)
+if abspath(PROGRAM_FILE) == @__FILE__
+    length(ARGS) >= 1 || (println("usage: julia --project test/bench_compile.jl SJB2OBJ [PAC2JSON_DIR...]"); exit(2))
+    exit(main(ARGS))
+end

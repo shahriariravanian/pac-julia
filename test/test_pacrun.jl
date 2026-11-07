@@ -4,8 +4,9 @@
 # and with the CPU's outputs in examples.json within TOLERANCE of the point's total (the CPU's
 # symjit 2.27.3 AVX kernels round differently from the scalar kernel libraries, see
 # test_operations.jl). The folder must have the kernels' shared libraries (pac2json --sjb2obj).
-# usage: julia test_pacrun.jl PAC2JSON_DIR
-include(joinpath(@__DIR__, "..", "PacRunner.jl"))
+# usage: julia --project test/test_pacrun.jl PAC2JSON_DIR
+using PacRunner
+using PacRunner: load_kernel
 include(joinpath(@__DIR__, "minijson.jl"))
 include(joinpath(@__DIR__, "interpreter.jl"))
 
@@ -50,5 +51,8 @@ function main(dir)
     return vs_reference == 0 && worst <= TOLERANCE ? 0 : 1
 end
 
-length(ARGS) == 1 || (println("usage: julia test_pacrun.jl PAC2JSON_DIR"); exit(2))
-exit(main(ARGS[1]))
+# as a script (runtests.jl includes this file for its functions)
+if abspath(PROGRAM_FILE) == @__FILE__
+    length(ARGS) == 1 || (println("usage: julia --project test/test_pacrun.jl PAC2JSON_DIR"); exit(2))
+    exit(main(ARGS[1]))
+end

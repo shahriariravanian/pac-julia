@@ -2,6 +2,11 @@
 # MIR, for the tests: the same operations on an array of registers (Ret and Left share one, Temp
 # and Right another), the memory, the stack and the parameters. ComplexBi is num_complex's
 # arithmetic (no fma). Calls with arguments and argument lists are not run (an error).
+using PacRunner
+using PacRunner: ARITH_OPS, BIN_OPS, FUSED_OPS, UNI_OPS, Instruction, Nop, End, Uni, Bi, Mov, Load, Save, LoadConst, LoadComplex,
+    SaveComplex, LoadArgs, SaveArgs, Fused, IfElse, Label, Branch, BranchIf, Call, LoadMath, LoadConstMath, ComplexBi, Reg, Loc,
+    REG_GEN, REG_STATIC, REG_RET, REG_TEMP, REG_LEFT, REG_RIGHT, LOC_MEM, LOC_PARAM, LOC_STACK, SjbError, decode, is_complex,
+    mem_size, CONFIG_OPTIONS, ComplexifyError
 
 mask(b::Bool) = b ? reinterpret(Float64, ~UInt64(0)) : 0.0
 bits(x) = reinterpret(UInt64, x)

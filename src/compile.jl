@@ -1,14 +1,10 @@
-include("types.jl")
-
 mutable struct CodeWriterCpu
     fd::IOStream
     indent::Int
     path::String
 
     function CodeWriterCpu(path)
-        if !ispath(path)
-            mkdir(path)
-        end
+        mkpath(path)
 
         fd = open(joinpath(path, "runner.c"), "w")
         writer = new(fd, 0, path)
@@ -36,10 +32,10 @@ function newline(writer::CodeWriterCpu)
     println(writer.fd)
 end
 
-# `file` relative to this directory (or an absolute path) into the output folder
+# `file` relative to the repository (c/pacops.c), or an absolute path, into the output folder
 function copy_home(writer::CodeWriterCpu, file)
     name = basename(file)
-    cp(joinpath(@__DIR__, file), joinpath(writer.path, name); force=true)
+    cp(joinpath(@__DIR__, "..", file), joinpath(writer.path, name); force=true)
 end
 
 #####################################################################################
@@ -165,6 +161,7 @@ function compile_kernels(writer, prog::Program)
                   "the kernel has $(ker.inputs), $(ker.outputs ÷ 2)")
         ker.name in done && continue
         push!(done, ker.name)
+        built(ker) || not_built(ker)
         name = ker.name
         inputs = ker.inputs
         outputs = ker.outputs

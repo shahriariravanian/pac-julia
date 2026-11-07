@@ -3,10 +3,12 @@
 # ±z, along y, zero 3-momentum), each through apply_source with a random factor.
 # The reference is wavefunctions_ref.rs (the f64 functions of rusticol-core/src/wavefunctions.rs,
 # dispatched and multiplied by the factor as pacuda's runner does); this script builds it with rustc.
-# usage: julia test_wavefunctions.jl [CASES_PER_KIND]
+# usage: julia --project test/test_wavefunctions.jl [CASES_PER_KIND]
 using Random
 
-include(joinpath(@__DIR__, "..", "wavefunctions.jl"))
+using PacRunner
+using PacRunner: Source, apply_source
+import PacRunner: get_vector, get_scale, get_factor
 
 # a stand-in arena: one source's momentum, mass scale and factor
 struct TestArena
@@ -95,4 +97,7 @@ function main(per_kind)
     return isempty(failures) ? 0 : 1
 end
 
-exit(main(length(ARGS) > 0 ? parse(Int, ARGS[1]) : 2000))
+# as a script (runtests.jl includes this file for its functions)
+if abspath(PROGRAM_FILE) == @__FILE__
+    exit(main(length(ARGS) > 0 ? parse(Int, ARGS[1]) : 2000))
+end

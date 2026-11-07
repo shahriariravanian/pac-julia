@@ -9,7 +9,7 @@
 #      the CPU's outputs in examples.json (RustiCol) within TOLERANCE of the point's total, as
 #      test_pacrun.jl does; the bit-identical outputs are counted (RustiCol's symjit 2.27.3 AVX
 #      kernels may round differently from the scalar kernel libraries, see test_operations.jl).
-# usage: julia test_compile.jl SJB2OBJ [PAC2JSON_DIR...]     (CC: the C compiler, default cc)
+# usage: julia --project test/test_compile.jl SJB2OBJ [PAC2JSON_DIR...]     (CC: the C compiler, default cc)
 include(joinpath(@__DIR__, "compile_common.jl"))
 
 const TOLERANCE = 1e-14
@@ -71,5 +71,8 @@ function main(args)
     return failed == 0 ? 0 : 1
 end
 
-length(ARGS) >= 1 || (println("usage: julia test_compile.jl SJB2OBJ [PAC2JSON_DIR...]"); exit(2))
-exit(main(ARGS))
+# as a script (runtests.jl includes this file for its functions)
+if abspath(PROGRAM_FILE) == @__FILE__
+    length(ARGS) >= 1 || (println("usage: julia --project test/test_compile.jl SJB2OBJ [PAC2JSON_DIR...]"); exit(2))
+    exit(main(ARGS))
+end

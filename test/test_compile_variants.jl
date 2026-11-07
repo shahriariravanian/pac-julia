@@ -4,8 +4,9 @@
 # built with test/compile_driver.c and compared bit for bit with the Julia runner on the
 # examples.json points. A variant must change the Julia runner's outputs (else it tests nothing).
 # The unsupported inputs must be refused by compile (a FACTOR kernel input, a null operand).
-# usage: julia test_compile_variants.jl SJB2OBJ     (CC: the C compiler, default cc)
+# usage: julia --project test/test_compile_variants.jl SJB2OBJ     (CC: the C compiler, default cc)
 include(joinpath(@__DIR__, "compile_common.jl"))
+using PacRunner: Operation, Vertex, Scale, Clear, Binding, KernelInput, OUT, FACTOR
 
 const DRIVER = joinpath(@__DIR__, "compile_driver.c")
 
@@ -113,5 +114,8 @@ function main(sjb2obj)
     return failed == 0 ? 0 : 1
 end
 
-length(ARGS) == 1 || (println("usage: julia test_compile_variants.jl SJB2OBJ"); exit(2))
-exit(main(ARGS[1]))
+# as a script (runtests.jl includes this file for its functions)
+if abspath(PROGRAM_FILE) == @__FILE__
+    length(ARGS) == 1 || (println("usage: julia --project test/test_compile_variants.jl SJB2OBJ"); exit(2))
+    exit(main(ARGS[1]))
+end
