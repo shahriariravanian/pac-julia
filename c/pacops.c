@@ -437,6 +437,6 @@ double reduction(const double *amplitudes, const int *terms, const double *weigh
 double reduction_single(const double *amplitudes, int term, double weight, long numerator, long denominator)
 {
     cplx a = get(amplitudes, term);
-    double acc = weight * fma(a.re, a.re, a.im * a.im);
+    double acc = 0.0 + weight * fma(a.re, a.re, a.im * a.im);  /* as reduction(): 0.0 + the first term */
     return numerator == denominator ? acc : acc * (double)numerator / (double)denominator;
 }

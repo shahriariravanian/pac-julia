@@ -22,7 +22,7 @@ end
 
 Base.close(writer::CodeWriterCpu) = close(writer.fd)
 
-function write(writer::CodeWriterCpu, s)
+function emit(writer::CodeWriterCpu, s)
     for i in 1:writer.indent
         print(writer.fd, '\t')
     end
@@ -36,18 +36,31 @@ function newline(writer::CodeWriterCpu)
     println(writer.fd)
 end
 
+# `file` relative to this directory (or an absolute path) into the output folder
 function copy_home(writer::CodeWriterCpu, file)
     name = basename(file)
-    cp(file, joinpath(writer.path, name); force=true)
+    cp(joinpath(@__DIR__, file), joinpath(writer.path, name); force=true)
 end
 
 #####################################################################################
 
-current(b::ArenaIndex, i::CurrentIndex, p = "p") = i == 0 ? "NULL" : "$p[$(b.currents[i])]"
+# an operand the instruction reads: a null operand (index 0) is an error here, not `&NULL` in the C
+function current(b::ArenaIndex, i::CurrentIndex, p = "p")
+    i == 0 && error("an instruction reads a null current operand")
+    return "$p[$(b.currents[i])]"
+end
 form(b::ArenaIndex, i::FormIndex, p = "p") = "$p[$(b.forms[i])]"
-amplitude(b::ArenaIndex, i::FormIndex, p = "p") = "$p[$(b.amplitudes[i])]"
-scale(i::ScaleIndex) = "scales[$(2*i)]"
-factor(i::FactorIndex) = "factors[$(2*i)]"
+amplitude(b::ArenaIndex, i::AmplitudeIndex, p = "p") = "$p[$(b.amplitudes[i])]"
+scale(i::ScaleIndex) = "scales[$(2*(i-1))]"
+factor(i::FactorIndex) = "factors[$(2*(i-1))]"
+
+# a double as a C literal: Julia prints the shortest string that reads back as the same double,
+# which C reads back exactly too; NaN and Inf have no C literal
+function lit(x::Real)::String
+    y = Float64(x)
+    isfinite(y) || error("$y has no C literal")
+    return repr(y)
+end
 
 const FAMILY_SCALAR = 0
 const FAMILY_WEYL = 1
@@ -73,65 +86,90 @@ const PROPAGATOR_VECTOR = 2
 
 function compile(path, prog)
     writer = CodeWriterCpu(path)
+    try
+        a = Arena(prog)
+        b = ArenaIndex(prog, a)
 
-    a = Arena(prog)
-    b = ArenaIndex(prog, a)
+        emit(writer, "#include <stdlib.h>")
+        emit(writer, "#include \"pacops.h\"")
+        newline(writer)
 
-    write(writer, "#include \"pacops.h\"")
-    newline(writer)
+        compile_scales(writer, prog)
+        compile_factors(writer, prog)
 
-    compile_scales(writer, prog)
-    compile_factors(writer, prog)
+        compile_kernels(writer, prog)
 
-    compile_kernels(writer, prog)
+        compile_forms(writer, prog, b)
+        compile_currents(writer, prog, b)
+        compile_tables(writer, prog)
+        compile_body(writer, prog, b)
+        compile_reduction(writer, prog, b)
 
-    compile_forms(writer, prog, b)
-    compile_currents(writer, prog, b)
-    compile_body(writer, prog, b)
-    compile_reduction(writer, prog, b)
-
-    write(writer, "int run(double *out, double *p, const double *momenta) {")
-    write(writer, "for(int i=0; i<$(b.size); i++) p[i] = 0.0;")
-    write(writer, "forms(p, momenta);")
-    write(writer, "currents(p);")
-    write(writer, "body(p);")
-    write(writer, "reducer(p);")
-    write(writer, "return 0;")
-    write(writer, "};")
-
-    close(writer)
+        emit(writer, "int run(double *out, double *p, const double *momenta) {")
+        emit(writer, "for(int i=0; i<$(b.size); i++) p[i] = 0.0;")
+        emit(writer, "forms(p, momenta);")
+        emit(writer, "currents(p);")
+        emit(writer, "body(p);")
+        emit(writer, "reducer(out, p);")
+        emit(writer, "return 0;")
+        emit(writer, "}")
+    finally
+        close(writer)
+    end
 end
 
 function compile_scales(writer, prog::Program)
-     write(writer, "const double scales[] = {")
+     emit(writer, "const double scales[] = {")
 
      for c in prog.scales
-         write(writer, "$(real(c)), $(imag(c)),")
+         emit(writer, "$(lit(real(c))), $(lit(imag(c))),")
      end
 
-     write(writer, "};")
+     emit(writer, "};")
      newline(writer)
 end
 
 function compile_factors(writer, prog::Program)
-     write(writer, "const double factors[] = {")
+     emit(writer, "const double factors[] = {")
 
      for c in prog.factors
-         write(writer, "$(real(c)), $(imag(c)),")
+         emit(writer, "$(lit(real(c))), $(lit(imag(c))),")
      end
 
-     write(writer, "};")
+     emit(writer, "};")
      newline(writer)
 end
 
+# the constant arrays of the instructions, at file scope (C++ and CUDA have no compound literals):
+# closure k's component factors `cf<k>`, kernel row k's output components `outputs<k>`
+function compile_tables(writer, prog::Program)
+    for (k, op) in enumerate(prog.body)
+        if op isa Closure && !isempty(op.component_factors)
+            values = join(["$(lit(real(prog.factors[x]))), $(lit(imag(prog.factors[x])))" for x in op.component_factors], ", ")
+            emit(writer, "static const double cf$k[] = {$values};")
+        elseif op isa Kernel
+            emit(writer, "static const int outputs$k[] = {$(join(prog.bindings[op.binding].outputs .- 1, ", "))};")
+        end
+    end
+    newline(writer)
+end
+
 function compile_kernels(writer, prog::Program)
+    done = Set{String}()
     for binding in prog.bindings
         ker = binding.kernel
+        # the adapter takes the kernel's inputs and reads its output pairs: the binding must list
+        # as many (the outputs array would otherwise be read past its end)
+        length(binding.inputs) == ker.inputs && length(binding.outputs) == ker.outputs ÷ 2 ||
+            error("a binding of kernel $(ker.name) lists $(length(binding.inputs)) inputs, $(length(binding.outputs)) outputs; " *
+                  "the kernel has $(ker.inputs), $(ker.outputs ÷ 2)")
+        ker.name in done && continue
+        push!(done, ker.name)
         name = ker.name
         inputs = ker.inputs
         outputs = ker.outputs
 
-        write(writer, "int $name(double *mem, const void *states, size_t idx, const double *params);")
+        emit(writer, "int $name(double *mem, const void *states, size_t idx, const double *params);")
         newline(writer)
 
         s = "void adapter_$name(double *out, "
@@ -140,23 +178,23 @@ function compile_kernels(writer, prog::Program)
             s *= "double x$i, "
         end
 
-        write(writer, "$s int direct, int mode, const double *factor) {")
+        emit(writer, "$s const int *outputs, int direct, int mode, const double *factor) {")
 
-        write(writer, "double mem[$(inputs+outputs+1)];")
+        emit(writer, "double mem[$(inputs+outputs+1)];")
         for i in 0:inputs-1
-            write(writer, "mem[$i] = x$i;")
+            emit(writer, "mem[$i] = x$i;")
         end
 
-        write(writer, "int res = $name(mem, NULL, 0, NULL);")
+        emit(writer, "if ($name(mem, NULL, 0, NULL) != 0) abort();  /* the kernel failed */")
 
-        write(writer, "cplx f = get(factor, 0);")
-        write(writer, "int as_is = direct && f.re == 1.0 && f.im == 0.0 && !signbit(f.im);  /* exactly 1 + 0i */");
-        write(writer, "for (int n = 0; n < $outputs; n+=2) {")
-        write(writer, "cplx pair = get(mem, $inputs + n);")
-        write(writer, "put(out, n, as_is ? pair : combine(get(out, n), mul(pair, f), mode));")
-        write(writer, "}")
+        emit(writer, "cplx f = get(factor, 0);")
+        emit(writer, "int as_is = direct && f.re == 1.0 && f.im == 0.0 && !signbit(f.im);  /* exactly 1 + 0i */");
+        emit(writer, "for (int n = 0; n < $(outputs ÷ 2); n++) {")
+        emit(writer, "cplx pair = get(mem + $inputs, n);")
+        emit(writer, "put(out, outputs[n], as_is ? pair : combine(get(out, outputs[n]), mul(pair, f), mode));")
+        emit(writer, "}")
 
-        write(writer, "}")
+        emit(writer, "}")
         newline(writer)
 
         copy_home(writer, ker.path)
@@ -164,39 +202,38 @@ function compile_kernels(writer, prog::Program)
 end
 
 function compile_forms(writer, prog::Program, b::ArenaIndex)
-    write(writer, "void forms(double *p, const double *momenta) {")
+    emit(writer, "void forms(double *p, const double *momenta) {")
+
+    # the program's leg l: the caller's leg `leg` (1-based) times `sign`, or the caller's leg l
+    # (as pacrun.jl's fill_forms!: q = 0.0 + Σ coef × (sign × p[leg]), in term order)
+    external(l, j) = prog.crossing === nothing ? "momenta[$(4*(l-1)+j)]" :
+        "($(lit(prog.crossing[l][2])) * momenta[$(4*(prog.crossing[l][1]-1)+j)])"
 
     for (i, f) in enumerate(prog.forms)
         q = b.forms[i]
         for j in 0:3
-            s = "p[$(q+j)] = "
-            for (k, (leg, coef)) in enumerate(f.terms)
-                if coef == 1.0
-                    s *= "+momenta[$(4*(leg-1)+j)]"
-                else
-                    s *= "-momenta[$(4*(leg-1)+j)]"
-                end
+            s = "p[$(q+j)] = 0.0"
+            for (leg, coef) in f.terms
+                s *= " + $(lit(coef)) * $(external(leg, j))"
             end
             s *= ";"
-            write(writer, s)
+            emit(writer, s)
         end
     end
 
-    write(writer, "};")
+    emit(writer, "}")
     newline(writer)
 end
 
 function compile_currents(writer, prog::Program, b::ArenaIndex)
-    write(writer, "void currents(double *p) {")
+    emit(writer, "void currents(double *p) {")
 
-    for (i, c) in enumerate(p.currents)
+    for (i, c) in enumerate(prog.currents)
         idx = b.currents[i]
         n = b.currents[i+1] - b.currents[i]
         s = c.source
         if s === nothing
-            for i in 0:2*n-1
-                # write(writer, "p[$(idx+i)] = 0.0;")
-            end
+            # zero or written: run() zeroes the arena
         else
             ori = s.orientation == "antiparticle" ? ANTIPARTICLE : PARTICLE
 
@@ -209,34 +246,26 @@ function compile_currents(writer, prog::Program, b::ArenaIndex)
             elseif s.family == "vector"
                 f = FAMILY_VECTOR
             else
-                error("unknown source family $family")
+                error("unknown source family $(s.family)")
             end
 
-            write(writer, "wavefunction(p+$idx, $f, $ori, p+$(b.forms[s.form]), $(s.helicity), $(s.chirality), $(real(p.scales[s.mass])));");
-
-            factor = p.factors[s.factor]
-
-            if factor != complex(1.0, 0.0)
-                for j in 0:2*n-1
-                    write(writer, "p[$(idx+j)] *= $factor;")
-                end
-            end
+            emit(writer, "source(p+$idx, $f, $ori, p+$(b.forms[s.form]), $(s.helicity), $(s.chirality), $(lit(real(prog.scales[s.mass]))), &$(factor(s.factor)));")
         end
     end
 
-    write(writer, "};")
+    emit(writer, "}")
     newline(writer)
 end
 
 
 function compile_body(writer, prog::Program, b::ArenaIndex)
-    write(writer, "void body(double *p) {")
+    emit(writer, "void body(double *p) {")
 
-    for op in p.body
-        compile_op(writer, op, prog, b)
+    for (k, op) in enumerate(prog.body)
+        compile_op(writer, op, prog, b, k)
     end
 
-    write(writer, "};")
+    emit(writer, "}")
     newline(writer)
 end
 
@@ -278,55 +307,51 @@ function mode(op)
     elseif op.mode == "+="
         return MODE_ADD
     else
-        error("unknown mode $mode")
+        error("unknown mode $(op.mode)")
     end
 end
 
-function compile_op(writer, op::Vertex, prog::Program, b::ArenaIndex)
-    write(writer, "// $op")
+function compile_op(writer, op::Vertex, prog::Program, b::ArenaIndex, k::Int)
+    emit(writer, "// $op")
 
     # vertex!(a.currents[op.out], op.type, op.mode, current(a, op.l), current(a, op.r), form(a, op.u), form(a, op.v),
     #        p.scales[op.coupling], p.factors[op.factor])
-    s = "vertex(&$(current(b,op.out)), $(type(op)), $(mode(op)), &$(current(b,op.l)), &$(current(b,op.r)), &$(current(b,op.u)), &$(current(b,op.v)), &$(scale(op.coupling)), &$(factor(op.factor)));"
-    write(writer, s)
+    s = "vertex(&$(current(b,op.out)), $(type(op)), $(mode(op)), &$(current(b,op.l)), &$(current(b,op.r)), &$(form(b,op.u)), &$(form(b,op.v)), &$(scale(op.coupling)), &$(factor(op.factor)));"
+    emit(writer, s)
 end
 
-function compile_op(writer, op::Propagator, prog::Program, b::ArenaIndex)
-    write(writer, "// $op")
+function compile_op(writer, op::Propagator, prog::Program, b::ArenaIndex, k::Int)
+    emit(writer, "// $op")
     # c = a.currents[op.current]
     # v = propagator(op.type, c, form(a, op.momentum), p.factors[op.factor])
     # c[1:length(v)] = v
     s = "propagator(&$(current(b,op.current)), $(type(op)), &$(current(b,op.current)), &$(form(b,op.momentum)), &$(factor(op.factor)));"
-    write(writer, s)
+    emit(writer, s)
 end
 
-function compile_op(writer, op::Scale, prog::Program, b::ArenaIndex)
+function compile_op(writer, op::Scale, prog::Program, b::ArenaIndex, k::Int)
     # scale!(a.currents[op.current], op.components, p.factors[op.factor])
-    components = b.currents[op.current+1] - b.currents[op.current]
+    components = op.components
     s = "scale(&$(current(b,op.current)), $components, &$(factor(op.factor)));"
-    write(writer, s)
+    emit(writer, s)
 end
 
-function compile_op(writer, op::Clear, prog::Program, b::ArenaIndex)
+function compile_op(writer, op::Clear, prog::Program, b::ArenaIndex, k::Int)
     # clear!(a.currents[op.current], op.components)
-    components = b.currents[op.current+1] - b.currents[op.current]
+    components = op.components
     s = "clear(&$(current(b,op.current)), $components);"
-    write(writer, s)
+    emit(writer, s)
 end
 
-function compile_op(writer, op::Closure, prog::Program, b::ArenaIndex)
-    write(writer, "// $op")
+function compile_op(writer, op::Closure, prog::Program, b::ArenaIndex, k::Int)
+    emit(writer, "// $op")
 
-    cf = "(double[]){"
-    for k in op.component_factors
-        cf *= "$(real(p.factors[k])), $(imag(p.factors[k])), "
-    end
-    cf = cf[1:end-2] * "}"
+    cf = isempty(op.component_factors) ? "NULL" : "cf$k"
 
     # cf = [p.factors[k] for k in op.component_factors]
     # a.amplitudes[op.amplitude] = closure(a.amplitudes[op.amplitude], current(a, op.l), current(a, op.r), cf, p.factors[op.factor])
-    s = "closure(&$(current(b,op.amplitude)), &$(current(b,op.l)), &$(current(b,op.r)), $cf, $(length(op.component_factors)), &$(factor(op.factor)));"
-    write(writer, s)
+    s = "closure(&$(amplitude(b,op.amplitude)), &$(current(b,op.l)), &$(current(b,op.r)), $cf, $(length(op.component_factors)), &$(factor(op.factor)));"
+    emit(writer, s)
 end
 
 function kernel_arg(i::KernelInput, op::Kernel, b::ArenaIndex)::String
@@ -340,6 +365,7 @@ function kernel_arg(i::KernelInput, op::Kernel, b::ArenaIndex)::String
         return  "p[$k]"
     elseif i.kind == OUT
         k = b.currents[op.out] + 2*j + (i.im ? 1 : 0)
+        return  "p[$k]"
     elseif i.kind == MOMENTUM_U
         k = b.forms[op.u] + j
         return  "p[$k]"
@@ -353,8 +379,8 @@ function kernel_arg(i::KernelInput, op::Kernel, b::ArenaIndex)::String
     end
 end
 
-function compile_op(writer, op::Kernel, prog::Program, b::ArenaIndex)
-    write(writer,"// $op")
+function compile_op(writer, op::Kernel, prog::Program, b::ArenaIndex, k::Int)
+    emit(writer,"// $op")
 
     binding = prog.bindings[op.binding]
     name = binding.kernel.name
@@ -366,23 +392,30 @@ function compile_op(writer, op::Kernel, prog::Program, b::ArenaIndex)
 
     direct = binding.direct ? 1 : 0
 
-    s *= "$direct, $(mode(op)), &$(factor(op.factor)));"
-    write(writer, s)
+    s *= "outputs$k, $direct, $(mode(op)), &$(factor(op.factor)));"
+    emit(writer, s)
 end
 
+# out[h - 1] = group factor × Σ weight × |amplitude|² over output h's terms (none: 0); the terms
+# (0-based amplitudes) and weights as constant arrays `terms<h>`, `weights<h>`
 function compile_reduction(writer, prog::Program, b::ArenaIndex)
-    write(writer, "void reducer(double *p) {")
+    for (h, terms) in enumerate(prog.reduction)
+        isempty(terms) && continue
+        emit(writer, "static const int terms$h[] = {$(join([x[1]-1 for x in terms], ", "))};")
+        emit(writer, "static const double weights$h[] = {$(join([lit(x[2]) for x in terms], ", "))};")
+    end
+    newline(writer)
+    emit(writer, "void reducer(double *out, double *p) {")
 
-    for terms in prog.reduction
-        if length(terms) == 1
-            t = terms[1]
-            (num, den) = p.group_factor
-            write(writer, "reduction_single(&$(amplitude(b, 1)), $(t[1]), $(t[2]), $num, $den);")
-        elseif length(terms) > 1
-            error("only 1-term reduction is currently supported")
+    (num, den) = prog.group_factor
+    for (h, terms) in enumerate(prog.reduction)
+        if isempty(terms)
+            emit(writer, "out[$(h-1)] = 0.0;")
+        else
+            emit(writer, "out[$(h-1)] = reduction(&$(amplitude(b, 1)), terms$h, weights$h, $(length(terms)), $num, $den);")
         end
     end
 
-    write(writer, "};")
+    emit(writer, "}")
     newline(writer)
 end

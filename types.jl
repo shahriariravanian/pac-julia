@@ -121,7 +121,7 @@ end
 struct Program
     process::String
     colour::String
-    expression::String
+    expression::Union{Nothing,String}  # nothing: a process artifact.json does not list
     legs::Int
     crossing::Union{Nothing,Vector{Tuple{LegIndex,Float64}}}  # p<l> = sign × the caller's leg
     forms::Vector{Form}
