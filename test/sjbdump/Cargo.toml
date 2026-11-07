@@ -1,0 +1,9 @@
+[package]
+name = "sjbdump"
+version = "0.1.0"
+edition = "2021"
+description = "the header and the MIR of a .sjb as symjit reads them: the reference of test_sjb.jl"
+
+[dependencies]
+anyhow = "1"
+symjit = { version = "2.28.3", default-features = false }
