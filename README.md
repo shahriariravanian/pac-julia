@@ -41,6 +41,7 @@ cd out && make test     # u_ubar_to_z_g_g flow:2,4,5,1: 8 points, 384 outputs; 0
 | `src/compile.jl` | the C generator |
 | `src/sjb.jl`, `src/complexify.jl` | the reader of saved symjit applications and symjit's Complexifier |
 | `c/pacops.c`, `c/pacops.h` | the sources and instructions in C, copied next to each `runner.c` |
+| `CONVENTIONS.md` | the meaning of main.json's fields and instructions (pac2json's legend) |
 | `test/runtests.jl` | the short tests |
 | `test/test_*.jl` | the longer comparisons, one script each (usage at the top of each) |
 | `test/bench_compile.jl` | timing of the compiled C against the Julia runner |

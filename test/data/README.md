@@ -28,3 +28,6 @@ does: RustiCol loads it as its representative's program with an input crossing m
    line. The members have no `expression` (the artifact does not list them).
 
 All crossing signs here are +1 (permutations); a sign of −1 does not occur in these artifacts.
+
+The `configs.conventions` and `configs.instructions` legends that pac2json writes are removed from
+the three `main.json` files; their text is in `CONVENTIONS.md` at the root.

@@ -1,5 +1,5 @@
 # The instructions of a pac2json program body (main.json `programs[i].body`, legend in
-# `configs.instructions`), one function per instruction, per phase-space point. The arithmetic is
+# CONVENTIONS.md), one function per instruction, per phase-space point. The arithmetic is
 # pacuda's runner's (runner/recurrence_runner.cu: `contribution_values`, `propagator_values`,
 # `identity_value`, `closure_increment`, `symjit_row`, `reduce_kernel`), which is RustiCol's
 # operation for operation; the same operations in the same order, so the values are bit for bit
