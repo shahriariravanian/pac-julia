@@ -309,24 +309,67 @@ end
 
 ###################################### evaluate ########################################
 
+# The arena holds each current as a tuple of its kind: `value(a, i)` reads it (() for a null
+# operand), `set!(a, i, v)` replaces it (arena.jl). An arena element has the union type
+# CurrentValue; the operations get concrete types (no boxing, no dynamic dispatch): a vertex or a
+# propagator by its type, whose operand kinds the load-time checks guarantee (the type assertions
+# never fail), the other instructions through `concrete`.
+
+# f(v) with v's concrete type
+@inline concrete(f, v::CurrentValue) = v isa Weyl ? f(v) : v isa Vec4 ? f(v) : v isa Tensor ? f(v) : f(v::Scalar)
+
 function evaluate(op::Vertex, a::Arena, p::Program)
-    vertex!(a.currents[op.out], op.type, op.mode, current(a, op.l), current(a, op.r), form(a, op.u), form(a, op.v),
-            p.scales[op.coupling], p.factors[op.factor])
+    (c, t) = (a.currents, op.type)
+    (u, v) = (form(a, op.u), form(a, op.v))
+    scale = p.scales[op.coupling] * p.factors[op.factor]
+    if t == "weyl_vector_a"
+        set!(a, op.out, assign(op.mode, c[op.out]::Weyl, vertex_weyl_vector_a(c[op.l]::Weyl, c[op.r]::Vec4), scale))
+    elseif t == "weyl_vector_b"
+        set!(a, op.out, assign(op.mode, c[op.out]::Weyl, vertex_weyl_vector_b(c[op.l]::Weyl, c[op.r]::Vec4), scale))
+    elseif t == "tensor_vector"
+        set!(a, op.out, assign(op.mode, c[op.out]::Vec4, vertex_tensor_vector(c[op.l]::Tensor, c[op.r]::Vec4), scale))
+    elseif t == "vector_wedge"
+        set!(a, op.out, assign(op.mode, c[op.out]::Tensor, vertex_vector_wedge(c[op.l]::Vec4, c[op.r]::Vec4), scale))
+    elseif t == "three_vector"
+        set!(a, op.out, assign(op.mode, c[op.out]::Vec4, vertex_three_vector(c[op.l]::Vec4, c[op.r]::Vec4, u, v), scale))
+    else
+        error("unknown vertex type $t")
+    end
+    return nothing
 end
 
 function evaluate(op::Propagator, a::Arena, p::Program)
-    c = a.currents[op.current]
-    v = propagator(op.type, c, form(a, op.momentum), p.factors[op.factor])
-    c[1:length(v)] = v
+    (c, i, t) = (a.currents, op.current, op.type)
+    (k, f) = (form(a, op.momentum), p.factors[op.factor])
+    if t == "weyl_a"
+        set!(a, i, propagator_weyl_a(c[i]::Weyl, k, f))
+    elseif t == "weyl_b"
+        set!(a, i, propagator_weyl_b(c[i]::Weyl, k, f))
+    elseif t == "vector"
+        set!(a, i, propagator_vector(c[i]::Vec4, k, f))
+    else
+        error("unknown propagator type $t")
+    end
+    return nothing
 end
 
-evaluate(op::Scale, a::Arena, p::Program) = scale!(a.currents[op.current], op.components, p.factors[op.factor])
+function evaluate(op::Scale, a::Arena, p::Program)
+    concrete(x -> set!(a, op.current, scale(x, op.components, p.factors[op.factor])), a.currents[op.current])
+    return nothing
+end
 
-evaluate(op::Clear, a::Arena, p::Program) = clear!(a.currents[op.current], op.components)
+function evaluate(op::Clear, a::Arena, p::Program)
+    concrete(x -> set!(a, op.current, clear(x, op.components)), a.currents[op.current])
+    return nothing
+end
 
 function evaluate(op::Closure, a::Arena, p::Program)
-    cf = [p.factors[k] for k in op.component_factors]
-    a.amplitudes[op.amplitude] = closure(a.amplitudes[op.amplitude], current(a, op.l), current(a, op.r), cf, p.factors[op.factor])
+    (cf, f) = (view(p.factors, op.component_factors), p.factors[op.factor])
+    amplitude = a.amplitudes[op.amplitude]
+    a.amplitudes[op.amplitude] = concrete(a.currents[op.l]) do l
+        concrete(r -> closure(amplitude, l, r, cf, f), a.currents[op.r])
+    end
+    return nothing
 end
 
 function kernel_value(i::KernelInput, op::Kernel, a::Arena, p::Program, factor::Complex{Float64})::Float64
@@ -351,18 +394,27 @@ end
 function evaluate(op::Kernel, a::Arena, p::Program)
     b = p.bindings[op.binding]
     factor = p.factors[op.factor]
-    values = kernel_call(b.kernel, [kernel_value(i, op, a, p, factor) for i in b.inputs])
-    kernel_store!(a.currents[op.out], values, b.outputs, b.direct, op.mode, factor)
+    lib = b.kernel
+    for (k, i) in enumerate(b.inputs)
+        lib.input[k] = kernel_value(i, op, a, p, factor)
+    end
+    values = kernel_call!(lib)
+    concrete(out -> set!(a, op.out, kernel_store(out, values, b.outputs, b.direct, op.mode, factor)), a.currents[op.out])
+    return nothing
 end
 
 # the momentum forms from the caller's momenta (momenta[leg] = (E, px, py, pz), 1-based legs)
 function fill_forms!(a::Arena, p::Program, momenta)
-    ext = p.crossing === nothing ? [Tuple(Float64.(m)) for m in momenta] :
-          [Tuple(sign .* Float64.(momenta[leg])) for (leg, sign) in p.crossing]
+    # p<l>: the caller's leg, or sign × the leg it crosses from
+    function external(l::LegIndex)::Momentum
+        p.crossing === nothing && return Momentum(momenta[l])
+        (leg, sign) = p.crossing[l]
+        return sign .* Momentum(momenta[leg])
+    end
     for (i, f) in enumerate(p.forms)
         v = (0.0, 0.0, 0.0, 0.0)
         for (t, (leg, coef)) in enumerate(f.terms)
-            term = coef .* ext[leg]
+            term = coef .* external(leg)
             v = t == 1 ? 0.0 .+ term : v .+ term
         end
         a.forms[i] = v
@@ -372,16 +424,35 @@ end
 # the currents' values before the body: zero, or factor × the source's wavefunction
 function fill_currents!(a::Arena, p::Program)
     for (i, c) in enumerate(p.currents)
-        cur = a.currents[i]
         s = c.source
         if s === nothing
-            fill!(cur, complex(0.0, 0.0))
+            set!(a, i, zero_value(c.components))
         else
             w = wavefunction(s.family, s.orientation, a.forms[s.form], s.helicity, s.chirality, real(p.scales[s.mass]))
             factor = p.factors[s.factor]
-            for j in eachindex(cur)
-                cur[j] = factor * w[j]
-            end
+            set!(a, i, map(x -> factor * x, w))
+        end
+    end
+end
+
+# The body, each instruction by its concrete type: static calls (a call dispatched at run time
+# would box the Program and the Arena, immutable structs, 192 bytes per instruction)
+function run_body!(a::Arena, p::Program)
+    for op in p.body
+        if op isa Vertex
+            evaluate(op, a, p)
+        elseif op isa Propagator
+            evaluate(op, a, p)
+        elseif op isa Kernel
+            evaluate(op, a, p)
+        elseif op isa Closure
+            evaluate(op, a, p)
+        elseif op isa Scale
+            evaluate(op, a, p)
+        elseif op isa Clear
+            evaluate(op, a, p)
+        else
+            error("unknown instruction $(typeof(op))")
         end
     end
 end
@@ -392,8 +463,10 @@ function evaluate(p::Program, a::Arena, momenta)::Vector{Float64}
     fill_forms!(a, p, momenta)
     fill_currents!(a, p)
     fill!(a.amplitudes, complex(0.0, 0.0))
-    for op in p.body
-        evaluate(op, a, p)
+    run_body!(a, p)
+    outputs = Vector{Float64}(undef, length(p.reduction))
+    for (h, terms) in enumerate(p.reduction)
+        outputs[h] = reduction((a.amplitudes[k] for (k, _) in terms), (w for (_, w) in terms), p.group_factor)
     end
-    return [reduction([a.amplitudes[k] for (k, _) in terms], [w for (_, w) in terms], p.group_factor) for terms in p.reduction]
+    return outputs
 end

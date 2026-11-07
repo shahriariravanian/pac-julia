@@ -40,7 +40,7 @@ function run_program(prog, kernels, caller)
     arena = ProgramArena(forms_of(inputs, caller),
                          Dict(s["name"] => cplx(s["value"]) for s in inputs["scales"]),
                          Dict(x["name"] => cplx(x["value"]) for x in inputs["factors"]))
-    currents = Dict{String,Vector{Complex{Float64}}}()
+    currents = Dict{String,CurrentValue}()  # each a tuple of its kind (Weyl, Vec4, ...)
     for c in prog["currents"]
         init = c["initial"]
         if init == "source"
@@ -49,7 +49,7 @@ function run_program(prog, kernels, caller)
                          s["helicity"], s["chirality"], s["mass"], s["factor"])
             currents[c["name"]] = apply_source(src, arena)
         elseif init == "zero" || init == "written"
-            currents[c["name"]] = zeros(Complex{Float64}, c["components"])
+            currents[c["name"]] = ntuple(_ -> ZERO, c["components"])
         else
             error("current $(c["name"]): initial $init")
         end
@@ -57,21 +57,22 @@ function run_program(prog, kernels, caller)
     amplitudes = Dict(a["name"] => complex(0.0, 0.0) for a in prog["amplitudes"])
     bindings = Dict(b["name"] => b for b in prog["bindings"])
     q(name) = get_vector(arena, name)
-    operand(name) = name === nothing ? Complex{Float64}[] : currents[name]  # an unused operand is null
+    operand(name) = name === nothing ? () : currents[name]  # an unused operand is null
     for op in prog["body"]
         kind = op["op"]
         if kind == "vertex"
             (l, r) = (operand(op["in"][1]), operand(op["in"][2]))
-            vertex!(currents[op["out"]], op["type"], op["mode"], l, r, q(op["momenta"][1]), q(op["momenta"][2]),
-                    get_scale(arena, op["coupling"]), get_factor(arena, op["factor"]))
+            currents[op["out"]] = vertex(op["type"], op["mode"], currents[op["out"]], l, r, q(op["momenta"][1]),
+                                         q(op["momenta"][2]), get_scale(arena, op["coupling"]), get_factor(arena, op["factor"]))
         elseif kind == "propagator"
-            c = currents[op["current"]]
-            v = propagator(op["type"], c, q(op["momentum"]), get_factor(arena, op["factor"]))
-            c[1:length(v)] = v
+            c = op["current"]
+            currents[c] = propagator(op["type"], currents[c], q(op["momentum"]), get_factor(arena, op["factor"]))
         elseif kind == "scale"
-            scale!(currents[op["current"]], op["components"], get_factor(arena, op["factor"]))
+            c = op["current"]
+            currents[c] = scale(currents[c], op["components"], get_factor(arena, op["factor"]))
         elseif kind == "clear"
-            clear!(currents[op["current"]], op["components"])
+            c = op["current"]
+            currents[c] = clear(currents[c], op["components"])
         elseif kind == "closure"
             (l, r) = (operand(op["in"][1]), operand(op["in"][2]))
             cf = [get_factor(arena, x) for x in op["component_factors"]]
@@ -79,8 +80,9 @@ function run_program(prog, kernels, caller)
         elseif kind == "kernel"
             b = bindings[op["binding"]]
             (l, r) = (operand(op["in"][1]), operand(op["in"][2]))
-            kernel!(currents[op["out"]], kernels[b["kernel"]], b["inputs"], b["outputs"], b["direct"], op["mode"],
-                    l, r, q(op["momenta"][1]), q(op["momenta"][2]), get_factor(arena, op["factor"]), arena)
+            currents[op["out"]] = kernel(currents[op["out"]], kernels[b["kernel"]], b["inputs"], b["outputs"], b["direct"],
+                                         op["mode"], l, r, q(op["momenta"][1]), q(op["momenta"][2]),
+                                         get_factor(arena, op["factor"]), arena)
         else
             error("unknown instruction $kind")
         end

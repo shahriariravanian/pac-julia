@@ -126,6 +126,7 @@ function check_program(currents::Vector{CurrentSpec}, body::Vector{Operation}, b
             for j in b.outputs
                 within(op.out, j, "the kernel output")
             end
+            allunique(b.outputs) || fail("$at: binding b$(op.binding - 1) writes a component twice")
             # all components written ("="): the current has a value
             if op.mode == "=" && sort(b.outputs) != collect(1:currents[op.out].components)
                 needs_value(op.out)

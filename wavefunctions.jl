@@ -3,8 +3,9 @@
 # bit for bit RustiCol's). The dispatch and the factor follow pacuda's runner (`source_values` and
 # `run_sources` in runner/recurrence_runner.cu).
 #
-# Each wavefunction has a method on plain values, (k, h, ...) with k = (E, px, py, pz), and one on
-# (source, arena). The arena must provide
+# Each wavefunction has a method on plain values, (k, h, ...) with k::Momentum = (E, px, py, pz),
+# returning a tuple of its kind (Scalar, Weyl, Dirac, Vec4; types.jl), and one on (source, arena).
+# The arena must provide
 #   get_vector(arena, "q<i>") -> (E, px, py, pz)   a momentum form
 #   get_scale(arena, "s<i>")  -> Complex{Float64}  a scale (the mass is its real part)
 #   get_factor(arena, "x<i>") -> Complex{Float64}  a factor
@@ -28,11 +29,11 @@ source_mass(source, arena)::Float64 = real(get_scale(arena, source.mass))
 
 # ---- scalar --------------------------------------------------------------------------------------
 
-scalar()::Vector{Complex{Float64}} = [complex(1.0, 0.0)]
+scalar()::Scalar = (complex(1.0, 0.0),)
 
 # ---- Weyl spinors (ext_quark_weyl_array, ext_antiquark_weyl_array) -------------------------------
 
-function weyl_particle(k, h::Helicity, ch::Chirality)::Vector{Complex{Float64}}
+function weyl_particle(k::Momentum, h::Helicity, ch::Chirality)::Weyl
     (E, px, py, pz) = k
 
     if E > 0
@@ -41,11 +42,11 @@ function weyl_particle(k, h::Helicity, ch::Chirality)::Vector{Complex{Float64}}
         b = s == 0 ? complex(-h * √(2 * E), 0.0) : complex(h * px / s, -py / s)
 
         if (h, ch) == (+1, +1)
-            return [a, b]
+            return (a, b)
         elseif (h, ch) == (-1, -1)
-            return [b, a]
+            return (b, a)
         else
-            return [0, 0]
+            return (ZERO, ZERO)
         end
     else
         s = px == 0 && py == 0 && pz > 0 ? 0.0 : -√max(-(E + pz), 0.0)
@@ -53,16 +54,16 @@ function weyl_particle(k, h::Helicity, ch::Chirality)::Vector{Complex{Float64}}
         b = s == 0 ? complex(-h * √(2 * abs(E)), 0.0) : complex(h * px / s, py / s)
 
         if (h, ch) == (-1, +1)
-            return [a, b]
+            return (a, b)
         elseif (h, ch) == (+1, -1)
-            return [b, a]
+            return (b, a)
         else
-            return [0, 0]
+            return (ZERO, ZERO)
         end
     end
 end
 
-function weyl_antiparticle(k, h::Helicity, ch::Chirality)::Vector{Complex{Float64}}
+function weyl_antiparticle(k::Momentum, h::Helicity, ch::Chirality)::Weyl
     (E, px, py, pz) = k
 
     if E > 0
@@ -71,11 +72,11 @@ function weyl_antiparticle(k, h::Helicity, ch::Chirality)::Vector{Complex{Float6
         b = s == 0 ? complex(-h * √(2 * E), 0.0) : complex(-h * px / s, py / s)
 
         if (h, ch) == (+1, +1)
-            return [b, a]
+            return (b, a)
         elseif (h, ch) == (-1, -1)
-            return [a, b]
+            return (a, b)
         else
-            return [0, 0]
+            return (ZERO, ZERO)
         end
     else
         s = px == 0 && py == 0 && pz > 0 ? 0.0 : √max(-(E + pz), 0.0)
@@ -83,11 +84,11 @@ function weyl_antiparticle(k, h::Helicity, ch::Chirality)::Vector{Complex{Float6
         b = s == 0 ? complex(-h * √(2 * abs(E)), 0.0) : complex(-h * px / s, -py / s)
 
         if (h, ch) == (-1, +1)
-            return [b, a]
+            return (b, a)
         elseif (h, ch) == (+1, -1)
-            return [a, b]
+            return (a, b)
         else
-            return [0, 0]
+            return (ZERO, ZERO)
         end
     end
 end
@@ -97,7 +98,7 @@ weyl_antiparticle(source, arena) = weyl_antiparticle(source_momentum(source, are
 
 # ---- massless Dirac spinors (ext_quark_dirac, ext_antiquark_dirac) -------------------------------
 
-function quark_dirac(k, h::Helicity)::Vector{Complex{Float64}}
+function quark_dirac(k::Momentum, h::Helicity)::Dirac
     (E, px, py, pz) = k
 
     if E > 0
@@ -106,9 +107,9 @@ function quark_dirac(k, h::Helicity)::Vector{Complex{Float64}}
         b = s == 0 ? complex(-h * √(2 * E), 0.0) : complex(h * px / s, -py / s)
 
         if h == +1
-            return [a, b, 0, 0]
+            return (a, b, ZERO, ZERO)
         else
-            return [0, 0, b, a]
+            return (ZERO, ZERO, b, a)
         end
     else
         s = px == 0 && py == 0 && pz > 0 ? 0.0 : -√max(-(E + pz), 0.0)
@@ -116,14 +117,14 @@ function quark_dirac(k, h::Helicity)::Vector{Complex{Float64}}
         b = s == 0 ? complex(-h * √(2 * abs(E)), 0.0) : complex(h * px / s, py / s)
 
         if h == -1
-            return [a, b, 0, 0]
+            return (a, b, ZERO, ZERO)
         else
-            return [0, 0, b, a]
+            return (ZERO, ZERO, b, a)
         end
     end
 end
 
-function antiquark_dirac(k, h::Helicity)::Vector{Complex{Float64}}
+function antiquark_dirac(k::Momentum, h::Helicity)::Dirac
     (E, px, py, pz) = k
 
     if E > 0
@@ -132,9 +133,9 @@ function antiquark_dirac(k, h::Helicity)::Vector{Complex{Float64}}
         b = s == 0 ? complex(-h * √(2 * E), 0.0) : complex(-h * px / s, py / s)
 
         if h == -1
-            return [0, 0, a, b]
+            return (ZERO, ZERO, a, b)
         else
-            return [b, a, 0, 0]
+            return (b, a, ZERO, ZERO)
         end
     else
         s = px == 0 && py == 0 && pz > 0 ? 0.0 : √max(-(E + pz), 0.0)
@@ -142,9 +143,9 @@ function antiquark_dirac(k, h::Helicity)::Vector{Complex{Float64}}
         b = s == 0 ? complex(-h * √(2 * abs(E)), 0.0) : complex(-h * px / s, -py / s)
 
         if h == +1
-            return [0, 0, a, b]
+            return (ZERO, ZERO, a, b)
         else
-            return [b, a, 0, 0]
+            return (b, a, ZERO, ZERO)
         end
     end
 end
@@ -155,7 +156,7 @@ antiquark_dirac(source, arena) = antiquark_dirac(source_momentum(source, arena),
 # ---- Dirac spinors (ext_quark_dirac_massive, ext_antiquark_dirac_massive) ------------------------
 # |mass| < 1e-8 falls back to the massless spinors; the runner calls these for every Dirac source.
 
-function quark_dirac_massive(k, h::Helicity, mass::Float64)::Vector{Complex{Float64}}
+function quark_dirac_massive(k::Momentum, h::Helicity, mass::Float64)::Dirac
     if abs(mass) < 1.0e-8
         return quark_dirac(k, h)
     end
@@ -178,13 +179,13 @@ function quark_dirac_massive(k, h::Helicity, mass::Float64)::Vector{Complex{Floa
            complex(nh * signed_px, -signed_py) / √(2.0 * pp * pp3)
 
     if nh > 0
-        return [chi1 * (sf2 * omega1), chi2 * (sf2 * omega1), chi1 * (sf1 * omega2), chi2 * (sf1 * omega2)]
+        return (chi1 * (sf2 * omega1), chi2 * (sf2 * omega1), chi1 * (sf1 * omega2), chi2 * (sf1 * omega2))
     else
-        return [chi2 * (sf2 * omega2), chi1 * (sf2 * omega2), chi2 * (sf1 * omega1), chi1 * (sf1 * omega1)]
+        return (chi2 * (sf2 * omega2), chi1 * (sf2 * omega2), chi2 * (sf1 * omega1), chi1 * (sf1 * omega1))
     end
 end
 
-function antiquark_dirac_massive(k, h::Helicity, mass::Float64)::Vector{Complex{Float64}}
+function antiquark_dirac_massive(k::Momentum, h::Helicity, mass::Float64)::Dirac
     if abs(mass) < 1.0e-8
         return antiquark_dirac(k, h)
     end
@@ -207,9 +208,9 @@ function antiquark_dirac_massive(k, h::Helicity, mass::Float64)::Vector{Complex{
            complex(nh * signed_px, signed_py) / √(2.0 * pp * pp3)
 
     if nh > 0
-        return [chi1 * (sf1 * omega2), chi2 * (sf1 * omega2), chi1 * (sf2 * omega1), chi2 * (sf2 * omega1)]
+        return (chi1 * (sf1 * omega2), chi2 * (sf1 * omega2), chi1 * (sf2 * omega1), chi2 * (sf2 * omega1))
     else
-        return [chi2 * (sf1 * omega1), chi1 * (sf1 * omega1), chi2 * (sf2 * omega2), chi1 * (sf2 * omega2)]
+        return (chi2 * (sf1 * omega1), chi1 * (sf1 * omega1), chi2 * (sf2 * omega2), chi1 * (sf2 * omega2))
     end
 end
 
@@ -220,7 +221,7 @@ antiquark_dirac_massive(source, arena) =
 
 # ---- massless vectors: gluon, photon (ext_gluon) --------------------------------------------------
 
-function gluon(k, h::Helicity)::Vector{Complex{Float64}}
+function gluon(k::Momentum, h::Helicity)::Vec4
     (E, px, py, pz) = k
     sqh = √0.5
 
@@ -250,14 +251,14 @@ function gluon(k, h::Helicity)::Vector{Complex{Float64}}
         end
     end
 
-    return [complex(0.0, 0.0), wf1, wf2, wf3]
+    return (complex(0.0, 0.0), wf1, wf2, wf3)
 end
 
 gluon(source, arena) = gluon(source_momentum(source, arena), source.helicity)
 
 # ---- massive vectors: Z, W (ext_massive_vector) ---------------------------------------------------
 
-function massive_vector(k, helicity::Helicity, mass::Float64)::Vector{Complex{Float64}}
+function massive_vector(k::Momentum, helicity::Helicity, mass::Float64)::Vec4
     (E, px, py, pz) = k
 
     if E < 0
@@ -273,7 +274,7 @@ function massive_vector(k, helicity::Helicity, mass::Float64)::Vector{Complex{Fl
     hel0 = 1.0 - abs(hel)
 
     if pp == 0
-        return [complex(0.0, 0.0), complex(-hel * sqh, 0.0), complex(0.0, nsvahl * sqh), complex(hel0, 0.0)]
+        return (complex(0.0, 0.0), complex(-hel * sqh, 0.0), complex(0.0, nsvahl * sqh), complex(hel0, 0.0))
     end
 
     emp = E / (mass * pp)
@@ -290,7 +291,7 @@ function massive_vector(k, helicity::Helicity, mass::Float64)::Vector{Complex{Fl
         (wf1, wf2) = (complex(-hel * sqh, 0.0), complex(0.0, nsvahl * copysign(sqh, pz)))
     end
 
-    return [wf0, wf1, wf2, wf3]
+    return (wf0, wf1, wf2, wf3)
 end
 
 massive_vector(source, arena) =
@@ -300,7 +301,7 @@ massive_vector(source, arena) =
 
 # The wavefunction of a source as the runner picks it (`source_values`): by family and orientation;
 # a Dirac source always through the massive spinors, a vector by whether its mass is exactly 0.
-function wavefunction(family::String, orientation::String, k, h::Helicity, ch::Chirality, mass::Float64)::Vector{Complex{Float64}}
+function wavefunction(family::String, orientation::String, k::Momentum, h::Helicity, ch::Chirality, mass::Float64)::CurrentValue
     anti = orientation == "antiparticle"
     if family == "scalar"
         return scalar()
@@ -317,8 +318,8 @@ end
 
 # The value of a source current: factor × its wavefunction (`currents[i].source`); 1, 2 or 4
 # components. The complex product is the runner's: (fr·re − fi·im, fr·im + fi·re).
-function apply_source(s::Source, arena)::Vector{Complex{Float64}}
+function apply_source(s::Source, arena)::CurrentValue
     w = wavefunction(s.family, s.orientation, source_momentum(s, arena), s.helicity, s.chirality, source_mass(s, arena))
     factor = get_factor(arena, s.factor)
-    return [factor * c for c in w]
+    return map(c -> factor * c, w)
 end
