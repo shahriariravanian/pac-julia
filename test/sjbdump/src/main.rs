@@ -35,6 +35,31 @@ fn main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
+    if path == "--run" {
+        // the lowered MIR run by symjit's bytecode interpreter (Mir::exec_instruction): `--run FILE
+        // INPUT`, INPUT = mem, stack, params (each a u64 count and f64 values); prints mem and stack
+        path = args.next().unwrap();
+        let input = std::fs::read(args.next().unwrap())?;
+        let mut pos = 0;
+        let mut next = || {
+            let x = u64::from_le_bytes(input[pos..pos + 8].try_into().unwrap());
+            pos += 8;
+            x
+        };
+        let mut section = || {
+            let n = next() as usize;
+            (0..n).map(|_| f64::from_bits(next())).collect::<Vec<f64>>()
+        };
+        let (mut mem, mut stack, params) = (section(), section(), section());
+        let config = Config::new(CompilerType::ByteCode, 0)?;
+        let (prog, reals, saved) = Application::read_sjb(&mut File::open(&path)?, &config)?;
+        let mir = Complexifier::new(&reals, prog.config().clone()).complexify(&saved)?;
+        let mut regs = vec![0.0f64; 66];
+        mir.exec_instruction(&mut mem, &mut stack, &mut regs, &params);
+        for x in &mem { println!("mem {:016x}", x.to_bits()); }
+        for x in &stack { println!("stack {:016x}", x.to_bits()); }
+        return Ok(());
+    }
     if path == "--lowered" {
         // the MIR as symjit lowers it (symjit-utils' SavedModel::read_with): `--lowered [--stable
         // true|false] FILE`

@@ -1,7 +1,10 @@
 # The lowering of a complex model's MIR to real MIR: symjit's Complexifier (rust/complexify.rs),
 # driven as symjit drives it (`Mir::rerun` in rust/mir.rs replays each saved instruction into the
-# Complexifier, which emits real instructions). The same instructions in the same order, so the
-# result is the MIR symjit's bytecode and kernels run (`SavedModel::read` of symjit-utils).
+# Complexifier, which emits real instructions). The same instructions in the same order: with
+# `native_complex`, the result is the MIR symjit's bytecode and kernels run (`SavedModel::read` of
+# symjit-utils), whose ComplexBi instructions (+, -, ×, ÷ of register pairs) symjit's generators
+# implement; by default each ComplexBi is replaced by real operations (complex_op!), the MIR a
+# generator without native complex operations would run.
 #
 # Registers: a complex register is a pair of real ones: Gen(r) → (Gen(4 + 2r), Gen(5 + 2r)),
 # Ret → (Ret, Temp), Left → (Left, Temp), Temp and Right → (Gen(0), Gen(1)); Gen(2), Gen(3) are
@@ -18,6 +21,8 @@ mutable struct Complexifier
     real_regs::Vector{Bool}  # by ϕ(reg)
     root_defined::Bool
     stable_math::Bool
+    native_complex::Bool  # emit ComplexBi (symjit's output) instead of the generic operations
+    spare::Reg            # the scratch register of the generic division
 end
 
 struct ComplexifyError <: Exception
@@ -65,6 +70,58 @@ uni!(c, op, d, a) = emit!(c, Uni(op, d, a))
 mov!(c, d, a) = emit!(c, Mov(d, a))
 fma!(c, d, a, b, e) = emit!(c, Fused(:MulAdd, d, a, b, e))
 cnst!(c, d, idx) = emit!(c, LoadConst(d, idx))
+
+# ---- complex operations on register pairs ------------------------------------------------------------
+
+# (xd + yd*im) := (x1 + y1*im) op (x2 + y2*im): a ComplexBi (native_complex), or real operations:
+# symjit's generic_complex_plus/minus/times/divide (the fallback of `Mir::rerun` for a generator
+# without native complex operations), operation for operation. These are the formulas of symjit's
+# bytecode interpreter (num_complex): no fma. One change: the divide's scratch (symjit's
+# re(Temp) = Gen(0)) is `spare`, a register no instruction of the program uses, because Gen(0) and
+# Gen(1) hold the operand loaded by a LoadMath (`%1 := %0 Divide Mem[k]` divides by them).
+# The sequences are correct for any aliasing of the pairs of a lowered program: each operand is
+# read before a destination is written (and a real part is never an imaginary one).
+function complex_op!(c::Complexifier, op::Symbol, xd, yd, x1, y1, x2, y2)
+    if c.native_complex
+        emit!(c, ComplexBi(op, xd, yd, x1, y1, x2, y2))
+    elseif op == :Plus || op == :Minus
+        bi!(c, op, xd, x1, x2)
+        bi!(c, op, yd, y1, y2)
+    elseif op == :Times
+        bi!(c, :Times, T0, x1, x2)
+        bi!(c, :Times, T1, y1, y2)
+        bi!(c, :Minus, T0, T0, T1)
+        bi!(c, :Times, T1, x1, y2)
+        bi!(c, :Times, yd, y1, x2)
+        bi!(c, :Plus, yd, yd, T1)
+        mov!(c, xd, T0)
+    else
+        t = c.spare
+        bi!(c, :Times, T0, x2, x2)
+        bi!(c, :Times, T1, y2, y2)
+        bi!(c, :Plus, t, T0, T1)
+        bi!(c, :Times, T0, x1, x2)
+        bi!(c, :Times, T1, y1, y2)
+        bi!(c, :Plus, T0, T0, T1)
+        bi!(c, :Times, T1, x1, y2)
+        bi!(c, :Times, yd, y1, x2)
+        bi!(c, :Minus, yd, yd, T1)
+        bi!(c, :Divide, yd, yd, t)
+        bi!(c, :Divide, xd, T0, t)
+    end
+end
+
+# the registers an instruction names
+registers(i::Instruction) = [getfield(i, f) for f in fieldnames(typeof(i)) if getfield(i, f) isa Reg]
+
+# The spare register of a saved program: the real half of the first pair above its registers
+# (Gen(r) is the pair Gen(4 + 2r), Gen(5 + 2r))
+function spare_register(mir::MIR)::Reg
+    r = maximum((x.index for i in mir.code for x in registers(i) if x.kind == REG_GEN); init = -1)
+    k = 4 + 2(r + 1)
+    k <= 63 || throw(ComplexifyError("no register left for the generic complex division (Gen($r) is used)"))
+    return gen(k)
+end
 
 # ---- the state of the registers ----------------------------------------------------------------------
 
@@ -138,7 +195,7 @@ function stable_divide!(c, dst, s1, s2)
         bi!(c, :Times, b_, b, T0)
         bi!(c, :Times, c_, cc, T0)
         bi!(c, :Times, d_, d, T0)
-        emit!(c, ComplexBi(:Divide, re_(dst), im_(dst), a_, b_, c_, d_))
+        complex_op!(c, :Divide, re_(dst), im_(dst), a_, b_, c_, d_)
     end
     set_complex!(c, dst)
 end
@@ -387,7 +444,7 @@ function c_plus!(c, d, s1, s2)
         bi!(c, :Plus, re_(d), re_(s1), re_(s2))
         mov!(c, im_(d), im_(s1))
     elseif t == :CC
-        emit!(c, ComplexBi(:Plus, re_(d), im_(d), re_(s1), im_(s1), re_(s2), im_(s2)))
+        complex_op!(c, :Plus, re_(d), im_(d), re_(s1), im_(s1), re_(s2), im_(s2))
     else
         bi!(c, :Plus, re_(d), re_(s1), re_(s2))
     end
@@ -403,7 +460,7 @@ function c_minus!(c, d, s1, s2)
         bi!(c, :Minus, re_(d), re_(s1), re_(s2))
         mov!(c, im_(d), im_(s1))
     elseif t == :CC
-        emit!(c, ComplexBi(:Minus, re_(d), im_(d), re_(s1), im_(s1), re_(s2), im_(s2)))
+        complex_op!(c, :Minus, re_(d), im_(d), re_(s1), im_(s1), re_(s2), im_(s2))
     else
         bi!(c, :Minus, re_(d), re_(s1), re_(s2))
     end
@@ -421,7 +478,7 @@ function c_times!(c, d, s1, s2)
         bi!(c, :Times, im_(d), im_(s1), re_(s2))
         bi!(c, :Times, re_(d), re_(s1), re_(s2))
     else
-        emit!(c, ComplexBi(:Times, re_(d), im_(d), re_(s1), im_(s1), re_(s2), im_(s2)))
+        complex_op!(c, :Times, re_(d), im_(d), re_(s1), im_(s1), re_(s2), im_(s2))
     end
     promote_real!(c, d, s1, s2)
 end
@@ -445,7 +502,7 @@ function c_divide!(c, d, s1, s2)
         bi!(c, :Divide, im_(d), im_(d), tt)
         bi!(c, :Divide, re_(d), T0, tt)
     else
-        emit!(c, ComplexBi(:Divide, re_(d), im_(d), re_(s1), im_(s1), re_(s2), im_(s2)))
+        complex_op!(c, :Divide, re_(d), im_(d), re_(s1), im_(s1), re_(s2), im_(s2))
     end
     promote_real!(c, d, s1, s2)
 end
@@ -626,9 +683,13 @@ function replay!(c::Complexifier, i::ComplexBi)
 end
 
 # The real MIR of a complex model's `mir` (`reals`: the locations that hold real numbers);
-# `stable_math` as the model's configuration has it
-function complexify(mir::MIR, reals::Vector{Loc}; stable_math::Bool = false)::MIR
-    c = Complexifier(Instruction[], copy(mir.consts), Set(reals), fill(false, 32), false, stable_math)
+# `stable_math` as the model's configuration has it. The complex operations on register pairs are
+# real operations (complex_op!), or ComplexBi instructions as symjit emits them with `native_complex`.
+# (`divide_scratch` replaces the spare register of the division, for the tests only.)
+function complexify(mir::MIR, reals::Vector{Loc}; stable_math::Bool = false, native_complex::Bool = false,
+                    divide_scratch::Union{Reg,Nothing} = nothing)::MIR
+    c = Complexifier(Instruction[], copy(mir.consts), Set(reals), fill(false, 32), false, stable_math, native_complex,
+                     something(divide_scratch, spare_register(mir)))
     for i in mir.code
         replay!(c, i)
     end
