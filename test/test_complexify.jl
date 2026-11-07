@@ -11,8 +11,12 @@
 #      operand).
 # A program both reject (symjit panics on some operands, e.g. a fused operation adding Ret) counts
 # as agreement.
-# usage: julia test_complexify.jl SJBDUMP [N] [FILE_OR_DIR...]   (N random programs, default 1000)
-include(joinpath(@__DIR__, "..", "sjb.jl"))
+# usage: julia --project test/test_complexify.jl SJBDUMP [N] [FILE_OR_DIR...]   (N random programs, default 1000)
+using PacRunner
+using PacRunner: ARITH_OPS, BIN_OPS, FUSED_OPS, UNI_OPS, Instruction, Nop, End, Uni, Bi, Mov, Load, Save, LoadConst, LoadComplex,
+    SaveComplex, LoadArgs, SaveArgs, Fused, IfElse, Label, Branch, BranchIf, Call, LoadMath, LoadConstMath, ComplexBi, Reg, Loc,
+    REG_GEN, REG_STATIC, REG_RET, REG_TEMP, REG_LEFT, REG_RIGHT, LOC_MEM, LOC_PARAM, LOC_STACK, SjbError, decode, is_complex,
+    mem_size, CONFIG_OPTIONS, ComplexifyError
 include(joinpath(@__DIR__, "sjb_encode.jl"))
 include(joinpath(@__DIR__, "mir_run.jl"))
 using Random
@@ -224,6 +228,9 @@ function main(dump, n, args)
     return ok ? 0 : 1
 end
 
-length(ARGS) >= 1 || (println("usage: julia test_complexify.jl SJBDUMP [N] [FILE_OR_DIR...]"); exit(2))
-n = length(ARGS) >= 2 && all(isdigit, ARGS[2]) ? parse(Int, ARGS[2]) : 1000
-exit(main(ARGS[1], n, ARGS[(length(ARGS) >= 2 && all(isdigit, ARGS[2]) ? 3 : 2):end]))
+# as a script (runtests.jl includes this file for its functions)
+if abspath(PROGRAM_FILE) == @__FILE__
+    length(ARGS) >= 1 || (println("usage: julia --project test/test_complexify.jl SJBDUMP [N] [FILE_OR_DIR...]"); exit(2))
+    n = length(ARGS) >= 2 && all(isdigit, ARGS[2]) ? parse(Int, ARGS[2]) : 1000
+    exit(main(ARGS[1], n, ARGS[(length(ARGS) >= 2 && all(isdigit, ARGS[2]) ? 3 : 2):end]))
+end

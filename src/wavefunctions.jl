@@ -9,7 +9,11 @@
 #   get_scale(arena, "s<i>")  -> Complex{Float64}  a scale (the mass is its real part)
 #   get_factor(arena, "x<i>") -> Complex{Float64}  a factor
 
-include(joinpath(@__DIR__, "types.jl"))
+# the arena interface: methods are the caller's (the Julia runner reads a Program and an Arena
+# directly; the tests' interpreters define these on their own arenas)
+function get_vector end
+function get_scale end
+function get_factor end
 
 struct Source
     wavefunction::String

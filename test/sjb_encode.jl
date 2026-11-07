@@ -1,5 +1,11 @@
 # The encoder of symjit's MIR (serializer.rs `MirWriter`) and of .sjb files, for the tests only:
 # test_sjb.jl (a synthetic code buffer) and test_complexify.jl (random complex programs).
+using PacRunner
+using PacRunner: ARITH_OPS, BIN_OPS, FUSED_OPS, UNI_OPS, Instruction, Nop, End, Uni, Bi, Mov, Load, Save, LoadConst, LoadComplex,
+    SaveComplex, LoadArgs, SaveArgs, Fused, IfElse, Label, Branch, BranchIf, Call, LoadMath, LoadConstMath, ComplexBi, Reg, Loc,
+    REG_GEN, REG_STATIC, REG_RET, REG_TEMP, REG_LEFT, REG_RIGHT, LOC_MEM, LOC_PARAM, LOC_STACK, SjbError, decode, is_complex,
+    mem_size, CONFIG_OPTIONS, ComplexifyError
+using PacRunner: APPLICATION_MAGIC, PROGRAM_MAGIC, CONFIG_MAGIC, BUILDER_MAGIC, MIR_MAGIC
 
 # the encoder of symjit's MirWriter (serializer.rs), for the test only
 function enc_num(out, prefix::UInt8, n::Int)

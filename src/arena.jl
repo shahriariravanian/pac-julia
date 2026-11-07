@@ -2,8 +2,6 @@
 # here (1-based): c<i> → currents[i + 1], a<i> → amplitudes[i + 1], q<i> → forms[i + 1]. The scales
 # and factors are constants of the Program (Program.scales, Program.factors).
 
-include(joinpath(@__DIR__, "types.jl"))
-
 struct Arena
     forms::Vector{NTuple{4,Float64}}            # the momentum forms q<i>, (E, px, py, pz)
     currents::Vector{Vector{Complex{Float64}}}  # the currents c<i>, `components` each

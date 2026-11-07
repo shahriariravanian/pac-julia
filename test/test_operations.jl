@@ -1,10 +1,12 @@
 # operations.jl and wavefunctions.jl on a pac2json folder: every program of main.json run on its
 # examples.json points by a minimal interpreter of the body, each output compared with the CPU's
 # (RustiCol's) bit for bit. The folder must have the kernels' shared libraries (pac2json --sjb2obj).
-# usage: julia test_operations.jl PAC2JSON_DIR
+# usage: julia --project test/test_operations.jl PAC2JSON_DIR
 include(joinpath(@__DIR__, "minijson.jl"))
-include(joinpath(@__DIR__, "..", "wavefunctions.jl"))
-include(joinpath(@__DIR__, "..", "operations.jl"))
+using PacRunner
+using PacRunner: Source, apply_source, wavefunction, vertex!, propagator, scale!, clear!, closure, kernel!, reduction,
+    KernelLibrary, load_kernel
+import PacRunner: get_vector, get_scale, get_factor
 
 include(joinpath(@__DIR__, "interpreter.jl"))
 
@@ -44,5 +46,8 @@ function main(dir)
     return worst <= TOLERANCE ? 0 : 1
 end
 
-length(ARGS) == 1 || (println("usage: julia test_operations.jl PAC2JSON_DIR"); exit(2))
-exit(main(ARGS[1]))
+# as a script (runtests.jl includes this file for its functions)
+if abspath(PROGRAM_FILE) == @__FILE__
+    length(ARGS) == 1 || (println("usage: julia --project test/test_operations.jl PAC2JSON_DIR"); exit(2))
+    exit(main(ARGS[1]))
+end

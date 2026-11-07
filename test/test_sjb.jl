@@ -1,10 +1,14 @@
 # sjb.jl against symjit's own reader: for each .sjb (or .plane.symjit) file, the header and the MIR
 # as sjb.jl reads them and as `sjbdump` (test/sjbdump: Application::read_sjb of the symjit crate)
 # prints them, line for line.
-# usage: julia test_sjb.jl SJBDUMP FILE_OR_DIR...   (a directory: every .sjb, .symjit file in it)
+# usage: julia --project test/test_sjb.jl SJBDUMP FILE_OR_DIR...   (a directory: every .sjb, .symjit file in it)
 # SJBDUMP: cargo build --release in test/sjbdump (target/release/sjbdump). Also checks a synthetic
 # code buffer of every instruction and the edge cases of the encoding, decoded by sjbdump --code.
-include(joinpath(@__DIR__, "..", "sjb.jl"))
+using PacRunner
+using PacRunner: ARITH_OPS, BIN_OPS, FUSED_OPS, UNI_OPS, Instruction, Nop, End, Uni, Bi, Mov, Load, Save, LoadConst, LoadComplex,
+    SaveComplex, LoadArgs, SaveArgs, Fused, IfElse, Label, Branch, BranchIf, Call, LoadMath, LoadConstMath, ComplexBi, Reg, Loc,
+    REG_GEN, REG_STATIC, REG_RET, REG_TEMP, REG_LEFT, REG_RIGHT, LOC_MEM, LOC_PARAM, LOC_STACK, SjbError, decode, is_complex,
+    mem_size, CONFIG_OPTIONS, ComplexifyError
 include(joinpath(@__DIR__, "sjb_encode.jl"))
 
 hex16(x::Float64) = string(reinterpret(UInt64, x), base = 16, pad = 16)
@@ -121,5 +125,8 @@ function main(dump, args)
     return (failed == 0 ? 0 : 1) + check_synthetic(dump)
 end
 
-length(ARGS) >= 2 || (println("usage: julia test_sjb.jl SJBDUMP FILE_OR_DIR..."); exit(2))
-exit(main(ARGS[1], ARGS[2:end]))
+# as a script (runtests.jl includes this file for its functions)
+if abspath(PROGRAM_FILE) == @__FILE__
+    length(ARGS) >= 2 || (println("usage: julia --project test/test_sjb.jl SJBDUMP FILE_OR_DIR..."); exit(2))
+    exit(main(ARGS[1], ARGS[2:end]))
+end

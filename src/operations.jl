@@ -13,10 +13,6 @@
 # kernel's shared library (main.json `kernels[i].library`, built by pac2json with `--sjb2obj`).
 # `kernel_inputs` reads scales through the arena: get_scale(arena, "s<i>") -> Complex{Float64}.
 
-using Libdl
-
-include(joinpath(@__DIR__, "types.jl"))
-
 mul_i(z::Complex{Float64}) = complex(-imag(z), real(z))  # i × z
 
 # the operand's components as locals
@@ -198,11 +194,22 @@ end
 
 # ---- kernel ---------------------------------------------------------------------------------------
 
-load_kernel(path::String, symbol::String, inputs::Int, outputs::Int) =
-    (h = Libdl.dlopen(path); KernelLibrary(symbol, path, h, Libdl.dlsym(h, symbol), inputs, outputs))
+# A kernel's library, opened. A library not built yet (pac2json without --sjb2obj, or test/data,
+# which holds no binaries) is not an error here: the program loads, and only a call of the kernel
+# (kernel_call, compile) fails, so programs without kernel rows run without any library.
+function load_kernel(path::String, symbol::String, inputs::Int, outputs::Int)
+    isfile(path) || return KernelLibrary(symbol, path, C_NULL, C_NULL, inputs, outputs)
+    h = Libdl.dlopen(path)
+    return KernelLibrary(symbol, path, h, Libdl.dlsym(h, symbol), inputs, outputs)
+end
+
+built(lib::KernelLibrary) = lib.fn != C_NULL
+not_built(lib::KernelLibrary) = error("kernel $(lib.name): its library $(lib.path) is not built " *
+                                      "(pac2json --sjb2obj, or build_kernels in test/compile_common.jl)")
 
 # The kernel on one point's inputs: its outputs (re, im of each output pair, in order)
 function kernel_call(lib::KernelLibrary, inputs::Vector{Float64})::Vector{Float64}
+    built(lib) || not_built(lib)
     length(inputs) == lib.inputs || error("the kernel takes $(lib.inputs) inputs, not $(length(inputs))")
     planes = [[x] for x in inputs]
     outs = [[0.0] for _ in 1:lib.outputs]

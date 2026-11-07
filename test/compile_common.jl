@@ -1,7 +1,8 @@
 # The parts of test_compile.jl and bench_compile.jl: the test cases, a pac2json folder copied to a
 # temporary directory with its kernels' shared libraries built there, the points of examples.json
 # as the drivers read them, and building a compiled program with a driver.
-include(joinpath(@__DIR__, "..", "PacRunner.jl"))
+using PacRunner
+using PacRunner: built
 
 const CC = get(ENV, "CC", "cc")
 

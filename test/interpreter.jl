@@ -2,6 +2,10 @@
 # run_program(prog, kernels, caller) with prog a parsed program (minijson.jl), kernels the
 # KernelLibrary of each kernel name, caller[leg] the caller's momenta. Needs wavefunctions.jl and
 # operations.jl.
+using PacRunner
+using PacRunner: Source, apply_source, wavefunction, vertex!, propagator, scale!, clear!, closure, kernel!, reduction,
+    KernelLibrary, load_kernel
+import PacRunner: get_vector, get_scale, get_factor
 
 # one program's values at one point: the momentum forms, the scales, the factors
 struct ProgramArena

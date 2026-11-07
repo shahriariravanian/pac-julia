@@ -443,5 +443,3 @@ function Base.show(io::IO, ::MIME"text/plain", a::SavedApplication)
     println(io, "  $(length(a.mir.code)) instructions, $(length(a.mir.consts)) constants, functions: ",
             isempty(a.functions) ? "none" : join(a.functions, ", "))
 end
-
-include(joinpath(@__DIR__, "complexify.jl"))
