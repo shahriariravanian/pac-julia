@@ -4,7 +4,8 @@
 # instruction, the kernels' headers), the Complexifier (the generic and the native lowering of each
 # kernel give the same values), the Julia runner against RustiCol's outputs (programs without
 # kernel rows), and compile's refusals.
-# With a C compiler (CC, default cc): the compiled C against the Julia runner, and the variants.
+# With a C compiler (CC, default cc): the compiled C against the Julia runner, the variants, and
+# (with make) the compiled folders' own `make test`.
 # With symjit-utils' sjb2obj (ENV["SJB2OBJ"], or sjb2obj on the PATH): the kernels' libraries are
 # built and every program of every case runs, in Julia and in C.
 # The longer comparisons with symjit and RustiCol themselves (sjbdump, wavefunctions_ref.rs, the
@@ -23,6 +24,7 @@ module VariantsScript include(joinpath(@__DIR__, "test_compile_variants.jl")) en
 const CASES = CompileScript.cases()
 const CC = CompileScript.CC
 const HAVE_CC = Sys.which(CC) !== nothing
+const HAVE_MAKE = Sys.which("make") !== nothing
 const SJB2OBJ = let s = get(ENV, "SJB2OBJ", Sys.which("sjb2obj"))
     s === nothing || !isfile(s) ? nothing : s
 end
@@ -100,6 +102,20 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         for (name, v) in VariantsScript.refusals(p)
             @test_throws ErrorException compile(mktempdir(), v)
         end
+        # another program's examples
+        ex = load_examples(joinpath(@__DIR__, "data", "ppjjj_crossed", "examples.json"), 2)
+        @test_throws ErrorException compile(mktempdir(), p; examples = ex)
+    end
+
+    @testset "the compiled folder" begin
+        case = joinpath(@__DIR__, "data", "ppjjj_crossed")
+        n = findfirst(!has_kernel_rows, load_programs(joinpath(case, "main.json")))
+        p = load_artifact(joinpath(case, "main.json"), n)
+        files(dir) = sort(readdir(dir))
+        @test files(compile(mktempdir(), p)) == ["Makefile", "pacops.c", "pacops.h", "runner.c", "runner.h"]
+        dir = compile(mktempdir(), p; examples = load_examples(joinpath(case, "examples.json"), n))
+        @test files(dir) == ["Makefile", "pacops.c", "pacops.h", "runner.c", "runner.h", "testing.c"]
+        @test occursin("#define RUNNER_OUTPUTS $(length(p.reduction))", read(joinpath(dir, "runner.h"), String))
     end
 
     if HAVE_CC
@@ -123,6 +139,21 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
                 @test all(all(same.(cr, jr)) for (cr, jr) in zip(c, julia))
                 @test julia != base
             end
+        end
+        if HAVE_MAKE
+            @testset "make test in the compiled folders" begin
+                # testing.c of each program without kernel rows against examples.json (RustiCol)
+                for case in CASES
+                    ps = load_programs(joinpath(case, "main.json"))
+                    for (n, p) in enumerate(ps)
+                        has_kernel_rows(p) && continue
+                        dir = compile(mktempdir(), p; examples = load_examples(joinpath(case, "examples.json"), n))
+                        @test success(pipeline(`make -s -C $dir test`; stdout = devnull, stderr = devnull))
+                    end
+                end
+            end
+        else
+            @info "no make: the compiled folders' make test is not run"
         end
     else
         @info "no C compiler ($CC): the compiled C is not tested"

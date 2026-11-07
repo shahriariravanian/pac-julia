@@ -9,8 +9,25 @@ using PacRunner
 p = load_artifact("folder/main.json", 1)       # or load_programs("folder/main.json")
 a = Arena(p)
 outputs = evaluate(p, a, momenta)              # momenta[leg] = (E, px, py, pz), the caller's legs
-compile("out", p)                              # out/runner.c: int run(double *out, double *p, const double *momenta)
+compile("out", p; examples = load_examples("folder/examples.json", 1))   # the folder out/, below
 app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR, lowered to real operations
+```
+
+## The compiled folder
+
+`compile(dir, p)` writes a folder that builds on its own:
+
+| File | What it is |
+| --- | --- |
+| `runner.c` | the program: `int run(double *out, double *p, const double *momenta)` for one point |
+| `runner.h` | its prototype and sizes: `RUNNER_LEGS`, `RUNNER_OUTPUTS`, `RUNNER_ARENA_SIZE` (the scratch `p`) |
+| `pacops.c`, `pacops.h` | the sources and instructions |
+| `<sha256>.so` | the symjit kernels' libraries, when the program calls kernels |
+| `testing.c` | with `examples`: the points of examples.json, each output against RustiCol's within 1e-14 of the total |
+| `Makefile` | `make` (`runner.o`, `pacops.o`, `testing`), `make test`, `make clean`; `CC`, `CFLAGS` may be set |
+
+```sh
+cd out && make test     # u_ubar_to_z_g_g flow:2,4,5,1: 8 points, 384 outputs; 0 beyond 1e-14 of the total ...
 ```
 
 ## Layout

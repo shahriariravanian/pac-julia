@@ -28,7 +28,7 @@ include("sjb.jl")
 include("complexify.jl")
 
 # the runner
-export Program, Arena, ArenaIndex, read_main, load_artifact, load_programs, evaluate
+export Program, Arena, ArenaIndex, read_main, load_artifact, load_programs, load_examples, evaluate
 # the C
 export compile
 # the kernels

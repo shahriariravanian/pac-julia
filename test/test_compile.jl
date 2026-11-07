@@ -3,8 +3,9 @@
 #   1. the folder is copied to a temporary directory, and each kernel's shared library (main.json
 #      kernels[i].library) is built there from its .plane.symjit: symjit-utils' sjb2obj, then
 #      cc -shared, as pac2json --sjb2obj builds them;
-#   2. each program is compiled to C (compile.jl), built with test/compile_driver.c and the
-#      kernels' libraries (cc -ffp-contract=off -Werror), and run on its examples.json points;
+#   2. each program is compiled to C (compile.jl, with its examples), built with
+#      test/compile_driver.c and the kernels' libraries (cc -ffp-contract=off -Werror), and run on
+#      its examples.json points; the folder's own `make test` (testing.c) must pass too;
 #   3. each output is compared bit for bit with the Julia runner (pacrun.jl's evaluate) and with
 #      the CPU's outputs in examples.json (RustiCol) within TOLERANCE of the point's total, as
 #      test_pacrun.jl does; the bit-identical outputs are counted (RustiCol's symjit 2.27.3 AVX
@@ -36,8 +37,10 @@ function test_folder(sjb2obj::String, source::String)::Int
     for (n, (p, e)) in enumerate(zip(programs, ex.programs))
         (p.process, p.colour) == (e.process, e.colour) || error("examples.json is not in main.json's order")
         out = joinpath(dir, "compiled-$n")
-        compile(out, p)
+        compile(out, p; examples = e)
         got = run_compiled(out, p, e.points)
+        # the folder's own test: make test (testing.c, against examples.json)
+        made = success(pipeline(`make -s -C $out test`; stdout = devnull, stderr = devnull))
         a = Arena(p)
         (outputs, vs_julia, vs_cpu, identical, worst) = (0, 0, 0, 0, 0.0)
         for (pt, c) in zip(e.points, got)
@@ -54,11 +57,11 @@ function test_folder(sjb2obj::String, source::String)::Int
                 d <= TOLERANCE || (vs_cpu += 1)
             end
         end
-        ok = vs_julia == 0 && vs_cpu == 0
+        ok = vs_julia == 0 && vs_cpu == 0 && made
         ok || (failed += 1)
         println("  program $n ($(p.process), $(p.colour)): $(length(e.points)) points, $outputs outputs; ",
                 "C vs Julia: $vs_julia differ; C vs CPU: $vs_cpu beyond $TOLERANCE of the total ",
-                "(worst $worst), $identical bit-identical", ok ? "" : "  FAILED")
+                "(worst $worst), $identical bit-identical; make test: $(made ? "passes" : "FAILS")", ok ? "" : "  FAILED")
     end
     return failed
 end

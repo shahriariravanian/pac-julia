@@ -157,6 +157,10 @@ function load_artifact(path::String, program::Int = 1)::Program
     return load_program(main.programs[program], load_kernels(main, path))
 end
 
+# program `program`'s entry of examples.json at `path` (process, colour, points: momenta, outputs),
+# for compile's testing.c
+load_examples(path::String, program::Int = 1) = read_main(path).programs[program]
+
 # every program of main.json at `path`
 function load_programs(path::String)::Vector{Program}
     main = read_main(path)
