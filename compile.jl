@@ -44,11 +44,23 @@ end
 
 #####################################################################################
 
-current(b::ArenaIndex, i::CurrentIndex, p = "p") = i == 0 ? "NULL" : "$p[$(b.currents[i])]"
+# an operand the instruction reads: a null operand (index 0) is an error here, not `&NULL` in the C
+function current(b::ArenaIndex, i::CurrentIndex, p = "p")
+    i == 0 && error("an instruction reads a null current operand")
+    return "$p[$(b.currents[i])]"
+end
 form(b::ArenaIndex, i::FormIndex, p = "p") = "$p[$(b.forms[i])]"
-amplitude(b::ArenaIndex, i::FormIndex, p = "p") = "$p[$(b.amplitudes[i])]"
+amplitude(b::ArenaIndex, i::AmplitudeIndex, p = "p") = "$p[$(b.amplitudes[i])]"
 scale(i::ScaleIndex) = "scales[$(2*(i-1))]"
 factor(i::FactorIndex) = "factors[$(2*(i-1))]"
+
+# a double as a C literal: Julia prints the shortest string that reads back as the same double,
+# which C reads back exactly too; NaN and Inf have no C literal
+function lit(x::Real)::String
+    y = Float64(x)
+    isfinite(y) || error("$y has no C literal")
+    return repr(y)
+end
 
 const FAMILY_SCALAR = 0
 const FAMILY_WEYL = 1
@@ -74,41 +86,43 @@ const PROPAGATOR_VECTOR = 2
 
 function compile(path, prog)
     writer = CodeWriterCpu(path)
+    try
+        a = Arena(prog)
+        b = ArenaIndex(prog, a)
 
-    a = Arena(prog)
-    b = ArenaIndex(prog, a)
+        emit(writer, "#include <stdlib.h>")
+        emit(writer, "#include \"pacops.h\"")
+        newline(writer)
 
-    emit(writer, "#include <stdlib.h>")
-    emit(writer, "#include \"pacops.h\"")
-    newline(writer)
+        compile_scales(writer, prog)
+        compile_factors(writer, prog)
 
-    compile_scales(writer, prog)
-    compile_factors(writer, prog)
+        compile_kernels(writer, prog)
 
-    compile_kernels(writer, prog)
+        compile_forms(writer, prog, b)
+        compile_currents(writer, prog, b)
+        compile_tables(writer, prog)
+        compile_body(writer, prog, b)
+        compile_reduction(writer, prog, b)
 
-    compile_forms(writer, prog, b)
-    compile_currents(writer, prog, b)
-    compile_body(writer, prog, b)
-    compile_reduction(writer, prog, b)
-
-    emit(writer, "int run(double *out, double *p, const double *momenta) {")
-    emit(writer, "for(int i=0; i<$(b.size); i++) p[i] = 0.0;")
-    emit(writer, "forms(p, momenta);")
-    emit(writer, "currents(p);")
-    emit(writer, "body(p);")
-    emit(writer, "reducer(out, p);")
-    emit(writer, "return 0;")
-    emit(writer, "};")
-
-    close(writer)
+        emit(writer, "int run(double *out, double *p, const double *momenta) {")
+        emit(writer, "for(int i=0; i<$(b.size); i++) p[i] = 0.0;")
+        emit(writer, "forms(p, momenta);")
+        emit(writer, "currents(p);")
+        emit(writer, "body(p);")
+        emit(writer, "reducer(out, p);")
+        emit(writer, "return 0;")
+        emit(writer, "}")
+    finally
+        close(writer)
+    end
 end
 
 function compile_scales(writer, prog::Program)
      emit(writer, "const double scales[] = {")
 
      for c in prog.scales
-         emit(writer, "$(real(c)), $(imag(c)),")
+         emit(writer, "$(lit(real(c))), $(lit(imag(c))),")
      end
 
      emit(writer, "};")
@@ -119,17 +133,36 @@ function compile_factors(writer, prog::Program)
      emit(writer, "const double factors[] = {")
 
      for c in prog.factors
-         emit(writer, "$(real(c)), $(imag(c)),")
+         emit(writer, "$(lit(real(c))), $(lit(imag(c))),")
      end
 
      emit(writer, "};")
      newline(writer)
 end
 
+# the constant arrays of the instructions, at file scope (C++ and CUDA have no compound literals):
+# closure k's component factors `cf<k>`, kernel row k's output components `outputs<k>`
+function compile_tables(writer, prog::Program)
+    for (k, op) in enumerate(prog.body)
+        if op isa Closure && !isempty(op.component_factors)
+            values = join(["$(lit(real(prog.factors[x]))), $(lit(imag(prog.factors[x])))" for x in op.component_factors], ", ")
+            emit(writer, "static const double cf$k[] = {$values};")
+        elseif op isa Kernel
+            emit(writer, "static const int outputs$k[] = {$(join(prog.bindings[op.binding].outputs .- 1, ", "))};")
+        end
+    end
+    newline(writer)
+end
+
 function compile_kernels(writer, prog::Program)
     done = Set{String}()
     for binding in prog.bindings
         ker = binding.kernel
+        # the adapter takes the kernel's inputs and reads its output pairs: the binding must list
+        # as many (the outputs array would otherwise be read past its end)
+        length(binding.inputs) == ker.inputs && length(binding.outputs) == ker.outputs ÷ 2 ||
+            error("a binding of kernel $(ker.name) lists $(length(binding.inputs)) inputs, $(length(binding.outputs)) outputs; " *
+                  "the kernel has $(ker.inputs), $(ker.outputs ÷ 2)")
         ker.name in done && continue
         push!(done, ker.name)
         name = ker.name
@@ -171,20 +204,24 @@ end
 function compile_forms(writer, prog::Program, b::ArenaIndex)
     emit(writer, "void forms(double *p, const double *momenta) {")
 
+    # the program's leg l: the caller's leg `leg` (1-based) times `sign`, or the caller's leg l
+    # (as pacrun.jl's fill_forms!: q = 0.0 + Σ coef × (sign × p[leg]), in term order)
+    external(l, j) = prog.crossing === nothing ? "momenta[$(4*(l-1)+j)]" :
+        "($(lit(prog.crossing[l][2])) * momenta[$(4*(prog.crossing[l][1]-1)+j)])"
+
     for (i, f) in enumerate(prog.forms)
         q = b.forms[i]
         for j in 0:3
             s = "p[$(q+j)] = 0.0"
-            prog.crossing === nothing || error("crossing not supported")
-            for (k, (leg, coef)) in enumerate(f.terms)
-                s *= " + $(coef) * momenta[$(4*(leg-1)+j)]"
+            for (leg, coef) in f.terms
+                s *= " + $(lit(coef)) * $(external(leg, j))"
             end
             s *= ";"
             emit(writer, s)
         end
     end
 
-    emit(writer, "};")
+    emit(writer, "}")
     newline(writer)
 end
 
@@ -196,9 +233,7 @@ function compile_currents(writer, prog::Program, b::ArenaIndex)
         n = b.currents[i+1] - b.currents[i]
         s = c.source
         if s === nothing
-            for i in 0:2*n-1
-                # emit(writer, "p[$(idx+i)] = 0.0;")
-            end
+            # zero or written: run() zeroes the arena
         else
             ori = s.orientation == "antiparticle" ? ANTIPARTICLE : PARTICLE
 
@@ -214,11 +249,11 @@ function compile_currents(writer, prog::Program, b::ArenaIndex)
                 error("unknown source family $(s.family)")
             end
 
-            emit(writer, "source(p+$idx, $f, $ori, p+$(b.forms[s.form]), $(s.helicity), $(s.chirality), $(real(prog.scales[s.mass])), &$(factor(s.factor)));")
+            emit(writer, "source(p+$idx, $f, $ori, p+$(b.forms[s.form]), $(s.helicity), $(s.chirality), $(lit(real(prog.scales[s.mass]))), &$(factor(s.factor)));")
         end
     end
 
-    emit(writer, "};")
+    emit(writer, "}")
     newline(writer)
 end
 
@@ -226,11 +261,11 @@ end
 function compile_body(writer, prog::Program, b::ArenaIndex)
     emit(writer, "void body(double *p) {")
 
-    for op in prog.body
-        compile_op(writer, op, prog, b)
+    for (k, op) in enumerate(prog.body)
+        compile_op(writer, op, prog, b, k)
     end
 
-    emit(writer, "};")
+    emit(writer, "}")
     newline(writer)
 end
 
@@ -276,7 +311,7 @@ function mode(op)
     end
 end
 
-function compile_op(writer, op::Vertex, prog::Program, b::ArenaIndex)
+function compile_op(writer, op::Vertex, prog::Program, b::ArenaIndex, k::Int)
     emit(writer, "// $op")
 
     # vertex!(a.currents[op.out], op.type, op.mode, current(a, op.l), current(a, op.r), form(a, op.u), form(a, op.v),
@@ -285,7 +320,7 @@ function compile_op(writer, op::Vertex, prog::Program, b::ArenaIndex)
     emit(writer, s)
 end
 
-function compile_op(writer, op::Propagator, prog::Program, b::ArenaIndex)
+function compile_op(writer, op::Propagator, prog::Program, b::ArenaIndex, k::Int)
     emit(writer, "// $op")
     # c = a.currents[op.current]
     # v = propagator(op.type, c, form(a, op.momentum), p.factors[op.factor])
@@ -294,28 +329,24 @@ function compile_op(writer, op::Propagator, prog::Program, b::ArenaIndex)
     emit(writer, s)
 end
 
-function compile_op(writer, op::Scale, prog::Program, b::ArenaIndex)
+function compile_op(writer, op::Scale, prog::Program, b::ArenaIndex, k::Int)
     # scale!(a.currents[op.current], op.components, p.factors[op.factor])
     components = op.components
     s = "scale(&$(current(b,op.current)), $components, &$(factor(op.factor)));"
     emit(writer, s)
 end
 
-function compile_op(writer, op::Clear, prog::Program, b::ArenaIndex)
+function compile_op(writer, op::Clear, prog::Program, b::ArenaIndex, k::Int)
     # clear!(a.currents[op.current], op.components)
     components = op.components
     s = "clear(&$(current(b,op.current)), $components);"
     emit(writer, s)
 end
 
-function compile_op(writer, op::Closure, prog::Program, b::ArenaIndex)
+function compile_op(writer, op::Closure, prog::Program, b::ArenaIndex, k::Int)
     emit(writer, "// $op")
 
-    cf = "(double[]){"
-    for k in op.component_factors
-        cf *= "$(real(prog.factors[k])), $(imag(prog.factors[k])), "
-    end
-    cf = cf[1:end-2] * "}"
+    cf = isempty(op.component_factors) ? "NULL" : "cf$k"
 
     # cf = [p.factors[k] for k in op.component_factors]
     # a.amplitudes[op.amplitude] = closure(a.amplitudes[op.amplitude], current(a, op.l), current(a, op.r), cf, p.factors[op.factor])
@@ -348,7 +379,7 @@ function kernel_arg(i::KernelInput, op::Kernel, b::ArenaIndex)::String
     end
 end
 
-function compile_op(writer, op::Kernel, prog::Program, b::ArenaIndex)
+function compile_op(writer, op::Kernel, prog::Program, b::ArenaIndex, k::Int)
     emit(writer,"// $op")
 
     binding = prog.bindings[op.binding]
@@ -361,20 +392,30 @@ function compile_op(writer, op::Kernel, prog::Program, b::ArenaIndex)
 
     direct = binding.direct ? 1 : 0
 
-    s *= "(const int[]){$(join(binding.outputs .- 1, ", "))}, $direct, $(mode(op)), &$(factor(op.factor)));"
+    s *= "outputs$k, $direct, $(mode(op)), &$(factor(op.factor)));"
     emit(writer, s)
 end
 
+# out[h - 1] = group factor × Σ weight × |amplitude|² over output h's terms (none: 0); the terms
+# (0-based amplitudes) and weights as constant arrays `terms<h>`, `weights<h>`
 function compile_reduction(writer, prog::Program, b::ArenaIndex)
+    for (h, terms) in enumerate(prog.reduction)
+        isempty(terms) && continue
+        emit(writer, "static const int terms$h[] = {$(join([x[1]-1 for x in terms], ", "))};")
+        emit(writer, "static const double weights$h[] = {$(join([lit(x[2]) for x in terms], ", "))};")
+    end
+    newline(writer)
     emit(writer, "void reducer(double *out, double *p) {")
 
     (num, den) = prog.group_factor
     for (h, terms) in enumerate(prog.reduction)
-        t = isempty(terms) ? "(const int[]){0}" : "(const int[]){$(join([x[1]-1 for x in terms], ", "))}"
-        w = isempty(terms) ? "(const double[]){0}" : "(const double[]){$(join([x[2] for x in terms], ", "))}"
-        emit(writer, "out[$(h-1)] = reduction(&$(amplitude(b, 1)), $t, $w, $(length(terms)), $num, $den);")
+        if isempty(terms)
+            emit(writer, "out[$(h-1)] = 0.0;")
+        else
+            emit(writer, "out[$(h-1)] = reduction(&$(amplitude(b, 1)), terms$h, weights$h, $(length(terms)), $num, $den);")
+        end
     end
 
-    emit(writer, "};")
+    emit(writer, "}")
     newline(writer)
 end
