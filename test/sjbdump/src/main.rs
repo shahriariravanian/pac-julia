@@ -1,6 +1,6 @@
 // The header and the MIR of a .sjb as symjit reads it, in the text of sjb.jl's test.
 use std::fs::File;
-use symjit::backend::{Loc, MirInstruction};
+use symjit::backend::{Complexifier, Loc, Mir, MirInstruction};
 use symjit::{Application, CompilerType, Config, MirWriter};
 
 fn code(l: &Loc) -> u64 {
@@ -8,6 +8,15 @@ fn code(l: &Loc) -> u64 {
         Loc::Mem(i) => 0x100000000 | *i as u64,
         Loc::Stack(i) => 0x200000000 | *i as u64,
         Loc::Param(i) => 0x300000000 | *i as u64,
+    }
+}
+
+fn print_code(mir: &Mir) {
+    for (i, ins) in mir.code.iter().enumerate() {
+        match &ins {
+            MirInstruction::Call { label, num_args } => println!("{:05}\tcall {} / {}", i, label, num_args),
+            _ => println!("{:05}\t{:?}", i, ins),
+        }
     }
 }
 
@@ -24,6 +33,29 @@ fn main() -> anyhow::Result<()> {
                 _ => println!("{:05}\t{:?}", i, ins),
             }
         }
+        return Ok(());
+    }
+    if path == "--lowered" {
+        // the MIR as symjit lowers it (symjit-utils' SavedModel::read_with): `--lowered [--stable
+        // true|false] FILE`
+        path = args.next().unwrap();
+        let mut stable = None;
+        if path == "--stable" {
+            stable = Some(args.next().unwrap());
+            path = args.next().unwrap();
+        }
+        let config = Config::new(CompilerType::ByteCode, 0)?;
+        let (mut prog, reals, saved) = Application::read_sjb(&mut File::open(&path)?, &config)?;
+        if let Some(v) = stable {
+            prog.builder.config.set_option("stable_math", &v).map_err(|e| anyhow::anyhow!("{}", e))?;
+        }
+        let mir = if prog.config().is_complex() {
+            Complexifier::new(&reals, prog.config().clone()).complexify(&saved)?
+        } else {
+            saved
+        };
+        print_code(&mir);
+        for x in &mir.consts { println!("mir const {:016x}", x.to_bits()); }
         return Ok(());
     }
     let config = Config::new(CompilerType::ByteCode, 0)?;

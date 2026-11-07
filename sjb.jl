@@ -327,7 +327,10 @@ function decode(code::Vector{UInt8})::Vector{Instruction}
     return out
 end
 
-function read_sjb(io::IO)::SavedApplication
+# The application of a .sjb. With `lowered`, a complex model's MIR is lowered to real MIR (a real
+# model's is as saved); `stable_math` (true or false) replaces the saved configuration's option
+# before it is lowered, as symjit-utils' `--set stable_math=...`.
+function read_sjb(io::IO; lowered::Bool = false, stable_math::Union{Bool,Nothing} = nothing)::SavedApplication
     magic(io, APPLICATION_MAGIC, "Application")
     version = int(io)
     version in (3, 4) || throw(SjbError("unsupported sjb version $version"))
@@ -356,10 +359,20 @@ function read_sjb(io::IO)::SavedApplication
     end
     Base.eof(io) || throw(SjbError("bytes after the application"))
 
+    if stable_math !== nothing
+        bit = CONFIG_OPTIONS.stable_math
+        config = Config(stable_math ? config.opt | bit : config.opt & ~bit, config.ty, config.stack_limit, config.num_args)
+    end
+    if lowered && is_complex(config)
+        mir = complexify(mir, reals; stable_math = config.opt & CONFIG_OPTIONS.stable_math != 0)
+        # stable_math appends constants, which symjit copies to the program's
+        length(mir.consts) > length(consts) && (consts = copy(mir.consts))
+    end
+
     return SavedApplication(version, config, states, params, obs, diffs, loops, stack, consts, functions, mask, mir, reals)
 end
 
-read_sjb(path::AbstractString) = open(read_sjb, path)
+read_sjb(path::AbstractString; kw...) = open(io -> read_sjb(io; kw...), path)
 
 # ---- printing, as symjit's Debug ------------------------------------------------------------------
 
@@ -427,3 +440,5 @@ function Base.show(io::IO, ::MIME"text/plain", a::SavedApplication)
     println(io, "  $(length(a.mir.code)) instructions, $(length(a.mir.consts)) constants, functions: ",
             isempty(a.functions) ? "none" : join(a.functions, ", "))
 end
+
+include(joinpath(@__DIR__, "complexify.jl"))
