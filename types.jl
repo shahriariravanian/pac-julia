@@ -13,3 +13,12 @@ const ComponentIndex = Int  # a component of a current or a momentum (main.json'
 
 const Helicity = Int        # −1, +1 (and 0: the longitudinal state of a massive vector, a scalar)
 const Chirality = Int       # −1 (left), +1 (right) for a Weyl source; 0 otherwise
+
+# the kind of a current: its wavefunction family, or what the instructions that write and read it
+# make of it (Program.currents[i].kind, from the checks of check.jl)
+@isdefined(CurrentKind) || @enum CurrentKind SCALAR WEYL DIRAC VECTOR TENSOR  # once, though included by several files
+
+# the components of each kind
+components(k::CurrentKind)::Int = k == SCALAR ? 1 : k == WEYL ? 2 : k == TENSOR ? 6 : 4
+
+kind_name(k::CurrentKind)::String = ("scalar", "Weyl spinor", "Dirac spinor", "vector", "antisymmetric tensor")[Int(k)+1]

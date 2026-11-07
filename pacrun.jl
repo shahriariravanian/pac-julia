@@ -53,20 +53,28 @@ end
 
 struct Current
     components::Int
+    kind::CurrentKind                     # checked at load (check.jl)
     source::Union{Nothing,CurrentSource}  # nothing: the current starts at zero
 end
 
-function load_currents(prog)
-    currents = Current[]
+# a current before its kind is known (load_currents → check_program → Current)
+struct CurrentSpec
+    components::Int
+    source::Union{Nothing,CurrentSource}
+    initially::Bool  # has a value before the body: a source or "zero" (not "written")
+end
+
+function load_currents(prog)::Vector{CurrentSpec}
+    currents = CurrentSpec[]
     for (i, c) in enumerate(prog.currents)
         ci(c.name) == i || error("currents[$i] is $(c.name)")
         init = c.initial
         if init == "source"
             s = c.source
             src = CurrentSource(s.family, s.orientation, qi(s.momentum), s.helicity, s.chirality, si(s.mass), xi(s.factor))
-            push!(currents, Current(c.components, src))
-        elseif init == "zero" || init == "written"  # written: the body's first write is "="
-            push!(currents, Current(c.components, nothing))
+            push!(currents, CurrentSpec(c.components, src, true))
+        elseif init == "zero" || init == "written"  # written: the body's first write is "=" (checked)
+            push!(currents, CurrentSpec(c.components, nothing, init == "zero"))
         else
             error("current $(c.name): initial \"$init\" is not supported")
         end
@@ -206,6 +214,8 @@ end
 
 load_body(prog)::Vector{Operation} = [load_operation(o) for o in prog.body]
 
+include("check.jl")
+
 ###################################### Program ########################################
 
 struct Program
@@ -246,25 +256,37 @@ function load_program(prog, kernels)::Program
     reduction = Vector{Tuple{AmplitudeIndex,Float64}}[]
     for (h, r) in enumerate(prog.reduction)
         r.output == h - 1 || error("reduction[$h] is output $(r.output)")
-        push!(reduction, [(ai(t[1]), Float64(t[2])) for t in r.terms])
+        terms = [(ai(t[1]), Float64(t[2])) for t in r.terms]
+        all(in_range(k, length(prog.amplitudes)) for (k, _) in terms) || throw(ProgramError("reduction[$h]: an amplitude out of range"))
+        push!(reduction, terms)
     end
+    legs = inputs.legs
+    forms = load_forms(prog)
+    all(in_range(l, legs) for f in forms for (l, _) in f.terms) || throw(ProgramError("a momentum form of a leg out of range"))
+    crossing === nothing || all(in_range(l, legs) for (l, _) in crossing) || throw(ProgramError("a crossing of a leg out of range"))
+    specs = load_currents(prog)
+    bindings = load_bindings(prog, kernels)
+    body = load_body(prog)
+    kinds = check_program(specs, body, bindings; forms = length(forms), scales = length(inputs.scales),
+                          factors = length(inputs.factors), amplitudes = length(prog.amplitudes))
+    currents = [Current(s.components, k, s.source) for (s, k) in zip(specs, kinds)]
     out = prog.output
     alpha_s = inputs.alpha_s === nothing ? nothing : (Float64(inputs.alpha_s.value), Int(inputs.alpha_s.power))
     return Program(
         prog.process,
         prog.colour,
         prog.expression,
-        inputs.legs,
+        legs,
         crossing,
-        load_forms(prog),
+        forms,
         [cplx(s.value) for s in inputs.scales],
         [cplx(f.value) for f in inputs.factors],
         alpha_s,
         [h.legs === nothing ? Helicity[] : Helicity.(h.legs) for h in out.helicities],
-        load_currents(prog),
+        currents,
         length(prog.amplitudes),
-        load_bindings(prog, kernels),
-        load_body(prog),
+        bindings,
+        body,
         reduction,
         (Int(out.group_factor[1]), Int(out.group_factor[2])),
     )
