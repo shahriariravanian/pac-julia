@@ -16,6 +16,7 @@
 #define PACOPS_H
 
 #include <stddef.h>
+#include <math.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +29,48 @@ enum { PARTICLE = 0, ANTIPARTICLE = 1 };                   /* orientation */
 enum { VERTEX_WEYL_VECTOR_A, VERTEX_WEYL_VECTOR_B, VERTEX_TENSOR_VECTOR, VERTEX_VECTOR_WEDGE,
        VERTEX_THREE_VECTOR };
 enum { PROPAGATOR_WEYL_A, PROPAGATOR_WEYL_B, PROPAGATOR_VECTOR };
+
+/* ---- complex arithmetic, as Julia's Complex{Float64} (no fma) ---- */
+
+typedef struct { double re, im; } cplx;
+
+static inline cplx cx(double re, double im) { cplx z = {re, im}; return z; }
+static inline cplx get(const double *p, int j) { return cx(p[2 * j], p[2 * j + 1]); }
+static inline void put(double *p, int j, cplx z) { p[2 * j] = z.re; p[2 * j + 1] = z.im; }
+
+static inline cplx add(cplx a, cplx b) { return cx(a.re + b.re, a.im + b.im); }
+static inline cplx sub(cplx a, cplx b) { return cx(a.re - b.re, a.im - b.im); }
+static inline cplx neg(cplx a) { return cx(-a.re, -a.im); }
+static inline cplx mul(cplx a, cplx b) { return cx(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re); }
+static inline cplx mulr(cplx a, double x) { return cx(a.re * x, a.im * x); }  /* complex × real */
+static inline cplx divr(cplx a, double x) { return cx(a.re / x, a.im / x); }  /* complex / real */
+static inline cplx mul_i(cplx a) { return cx(-a.im, a.re); }                  /* i × a */
+
+static const cplx ZERO = {0.0, 0.0};
+
+/* Julia's max and min: NaN propagates, and max(-0.0, 0.0) = 0.0, min(-0.0, 0.0) = -0.0 */
+static inline double jmax(double x, double y)
+{
+    if (isnan(x) || isnan(y)) return x + y;
+    if (x != y) return x > y ? x : y;
+    return signbit(x) ? y : x;
+}
+
+static inline double jmin(double x, double y)
+{
+    if (isnan(x) || isnan(y)) return x + y;
+    if (x != y) return x < y ? x : y;
+    return signbit(x) ? x : y;
+}
+
+/* the new value of a component: value ("=") or old + value ("+=") */
+static inline cplx combine(cplx old, cplx value, int mode) { return mode == MODE_ADD ? add(old, value) : value; }
+
+static inline void put2(double *out, cplx a, cplx b) { put(out, 0, a); put(out, 1, b); }
+static inline void put4(double *out, cplx a, cplx b, cplx c, cplx d)
+{
+    put(out, 0, a); put(out, 1, b); put(out, 2, c); put(out, 3, d);
+}
 
 /* ---- wavefunctions (k: a momentum, h: helicity, ch: chirality) ---- */
 void scalar(double *out);                                                     /* 1 component */
@@ -86,6 +129,8 @@ void kernel_store(double *out, const double *values, const int *outputs, int pai
 /* group_factor × Σ_n weights[n] × |amplitudes[terms[n]]|² (terms 0-based) */
 double reduction(const double *amplitudes, const int *terms, const double *weights, int n,
                  long numerator, long denominator);
+
+double reduction_single(const double *amplitudes, int term, double weight, long numerator, long denominator);
 
 #ifdef __cplusplus
 }

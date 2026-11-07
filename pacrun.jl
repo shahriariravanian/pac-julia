@@ -1,18 +1,3 @@
-# A runner for pac2json folders: `load_artifact` reads one program of main.json into a Program
-# (the template: every name resolved to an index), `evaluate` runs it on one phase-space point
-# with an Arena (the values). The instructions are operations.jl's, the sources wavefunctions.jl's.
-#
-#   p = load_artifact("folder/main.json", 1)        # or load_programs("folder/main.json")
-#   a = Arena(p)
-#   outputs = evaluate(p, a, momenta)               # momenta[leg] = (E, px, py, pz), the caller's
-using JSON
-using Libdl
-
-include("types.jl")
-include("wavefunctions.jl")
-include("operations.jl")
-include("arena.jl")
-
 # "c12" → 13 (1-based), nothing → 0 (a null operand)
 index(name::Nothing, prefix::String) = 0
 function index(name::AbstractString, prefix::String)::Int
@@ -31,30 +16,9 @@ cplx(v) = complex(Float64(v[1]), Float64(v[2]))
 
 #################################### Form ########################################
 
-# q = Σ coef × p[leg] over the terms, the first term added to 0.0, in term order
-struct Form
-    terms::Vector{Tuple{LegIndex,Float64}}  # (leg, coefficient)
-end
-
 load_forms(prog) = [Form([(LegIndex(t[1]) + 1, Float64(t[2])) for t in f.terms]) for f in prog.inputs.forms]
 
 ################################### Current #########################################
-
-# a source current: factor × the wavefunction of (family, orientation) at form `form`
-struct CurrentSource
-    family::String
-    orientation::String
-    form::FormIndex
-    helicity::Helicity
-    chirality::Chirality
-    mass::ScaleIndex  # its real part is the mass
-    factor::FactorIndex
-end
-
-struct Current
-    components::Int
-    source::Union{Nothing,CurrentSource}  # nothing: the current starts at zero
-end
 
 function load_currents(prog)
     currents = Current[]
@@ -76,16 +40,6 @@ end
 
 ###################################### Kernel #########################################
 
-# a binding input: a part of an operand's component (IN_L, IN_R, OUT), a momentum component
-# (MOMENTUM_U, MOMENTUM_V), the real part of a scale, a part of the row's factor
-@enum InputKind IN_L IN_R OUT MOMENTUM_U MOMENTUM_V SCALE FACTOR
-
-struct KernelInput
-    kind::InputKind
-    n::Int      # a ComponentIndex, or the ScaleIndex of SCALE (0 for FACTOR)
-    im::Bool    # the imaginary part
-end
-
 function load_input(code::AbstractString)::KernelInput
     if (m = match(r"^(re|im) in\[([01])\]\[(\d+)\]$", code)) !== nothing
         return KernelInput(m[2] == "0" ? IN_L : IN_R, parse(ComponentIndex, m[3]) + 1, m[1] == "im")
@@ -100,13 +54,6 @@ function load_input(code::AbstractString)::KernelInput
     else
         error("unknown binding input $code")
     end
-end
-
-struct Binding
-    kernel::KernelLibrary
-    direct::Bool
-    inputs::Vector{KernelInput}
-    outputs::Vector{ComponentIndex}  # the components of out, one per output pair
 end
 
 # the kernels of main.json, by name; each needs its shared library (pac2json --sjb2obj)
@@ -132,56 +79,7 @@ end
 
 ##################################### Operations ######################################
 
-abstract type Operation end
 
-struct Vertex <: Operation
-    type::String
-    out::CurrentIndex
-    mode::String
-    l::CurrentIndex
-    r::CurrentIndex
-    u::FormIndex  # momenta[0]
-    v::FormIndex  # momenta[1]
-    coupling::ScaleIndex
-    factor::FactorIndex
-end
-
-struct Propagator <: Operation
-    type::String
-    current::CurrentIndex
-    momentum::FormIndex
-    factor::FactorIndex
-end
-
-struct Scale <: Operation
-    current::CurrentIndex
-    components::Int
-    factor::FactorIndex
-end
-
-struct Clear <: Operation
-    current::CurrentIndex
-    components::Int
-end
-
-struct Closure <: Operation
-    amplitude::AmplitudeIndex
-    l::CurrentIndex
-    r::CurrentIndex
-    component_factors::Vector{FactorIndex}
-    factor::FactorIndex
-end
-
-struct Kernel <: Operation
-    binding::BindingIndex
-    out::CurrentIndex
-    mode::String
-    l::CurrentIndex
-    r::CurrentIndex
-    u::FormIndex  # momenta[0]
-    v::FormIndex  # momenta[1]
-    factor::FactorIndex
-end
 
 function load_operation(o)::Operation
     op = o.op
@@ -207,25 +105,6 @@ end
 load_body(prog)::Vector{Operation} = [load_operation(o) for o in prog.body]
 
 ###################################### Program ########################################
-
-struct Program
-    process::String
-    colour::String
-    expression::String
-    legs::Int
-    crossing::Union{Nothing,Vector{Tuple{LegIndex,Float64}}}  # p<l> = sign × the caller's leg
-    forms::Vector{Form}
-    scales::Vector{Complex{Float64}}
-    factors::Vector{Complex{Float64}}
-    alpha_s::Union{Nothing,Tuple{Float64,Int}}  # (value, power): the scales are at this value
-    helicities::Vector{Vector{Helicity}}        # output h: the helicity of each leg
-    currents::Vector{Current}
-    amplitudes::Int                             # the number of amplitudes
-    bindings::Vector{Binding}
-    body::Vector{Operation}
-    reduction::Vector{Vector{Tuple{AmplitudeIndex,Float64}}}  # output h: (amplitude, weight) terms
-    group_factor::Tuple{Int,Int}
-end
 
 count_legs(p::Program) = p.legs
 

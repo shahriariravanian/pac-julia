@@ -198,21 +198,8 @@ end
 
 # ---- kernel ---------------------------------------------------------------------------------------
 
-struct SymjitSlice  # symjit_slice = {double *ptr; size_t len}
-    ptr::Ptr{Float64}
-    len::Csize_t
-end
-
-# a kernel's shared library (main.json kernels[i].library): its function and its counts
-struct KernelLibrary
-    handle::Ptr{Cvoid}
-    fn::Ptr{Cvoid}
-    inputs::Int    # library.states
-    outputs::Int   # library.outputs: 2 × the output pairs
-end
-
 load_kernel(path::String, symbol::String, inputs::Int, outputs::Int) =
-    (h = Libdl.dlopen(path); KernelLibrary(h, Libdl.dlsym(h, symbol), inputs, outputs))
+    (h = Libdl.dlopen(path); KernelLibrary(symbol, path, h, Libdl.dlsym(h, symbol), inputs, outputs))
 
 # The kernel on one point's inputs: its outputs (re, im of each output pair, in order)
 function kernel_call(lib::KernelLibrary, inputs::Vector{Float64})::Vector{Float64}
