@@ -2,7 +2,7 @@
 # the UIR interpreter (c/uirvm.c, which runner.c includes) instead of straight-line code. The
 # program is data there: encode(l)'s words (the sources, then the rows) and edge table, and the tables they index, as C
 # arrays of one uir_program (c/uirvm.h); the kernels are reached through uir_kernel, a switch over
-# the kernels' numbers. runner.h, testing.c and the Makefile are compile.jl's, so run() has the
+# the kernels' numbers (the kernels' C as compile.jl's). runner.h, testing.c and the Makefile are compile.jl's, so run() has the
 # same prototype and the values must be the straight-line C's bit for bit.
 #
 # The CPU build is the interpreter's test; the same uirvm.c is the GPU's interpreter.
@@ -30,27 +30,12 @@ firsts(lengths) = cumsum([0; collect(lengths)])
 # a kernel input as uirvm's code: kind, imaginary part, n (0-based component or scale-set slot)
 input_code(i::KernelInput) = UInt32(Int(i.kind)) | UInt32(i.im) << 3 | UInt32(i.kind == FACTOR ? 0 : i.n - 1) << 4
 
-# the kernels in order of first use by a stub, each checked against its stubs and built
-function vm_kernels(prog::Lowered)::Vector{KernelLibrary}
-    kernels = KernelLibrary[]
-    for stub in prog.stubs
-        ker = stub.kernel
-        length(stub.inputs) == ker.inputs && length(stub.outputs) == ker.outputs ÷ 2 ||
-            error("a binding of kernel $(ker.name) lists $(length(stub.inputs)) inputs, $(length(stub.outputs)) outputs; " *
-                  "the kernel has $(ker.inputs), $(ker.outputs ÷ 2)")
-        any(k -> k.name == ker.name, kernels) && continue
-        built(ker) || not_built(ker)
-        push!(kernels, ker)
-    end
-    return kernels
-end
-
 function compile_interpreter(path, prog::Lowered; examples = nothing)
     validate(prog)
     b = ArenaIndex(prog)
     examples === nothing || check_examples(prog, examples)
     e = encode(prog)
-    kernels = vm_kernels(prog)
+    kernels = used_kernels(prog)
     number = Dict(k.name => n - 1 for (n, k) in enumerate(kernels))
     writer = CodeWriterCpu(path)
     try
@@ -103,18 +88,15 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         emit(writer, "};")
         newline(writer)
 
-        # the kernels: each called as compile.jl's adapters call it, its inputs then its outputs in mem
-        for k in kernels
-            emit(writer, "int $(k.name)(double *mem, const void *states, size_t idx, const double *params);")
-            copy_home(writer, k.path)
-        end
+        # the kernels (kernel_c.jl): each called as compile.jl's adapters call it, its inputs then its outputs in mem
+        emit_kernels(writer, kernels)
         emit(writer, "int uir_kernel(uint32_t kernel, const double *in, double *out) {")
         emit(writer, "switch (kernel) {")
         for k in kernels
             emit(writer, "case $(number[k.name]): {")
             emit(writer, "double mem[$(k.inputs + k.outputs + 1)];")
             emit(writer, "for (int j = 0; j < $(k.inputs); j++) mem[j] = in[j];")
-            emit(writer, "int status = $(k.name)(mem, NULL, 0, NULL);")
+            emit(writer, "int status = $(k.name)(mem);")
             emit(writer, "for (int j = 0; j < $(k.outputs); j++) out[j] = mem[$(k.inputs) + j];")
             emit(writer, "return status;")
             emit(writer, "}")

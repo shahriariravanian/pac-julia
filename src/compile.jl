@@ -92,13 +92,13 @@ const C_FAMILY = Dict(SCALAR => "FAMILY_SCALAR", WEYL => "FAMILY_WEYL", DIRAC =>
 c_mode(op::LOp) = op.set ? "MODE_SET" : "MODE_ADD"
 
 # The folder `path` for program `prog`: runner.c (`int run(double *out, double *p, const double
-# *momenta)`), runner.h (its sizes and prototype), pacops.c and pacops.h, the kernels' libraries, and
-# a Makefile (`make`: runner.o and pacops.o). With `examples`, the program's entry of examples.json
+# *momenta)`), runner.h (its sizes and prototype), pacops.c and pacops.h, and a Makefile (`make`: runner.o and pacops.o). With `examples`, the program's entry of examples.json
 # (load_examples), also testing.c, which runs those points and compares with RustiCol's outputs
 # (`make test`). A Program is lowered first, and with `optimize` (the default)
 # sorted, fused and laid out by liveness (passes.jl); a Lowered is compiled as it is. With
 # `interpreter`, runner.c runs the program on the UIR interpreter (compile_vm.jl, c/uirvm.c) instead
-# of straight-line code, with the same runner.h and values.
+# of straight-line code, with the same runner.h and values. The kernels are C in runner.c, made
+# from their .plane.symjit (kernel_c.jl), bit for bit sjb2obj's libraries: the folder needs neither.
 function compile(path, prog::Program; examples = nothing, optimize::Bool = true, interpreter::Bool = false)
     l = lower(prog)
     return compile(path, optimize ? PacRunner.optimize(l) : l; examples, interpreter)
@@ -147,8 +147,32 @@ end
 # a string as a C string literal
 cstring(s::AbstractString) = "\"" * replace(s, "\\" => "\\\\", "\"" => "\\\"", "\n" => "\\n") * "\""
 
-# the kernels' libraries in the folder (compile_kernels copies them), in order of first use
-libraries(prog::Lowered) = unique([basename(stub.kernel.path) for stub in prog.stubs])
+# the kernels of `prog` in order of first use by a stub, each checked against its stubs: a stub
+# lists as many inputs and output pairs as its kernel has (the outputs array would otherwise be
+# read past its end)
+function used_kernels(prog::Lowered)::Vector{KernelLibrary}
+    kernels = KernelLibrary[]
+    for stub in prog.stubs
+        ker = stub.kernel
+        length(stub.inputs) == ker.inputs && length(stub.outputs) == ker.outputs ÷ 2 ||
+            error("a binding of kernel $(ker.name) lists $(length(stub.inputs)) inputs, $(length(stub.outputs)) outputs; " *
+                  "the kernel has $(ker.inputs), $(ker.outputs ÷ 2)")
+        any(k -> k.name == ker.name, kernels) || push!(kernels, ker)
+    end
+    return kernels
+end
+
+# the C of the kernels (kernel_c.jl), the helpers first: `static int <name>(double *mem)` each
+function emit_kernels(writer, kernels::Vector{KernelLibrary})
+    isempty(kernels) && return
+    lines(text) = foreach(l -> emit(writer, l), split(chomp(text), '\n'))
+    lines(KERNEL_PRELUDE)
+    for ker in kernels
+        isfile(ker.source) || error("kernel $(ker.name): no .plane.symjit at $(ker.source)")
+        lines(kernel_c(ker.name, ker.source))
+        newline(writer)
+    end
+end
 
 # `examples` must be this program's entry, its points of the program's shape
 function check_examples(prog::Lowered, examples)
@@ -256,7 +280,6 @@ function testing_c(prog::Lowered, examples)::String
 end
 
 function makefile(prog::Lowered, testing::Bool; interpreter::Bool = false)::String
-    kernels = join(libraries(prog), " ")
     vm = interpreter ? " uirvm.c uirvm.h" : ""
     return """
     # $(prog.process) $(prog.colour), compiled by PacRunner's compile.
@@ -267,9 +290,6 @@ function makefile(prog::Lowered, testing::Bool; interpreter::Bool = false)::Stri
     CC ?= cc
     CFLAGS ?= -O2
     PACFLAGS = -std=c99 -ffp-contract=off
-    # the symjit kernels' libraries (symjit-utils' sjb2obj), found next to the executable at run time
-    KERNELS = $kernels
-
     all: runner.o pacops.o$(testing ? " testing" : "")
 
     runner.o: runner.c runner.h pacops.h$vm
@@ -279,8 +299,8 @@ function makefile(prog::Lowered, testing::Bool; interpreter::Bool = false)::Stri
     \t\$(CC) \$(CFLAGS) \$(PACFLAGS) -c -o \$@ pacops.c
     $(testing ? """
 
-    testing: testing.c runner.h runner.o pacops.o \$(KERNELS)
-    \t\$(CC) \$(CFLAGS) \$(PACFLAGS) -o \$@ testing.c runner.o pacops.o \$(KERNELS) -Wl,-rpath,'\$\$ORIGIN' -lm
+    testing: testing.c runner.h runner.o pacops.o
+    \t\$(CC) \$(CFLAGS) \$(PACFLAGS) -o \$@ testing.c runner.o pacops.o -lm
 
     test: testing
     \t./testing
@@ -330,23 +350,12 @@ end
 # one adapter per kernel: its inputs as arguments, then its output pairs into `out` (as they are
 # for KERNEL_DIRECT, else × factor with the mode)
 function compile_kernels(writer, prog::Lowered)
-    done = Set{String}()
-    for stub in prog.stubs
-        ker = stub.kernel
-        # the adapter takes the kernel's inputs and reads its output pairs: the stub must list
-        # as many (the outputs array would otherwise be read past its end)
-        length(stub.inputs) == ker.inputs && length(stub.outputs) == ker.outputs ÷ 2 ||
-            error("a binding of kernel $(ker.name) lists $(length(stub.inputs)) inputs, $(length(stub.outputs)) outputs; " *
-                  "the kernel has $(ker.inputs), $(ker.outputs ÷ 2)")
-        ker.name in done && continue
-        push!(done, ker.name)
-        built(ker) || not_built(ker)
+    kernels = used_kernels(prog)
+    emit_kernels(writer, kernels)
+    for ker in kernels
         name = ker.name
         inputs = ker.inputs
         outputs = ker.outputs
-
-        emit(writer, "int $name(double *mem, const void *states, size_t idx, const double *params);")
-        newline(writer)
 
         s = "void adapter_$name(double *out, "
 
@@ -361,7 +370,7 @@ function compile_kernels(writer, prog::Lowered)
             emit(writer, "mem[$i] = x$i;")
         end
 
-        emit(writer, "if ($name(mem, NULL, 0, NULL) != 0) abort();  /* the kernel failed */")
+        emit(writer, "if ($name(mem) != 0) abort();  /* the kernel failed */")
 
         emit(writer, "cplx f = get(factor, 0);")
         emit(writer, "for (int n = 0; n < $(outputs ÷ 2); n++) {")
@@ -371,8 +380,6 @@ function compile_kernels(writer, prog::Lowered)
 
         emit(writer, "}")
         newline(writer)
-
-        copy_home(writer, ker.path)
     end
 end
 

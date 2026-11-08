@@ -57,7 +57,6 @@ points_text(points) = join([join([repr(Float64(x)) for v in pt.momenta for x in 
 
 # the executable of the compiled program in `dir` (compile.jl's runner.c) with `driver`
 function build(dir::String, driver::String, exe::String, flags::Cmd)::String
-    libs = filter(f -> endswith(f, ".so"), readdir(dir; join = true))
-    run(`$CC $flags -std=c99 -o $exe $(joinpath(dir, "runner.c")) $(joinpath(dir, "pacops.c")) $driver $libs -Wl,-rpath,$dir -lm`)
+    run(`$CC $flags -std=c99 -o $exe $(joinpath(dir, "runner.c")) $(joinpath(dir, "pacops.c")) $driver -lm`)
     return exe
 end

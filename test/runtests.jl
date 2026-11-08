@@ -1,14 +1,15 @@
 # Short tests of PacRunner on the cases of test/data (`] test`, or julia --project test/runtests.jl).
 #
 # Without external tools: the loader, the .sjb reader (a synthetic code buffer of every
-# instruction, the kernels' headers), the Complexifier (the generic and the native lowering of each
-# kernel give the same values), the Julia runner against RustiCol's outputs (programs without
+# instruction, the kernels' headers), the Complexifier (each kernel's lowering runs), the Julia runner against RustiCol's outputs (programs without
 # kernel rows), and compile's refusals.
-# With a C compiler (CC, default cc): the compiled C against the Julia runner, the variants, and
-# (with make) the compiled folders' own `make test`, straight-line and on the UIR interpreter
-# (c/uirvm.c, whose decoder is also checked against decode_row).
+# With a C compiler (CC, default cc): the compiled C against the Julia runner, the variants, the
+# kernels as C (kernel_c.jl), and (with make) the compiled folders' own `make test` of every program,
+# kernel rows included, straight-line and on the UIR interpreter (c/uirvm.c, whose decoder is also
+# checked against decode_row).
 # With symjit-utils' sjb2obj (ENV["SJB2OBJ"], or sjb2obj on the PATH): the kernels' libraries are
-# built and every program of every case runs, in Julia and in C.
+# built, the kernels' C is checked against them bit for bit, and every program of every case runs,
+# in Julia and in C.
 # The longer comparisons with symjit and RustiCol themselves (sjbdump, wavefunctions_ref.rs, the
 # reference interpreter) are the test_*.jl scripts.
 using Test
@@ -22,6 +23,7 @@ module ComplexifyScript include(joinpath(@__DIR__, "test_complexify.jl")) end
 module CompileScript include(joinpath(@__DIR__, "test_compile.jl")) end
 module VariantsScript include(joinpath(@__DIR__, "test_compile_variants.jl")) end
 module LowerScript include(joinpath(@__DIR__, "test_lower.jl")) end
+module KernelCScript include(joinpath(@__DIR__, "test_kernel_c.jl")) end
 
 const CASES = CompileScript.cases()
 const CC = CompileScript.CC
@@ -63,22 +65,20 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
     end
 
     @testset "complexify" begin
+        # each kernel lowers to real registers (symjit's ComplexBi kept), and the lowering runs
+        # (mir_run.jl, symjit's interpreter); its values are the kernels' C's below and, against
+        # symjit's own lowering, test_complexify.jl's
         rng = Xoshiro(1)
         for case in CASES, path in kernel_files(case)
             a = read_sjb(path)
-            generic = read_sjb(path; lowered = true).mir
-            native = read_sjb(path; lowered = true, native_complex = true).mir
-            @test !any(i -> i isa ComplexBi, generic.code)
-            # the same values from both lowerings on random memory (mir_run.jl, symjit's interpreter)
-            any(i -> i isa Union{LoadArgs,SaveArgs} || (i isa Call && i.num_args > 0), generic.code) && continue
-            for _ in 1:20
-                mem = [ComplexifyScript.rand_value(rng) for _ in 1:max(64, mem_size(a) + 2)]
-                stack = [ComplexifyScript.rand_value(rng) for _ in 1:max(64, a.stack_size + 2)]
-                (m1, s1, m2, s2) = (copy(mem), copy(stack), copy(mem), copy(stack))
-                ComplexifyScript.run_mir!(generic, m1, s1, Float64[])
-                ComplexifyScript.run_mir!(native, m2, s2, Float64[])
-                @test all(same.(m1, m2)) && all(same.(s1, s2))
-            end
+            l = read_sjb(path; lowered = true).mir
+            regs = [getfield(i, f) for i in l.code for f in fieldnames(typeof(i)) if getfield(i, f) isa PacRunner.Reg]
+            @test all(r -> r.kind != PacRunner.REG_STATIC && r.index < 64, regs)
+            @test any(i -> i isa ComplexBi, l.code)
+            mem = [ComplexifyScript.rand_value(rng) for _ in 1:max(64, mem_size(a) + 2)]
+            stack = [ComplexifyScript.rand_value(rng) for _ in 1:max(64, a.stack_size + 2)]
+            ComplexifyScript.run_mir!(l, mem, stack, Float64[])
+            @test any(!iszero, mem[a.count_states+1:a.count_states+a.count_obs])
         end
     end
 
@@ -338,13 +338,34 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
                 @test julia != base
             end
         end
+        @testset "kernels as C" begin
+            # each kernel's C compiles without warnings
+            for case in CASES, k in read_main(joinpath(case, "main.json")).kernels
+                src = joinpath(mktempdir(), "$(k.name).c")
+                write(src, PacRunner.KERNEL_PRELUDE * kernel_c(k.name, joinpath(case, k.path)))
+                @test success(pipeline(`$CC -std=c99 -O2 -Wall -Wextra -Werror -Wno-unused-function -c -o $src.o $src`; stderr = devnull))
+            end
+            # refused: parameters, a kernel not saved for a direct arena, a math function
+            a = read_sjb(kernel_files(joinpath(@__DIR__, "data", "uux_zgg"))[1]; lowered = true)
+            with(a; kw...) = PacRunner.SavedApplication((get(kw, f, getfield(a, f)) for f in fieldnames(PacRunner.SavedApplication))...)
+            @test_throws PacRunner.KernelCError kernel_c("k", with(a; count_params = 1))
+            c = a.config
+            nodirect = PacRunner.Config(c.opt & ~PacRunner.CONFIG_OPTIONS.direct_arena, c.ty, c.stack_limit, c.num_args)
+            @test_throws PacRunner.KernelCError kernel_c("k", with(a; config = nodirect))
+            sin = PacRunner.MIR(vcat(a.mir.code, [Call("sin", 1)]), a.mir.consts)
+            @test_throws PacRunner.KernelCError kernel_c("k", with(a; mir = sin))
+            # bit for bit sjb2obj's libraries
+            if SJB2OBJ !== nothing
+                @test sum(c -> KernelCScript.test_folder(SJB2OBJ, c; quiet = true), CASES) == 0
+            end
+        end
         if HAVE_MAKE
             @testset "make test in the compiled folders" begin
-                # testing.c of each program without kernel rows against examples.json (RustiCol)
+                # testing.c of each program against examples.json (RustiCol); the kernels are C, so
+                # no sjb2obj is needed
                 for case in CASES
                     ps = load_programs(joinpath(case, "main.json"))
                     for (n, p) in enumerate(ps)
-                        has_kernel_rows(p) && continue
                         for interpreter in (false, true)
                             dir = compile(mktempdir(), p; examples = load_examples(joinpath(case, "examples.json"), n), interpreter)
                             @test success(pipeline(`make -s -C $dir test`; stdout = devnull, stderr = devnull))

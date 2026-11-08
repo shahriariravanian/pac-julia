@@ -38,6 +38,7 @@ include("compile.jl")
 include("compile_vm.jl")
 include("sjb.jl")
 include("complexify.jl")
+include("kernel_c.jl")
 
 # the runner
 export Program, Arena, ArenaIndex, read_main, load_artifact, load_programs, load_examples, evaluate
@@ -46,6 +47,6 @@ export Lowered, LArena, lower, validate, sort_runs, fuse, reuse_planes, optimize
 # the C
 export compile
 # the kernels
-export read_sjb, SavedApplication, MIR, complexify, listing
+export read_sjb, SavedApplication, MIR, complexify, listing, kernel_c
 
 end

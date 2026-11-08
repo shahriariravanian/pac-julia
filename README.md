@@ -10,7 +10,8 @@ p = load_artifact("folder/main.json", 1)       # or load_programs("folder/main.j
 a = Arena(p)
 outputs = evaluate(p, a, momenta)              # momenta[leg] = (E, px, py, pz), the caller's legs
 compile("out", p; examples = load_examples("folder/examples.json", 1))   # the folder out/, below (from lower(p))
-app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR, lowered to real operations
+app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR on real registers (ComplexBi kept)
+kernel_c("k0", "kernel.plane.symjit")          # the kernel as C: static int k0(double *mem)
 l = lower(p)                                   # UIR v0.7: rows on edges, the layout, the tables
 evaluate(l, LArena(l), momenta)                # bit for bit evaluate(p, a, momenta)
 o = optimize(l)                                # sort_runs, fuse, reuse_planes: the same values
@@ -27,7 +28,6 @@ compile("out-vm", p; interpreter = true)       # the same folder, runner.c on th
 | `runner.c` | the program: `int run(double *out, double *p, const double *momenta)` for one point |
 | `runner.h` | its prototype and sizes: `RUNNER_LEGS`, `RUNNER_OUTPUTS`, `RUNNER_ARENA_SIZE` (the scratch `p`) |
 | `pacops.c`, `pacops.h` | the sources and instructions |
-| `<sha256>.so` | the symjit kernels' libraries, when the program calls kernels |
 | `testing.c` | with `examples`: the points of examples.json, each output against RustiCol's within 1e-14 of the total |
 | `Makefile` | `make` (`runner.o`, `pacops.o`, `testing`), `make test`, `make clean`; `CC`, `CFLAGS` may be set |
 
@@ -51,6 +51,7 @@ and its CPU build is its test.
 | `src/evaluators/` | the Julia runners: `arena.jl` (`Arena`, the values of one point of a `Program`), `wavefunctions.jl`, `operations.jl` (the sources and the instructions, RustiCol's arithmetic in the same order), `progeval.jl` (`evaluate(::Program)`), `uireval.jl` (`evaluate(::Lowered)`, the third oracle) |
 | `src/compile.jl` | the C generator, from a `Lowered` (`compile(dir, p::Program)` lowers `p` first); `ArenaIndex`, runner.c's arena |
 | `src/sjb.jl`, `src/complexify.jl` | the reader of saved symjit applications and symjit's Complexifier |
+| `src/kernel_c.jl` | `kernel_c(name, path)`: a kernel's MIR as one C function, the native code's operations (bit for bit sjb2obj's library); the compiled folders' kernels |
 | `src/uir.jl`, `src/lower.jl` | UIR v0.7, the lowered form the back ends read (`Lowered`); `lower(p)` with its checks (`validate`) |
 | `src/passes.jl` | the optional passes over a `Lowered`: `sort_runs`, `fuse`, `reuse_planes` (the liveness layout), `optimize` (all three) |
 | `src/encode.jl` | `encode(l)`: the device form (one stream of 64-bit words, the SOURCE rows first, END last; the 32-bit edge table), and `decode` |
@@ -69,8 +70,10 @@ julia --project -e 'using Pkg; Pkg.test()'
 ```
 
 Without external tools this tests the loader, the `.sjb` reader, the Complexifier, the Julia runner
-against RustiCol's outputs, and, with a C compiler (`CC`, default `cc`), the compiled C. The
-programs that call symjit kernels need the kernels' libraries, built by symjit-utils' `sjb2obj`:
+against RustiCol's outputs, and, with a C compiler (`CC`, default `cc`), the compiled C: its kernels
+are C (`kernel_c`), so every program's folder builds and passes `make test`. The Julia runner calls
+the kernels' libraries, built by symjit-utils' `sjb2obj`; with them, every program also runs in
+Julia, C against Julia bit for bit, and each kernel's C against its library:
 
 ```sh
 SJB2OBJ=/path/to/sjb2obj julia --project -e 'using Pkg; Pkg.test()'
@@ -78,7 +81,8 @@ SJB2OBJ=/path/to/sjb2obj julia --project -e 'using Pkg; Pkg.test()'
 
 The scripts compare with symjit and RustiCol directly, for example
 `julia --project test/test_compile.jl SJB2OBJ` (every program of every case, C against Julia and
-RustiCol), `julia --project test/test_sjb.jl SJBDUMP DIR` (the reader against symjit's own, with
+RustiCol), `julia --project test/test_kernel_c.jl SJB2OBJ` (each kernel's C against its sjb2obj
+library), `julia --project test/test_sjb.jl SJBDUMP DIR` (the reader against symjit's own, with
 `test/sjbdump`) and `julia --project test/test_wavefunctions.jl` (against RustiCol's
 wavefunctions, built with rustc).
 

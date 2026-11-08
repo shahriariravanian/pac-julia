@@ -329,11 +329,10 @@ end
 
 # The application of a .sjb. With `lowered`, a complex model's MIR is lowered to real MIR (a real
 # model's is as saved); `stable_math` (true or false) replaces the saved configuration's option
-# before it is lowered, as symjit-utils' `--set stable_math=...`. The lowered MIR has only real
-# operations, but for LoadComplex/SaveComplex (a pair of values at i, i + 1); with `native_complex`
-# it keeps symjit's ComplexBi instructions (+, -, ×, ÷ of register pairs) instead.
-function read_sjb(io::IO; lowered::Bool = false, stable_math::Union{Bool,Nothing} = nothing,
-                  native_complex::Bool = false)::SavedApplication
+# before it is lowered, as symjit-utils' `--set stable_math=...`. The lowered MIR has real registers
+# only, but for LoadComplex/SaveComplex (a pair of values at i, i + 1) and symjit's ComplexBi
+# instructions (+, -, ×, ÷ of register pairs).
+function read_sjb(io::IO; lowered::Bool = false, stable_math::Union{Bool,Nothing} = nothing)::SavedApplication
     magic(io, APPLICATION_MAGIC, "Application")
     version = int(io)
     version in (3, 4) || throw(SjbError("unsupported sjb version $version"))
@@ -367,7 +366,7 @@ function read_sjb(io::IO; lowered::Bool = false, stable_math::Union{Bool,Nothing
         config = Config(stable_math ? config.opt | bit : config.opt & ~bit, config.ty, config.stack_limit, config.num_args)
     end
     if lowered && is_complex(config)
-        mir = complexify(mir, reals; stable_math = config.opt & CONFIG_OPTIONS.stable_math != 0, native_complex)
+        mir = complexify(mir, reals; stable_math = config.opt & CONFIG_OPTIONS.stable_math != 0)
         # stable_math appends constants, which symjit copies to the program's
         length(mir.consts) > length(consts) && (consts = copy(mir.consts))
     end

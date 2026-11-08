@@ -94,7 +94,8 @@ end
 # a kernel's shared library (main.json kernels[i].library): its function and its counts
 struct KernelLibrary
     name::String
-    path::String
+    path::String       # the library sjb2obj built (the Julia runner calls it)
+    source::String     # the kernel's .plane.symjit (the compiled runners' C is made from it: kernel_c.jl)
     handle::Ptr{Cvoid}
     fn::Ptr{Cvoid}
     inputs::Int    # library.states

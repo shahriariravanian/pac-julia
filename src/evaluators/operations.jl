@@ -197,10 +197,10 @@ end
 # A kernel's library, opened. A library not built yet (pac2json without --sjb2obj, or test/data,
 # which holds no binaries) is not an error here: the program loads, and only a call of the kernel
 # (kernel_call, compile) fails, so programs without kernel rows run without any library.
-function load_kernel(path::String, symbol::String, inputs::Int, outputs::Int)
-    isfile(path) || return KernelLibrary(symbol, path, C_NULL, C_NULL, inputs, outputs)
+function load_kernel(path::String, symbol::String, inputs::Int, outputs::Int; source::String = "")
+    isfile(path) || return KernelLibrary(symbol, path, source, C_NULL, C_NULL, inputs, outputs)
     h = Libdl.dlopen(path)
-    return KernelLibrary(symbol, path, h, Libdl.dlsym(h, symbol), inputs, outputs)
+    return KernelLibrary(symbol, path, source, h, Libdl.dlsym(h, symbol), inputs, outputs)
 end
 
 built(lib::KernelLibrary) = lib.fn != C_NULL

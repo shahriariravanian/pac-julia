@@ -1,8 +1,8 @@
 # Test cases
 
 pac2json folders (`main.json`, `examples.json`, `kernels/*.plane.symjit`), without the kernels'
-shared libraries: `test_compile.jl` and `bench_compile.jl` build them with `sjb2obj` in a temporary
-copy. `examples.json` holds RustiCol's outputs (8 points per program).
+shared libraries: the Julia runner needs them, and `test_compile.jl` and `bench_compile.jl` build them
+with `sjb2obj` in a temporary copy (the compiled C needs none: its kernels are C, `kernel_c`). `examples.json` holds RustiCol's outputs (8 points per program).
 
 | Case | Process | Programs | Instructions | Kernels | What it covers |
 | --- | --- | --- | --- | --- | --- |
