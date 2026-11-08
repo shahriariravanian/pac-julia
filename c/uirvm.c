@@ -1,4 +1,4 @@
-/* uirvm: the interpreter of UIR v0.6 (uirvm.h). The arithmetic is pacops' (pacops.h), on the
+/* uirvm: the interpreter of UIR v0.7 (uirvm.h). The arithmetic is pacops' (pacops.h), on the
  * operands loaded into local arrays, so the values are the straight-line C's bit for bit; only the
  * storage differs. A program's runner.c includes this file (one translation unit, as nvcc wants it)
  * after defining UIR_KERNEL_IN and UIR_KERNEL_OUT, the largest kernel's input and output doubles. */
@@ -33,7 +33,6 @@ uint32_t uir_decode(const uint64_t *w, uir_row *o)
     o->r = (hi >> 13) & 0x1fff;
     o->n = hi & 0xffff;
     o->x = hi >> 26;
-    uint32_t nd = 0x1fff, nt = 0x3ff, nlr = 0x1fff, nx = 0x3f;
     if (ext) {
         /* word 1, low half: EXT 0, D 1-7, L 8-14, R 15-21, T 22-27, N 8-23; high half: X 0-9 */
         uint32_t lo1 = (uint32_t)w[1], hi1 = (uint32_t)(w[1] >> 32);
@@ -43,13 +42,7 @@ uint32_t uir_decode(const uint64_t *w, uir_row *o)
         o->t |= ((lo1 >> 22) & 0x3f) << 10;
         if (o->op != UIR_SOURCE) o->n |= ((lo1 >> 8) & 0xffff) << 16;   /* a SOURCE's N is word 0's only */
         o->x |= (hi1 & 0x3ff) << 6;
-        nd = 0xfffff, nt = 0xffff, nlr = 0xfffff, nx = 0xffff;
     }
-    if (o->d == nd) o->d = UIR_NONE;
-    if (o->t == nt) o->t = UIR_NONE;
-    if (o->l == nlr) o->l = UIR_NONE;
-    if (o->r == nlr) o->r = UIR_NONE;
-    if (o->x == nx) o->x = UIR_NONE;
     return ext ? 2 : 1;
 }
 
@@ -215,8 +208,9 @@ int uir_rows(const uir_program *g, const uir_arena *a)
 {
     cplx acc[UIR_MAX_COMPONENTS];
     uir_row o;
-    for (uint32_t k = g->source_words; k < g->words;) {
+    for (uint32_t k = g->source_words;;) {
         k += uir_decode(g->rows + k, &o);
+        if (o.op == UIR_END) break;
         if (o.op <= UIR_V_THREE_VECTOR) {
             run_vertex(g, a, &o, acc);
         } else if (o.op <= UIR_P_VECTOR) {
@@ -232,8 +226,6 @@ int uir_rows(const uir_program *g, const uir_arena *a)
         } else if (o.op == UIR_CLEAR) {
             uint32_t d = edge_start(g, o.d);
             for (uint32_t j = 0; j < o.n; j++) store1(a, d + j, ZERO);
-        } else if (o.op == UIR_SOURCE) {
-            run_source(g, a, &o);
         } else {
             int status = run_kernel(g, a, &o);
             if (status != 0) return status;
@@ -264,8 +256,9 @@ void uir_forms(const uir_program *g, const uir_arena *a, const double *momenta)
 void uir_sources(const uir_program *g, const uir_arena *a)
 {
     uir_row o;
-    for (uint32_t k = 0; k < g->source_words;) {
+    for (uint32_t k = 0;;) {
         k += uir_decode(g->rows + k, &o);
+        if (o.op != UIR_SOURCE) break;
         run_source(g, a, &o);
     }
 }

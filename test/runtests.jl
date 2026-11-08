@@ -99,7 +99,7 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         end
     end
 
-    @testset "lower (UIR v0.6)" begin
+    @testset "lower (UIR v0.7)" begin
         L = LowerScript
         for case in CASES, p in load_programs(joinpath(case, "main.json"))
             l = lower(p)
@@ -169,7 +169,7 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         @test_throws ErrorException lower(refusals["a null vertex operand"])
     end
 
-    @testset "encode (UIR v0.6)" begin
+    @testset "encode (UIR v0.7)" begin
         P = PacRunner
         # the word layout: op 0-4, EXT 5, SET 6, FIRST 7, LAST 8, D 9-21, T 22-31, L 32-44, R 45-57, X 58-63,
         # N 32-47; values 0-based
@@ -198,6 +198,7 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         rng = Xoshiro(7)
         random_rows = P.LOp[]
         for op in instances(P.Opcode), wide in (false, true), _ in 1:50
+            op == P.END && continue
             fs = P.fields(op)
             val(f, index) = index ? rand(rng, 1:(wide ? 2^(f.width + f.hiwidth) - 1 : 2^f.width - 1)) :
                                     rand(rng, 0:(wide ? 2^(f.width + f.hiwidth) - 1 : 2^f.width - 1))
@@ -245,15 +246,18 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             s = P.LSource(7, ty, anti, h, ch, 1, 1)
             @test P.row_source(P.decode_row(P.encode_row!(UInt64[], P.source_row(s)), 1)[1]) == s
         end
-        # every program: the sources at the head of the stream, then the rows, one word each; the
+        # END: op 31, no fields, one word
+        @test P.encode_row!(UInt64[], P.LOp(P.END)) == [UInt64(31)]
+        # every program: the sources at the head of the stream, then the rows, one word each, then END; the
         # decoded program evaluates as the Lowered (in the comparisons above, through LowerScript.passes)
         for case in CASES, p in load_programs(joinpath(case, "main.json"))
             l = optimize(lower(p))
             e = encode(l)
             @test e.source_words == length(l.sources)
-            @test P.row_source.(P.decode_rows(e.rows[1:e.source_words])) == l.sources
-            @test P.decode_rows(e.rows[e.source_words+1:end]) == l.ops
-            @test length(e.rows) == length(l.sources) + length(l.ops)
+            (sources, ops) = P.decode_stream(e)
+            @test P.row_source.(sources) == l.sources
+            @test ops == l.ops
+            @test length(e.rows) == length(l.sources) + length(l.ops) + 1 && e.rows[end] == UInt64(31)
             @test [P.decode_edge(x)[1] for x in e.edges] == [P.edge_plane(l, k) for k in eachindex(l.edges)]
         end
     end

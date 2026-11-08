@@ -1,4 +1,4 @@
-# lower(p::Program) -> Lowered (UIR v0.6, uir.jl): the plain lowering. Every current gets its own
+# lower(p::Program) -> Lowered (UIR v0.7, uir.jl): the plain lowering. Every current gets its own
 # planes (no reuse), at an even plane; the rows keep the body's order, one LOp per operation; each
 # vertex row is its own fused run (first and last). The optional passes (plane reuse, the sort of
 # contribution runs, longer fused runs) come later and must leave the values unchanged bit for bit.
@@ -237,6 +237,7 @@ function problems(l::Lowered)::Vector{String}
     for (k, op) in enumerate(l.ops)
         at = "row $k ($(op.op))"
         op.op == SOURCE && (bad("$at: a source among the rows (Lowered.sources holds them)"); continue)
+        op.op == END && (bad("$at: an END row (the encoding's, not a Lowered's)"); continue)
         # the edges each opcode names: d (not for a closure), l and r (vertex, closure; a kernel's may be 0)
         edges_ok = (op.op == CLOSURE || inrange(op.d, ne)) &&
                    (is_vertex(op.op) || op.op == CLOSURE ? inrange(op.l, ne) && inrange(op.r, ne) :

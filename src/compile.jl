@@ -40,7 +40,7 @@ end
 
 #####################################################################################
 #
-# The C is generated from a Lowered (UIR v0.6, uir.jl): compile(path, p::Program) lowers `p`
+# The C is generated from a Lowered (UIR v0.7, uir.jl): compile(path, p::Program) lowers `p`
 # first. Indices are 1-based in the Lowered and 0-based in the C: the conversions (`- 1`) are made
 # here, where the C is written, and nowhere else.
 #

@@ -1,4 +1,4 @@
-# The optional passes over a Lowered (UIR v0.6). Each returns a new, validated Lowered whose values
+# The optional passes over a Lowered (UIR v0.7). Each returns a new, validated Lowered whose values
 # are the input's bit for bit; `optimize` runs all three.
 #
 #   sort_runs     each segment of consecutive vertex rows stably sorted by destination, when safe

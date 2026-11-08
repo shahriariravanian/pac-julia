@@ -11,7 +11,7 @@ a = Arena(p)
 outputs = evaluate(p, a, momenta)              # momenta[leg] = (E, px, py, pz), the caller's legs
 compile("out", p; examples = load_examples("folder/examples.json", 1))   # the folder out/, below (from lower(p))
 app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR, lowered to real operations
-l = lower(p)                                   # UIR v0.6: rows on edges, the layout, the tables
+l = lower(p)                                   # UIR v0.7: rows on edges, the layout, the tables
 evaluate(l, LArena(l), momenta)                # bit for bit evaluate(p, a, momenta)
 o = optimize(l)                                # sort_runs, fuse, reuse_planes: the same values
 e = encode(o)                                  # one stream of 8-byte words (sources, then rows), the edge table
@@ -51,9 +51,9 @@ and its CPU build is its test.
 | `src/evaluators/` | the Julia runners: `arena.jl` (`Arena`, the values of one point of a `Program`), `wavefunctions.jl`, `operations.jl` (the sources and the instructions, RustiCol's arithmetic in the same order), `progeval.jl` (`evaluate(::Program)`), `uireval.jl` (`evaluate(::Lowered)`, the third oracle) |
 | `src/compile.jl` | the C generator, from a `Lowered` (`compile(dir, p::Program)` lowers `p` first); `ArenaIndex`, runner.c's arena |
 | `src/sjb.jl`, `src/complexify.jl` | the reader of saved symjit applications and symjit's Complexifier |
-| `src/uir.jl`, `src/lower.jl` | UIR v0.6, the lowered form the back ends read (`Lowered`); `lower(p)` with its checks (`validate`) |
+| `src/uir.jl`, `src/lower.jl` | UIR v0.7, the lowered form the back ends read (`Lowered`); `lower(p)` with its checks (`validate`) |
 | `src/passes.jl` | the optional passes over a `Lowered`: `sort_runs`, `fuse`, `reuse_planes` (the liveness layout), `optimize` (all three) |
-| `src/encode.jl` | `encode(l)`: the device form (one stream of 64-bit words, the SOURCE rows first; the 32-bit edge table), and `decode` |
+| `src/encode.jl` | `encode(l)`: the device form (one stream of 64-bit words, the SOURCE rows first, END last; the 32-bit edge table), and `decode` |
 | `c/pacops.c`, `c/pacops.h` | the sources and instructions in C, copied next to each `runner.c` |
 | `src/compile_vm.jl`, `c/uirvm.c`, `c/uirvm.h` | `compile(dir, p; interpreter = true)`: the program as tables for the UIR interpreter, in portable C (one source for the CPU and the GPU) |
 | `CONVENTIONS.md` | the meaning of main.json's fields and instructions (pac2json's legend) |

@@ -1,5 +1,5 @@
-# encode(l::Lowered) -> Encoded: the device form of UIR v0.6 (design doc, "The 8-byte encoding (UIR
-# v0.6)"): one stream of 64-bit words, the sources first (SOURCE rows), then the rows; and the edge
+# encode(l::Lowered) -> Encoded: the device form of UIR v0.7 (design doc, "The 8-byte encoding (UIR
+# v0.7)"): one stream of 64-bit words, the sources first (SOURCE rows), then the rows, then one END; and the edge
 # table as 32-bit entries. The other tables (scales, factors, component-factor lists, stubs, scale
 # sets, binding instances, forms, reduction) are the Lowered's.
 #
@@ -10,7 +10,7 @@
 #   bits 0-4 op, 5 EXT (word 1 follows), 6 SET, 7 FIRST, 8 LAST,
 #   9-21 D (13), 22-31 T (10), 32-44 L (13), 45-57 R (13), 32-47 N (16, on L and R's bits), 58-63 X (6)
 # Word 1 of a wide row (EXT), each field's high bits:
-#   bit 0 EXT (another word: none in v0.6), 1-7 D (+7 → 20), 8-14 L (+7), 15-21 R (+7),
+#   bit 0 EXT (another word: none in v0.7), 1-7 D (+7 → 20), 8-14 L (+7), 15-21 R (+7),
 #   22-27 T (+6 → 16), 8-23 N (+16 → 32, on L and R's bits), 32-41 X (+10 → 16)
 # A row is wide when one of its values does not fit word 0 (an index ≥ 2^width − 1, all ones being none).
 #
@@ -19,10 +19,12 @@
 # A source is a SOURCE row: D its edge (the current and the form), T its mass scale, X its factor,
 # N its template: bits 0-2 family (PhysicalType's number), 3 antiparticle, 4-6 helicity + 2,
 # 7-8 chirality + 1. A SOURCE's N has no high bits: in a wide SOURCE, word 1 holds D, T and X only.
+# The stream ends with one END row (opcode 31, no fields): a device runs the sources while the op is
+# SOURCE, then the rows until the op is END.
 
 struct Encoded
     version::VersionNumber
-    rows::Vector{UInt64}     # the sources' words, then the rows'
+    rows::Vector{UInt64}     # the sources' words, then the rows', then END's
     source_words::Int        # the sources' words at the head of `rows`
     edges::Vector{UInt32}
 end
@@ -58,6 +60,8 @@ function fields(op::Opcode)::Vector{Tuple{Symbol,Field,Bool}}
         return [(:d, FD, true), (:t, FT, true), (:n, FTEMPLATE, false), (:x, FX, true)]
     elseif op == CLEAR
         return [(:d, FD, true), (:n, FN, false)]
+    elseif op == END
+        return Tuple{Symbol,Field,Bool}[]
     end
     error("unknown opcode $op")
 end
@@ -73,7 +77,7 @@ function encode_row!(words::Vector{UInt64}, op::LOp)
     fs = fields(op.op)
     wide = !all(fits(getfield(op, s), index, f, false) for (s, f, index) in fs)
     for (s, f, index) in fs
-        fits(getfield(op, s), index, f, true) || error("$(op.op): $s = $(getfield(op, s)) does not fit UIR v0.6")
+        fits(getfield(op, s), index, f, true) || error("$(op.op): $s = $(getfield(op, s)) does not fit UIR v0.7")
     end
     w0 = UInt64(Int(op.op)) | (wide ? EXT : 0) | UInt64(op.set) << 6 | UInt64(op.first) << 7 | UInt64(op.last) << 8
     w1 = UInt64(0)
@@ -88,12 +92,12 @@ function encode_row!(words::Vector{UInt64}, op::LOp)
 end
 
 # the row at words[k] and the index of the next row
-function decode_row(words::Vector{UInt64}, k::Int)::Tuple{LOp,Int}
+function decode_row(words::AbstractVector{UInt64}, k::Int)::Tuple{LOp,Int}
     w0 = words[k]
     op = Opcode(w0 & 31)
     wide = w0 & EXT != 0
     w1 = wide ? words[k+1] : UInt64(0)
-    wide && w1 & 1 != 0 && error("row at word $k: a third word (not in UIR v0.6)")
+    wide && w1 & 1 != 0 && error("row at word $k: a third word (not in UIR v0.7)")
     vals = Dict{Symbol,Int}()
     for (s, f, index) in fields(op)
         v = (w0 >> f.shift) & mask(f.width)
@@ -110,8 +114,8 @@ const EDGE_NOFORM = 255
 function encode_edge(l::Lowered, e::EdgeIndex)::UInt32
     c = edge_layout(l, e)
     f = l.edges[e].form
-    (iseven(c.start) && c.start ÷ 2 < 2^15) || error("edge $e: start plane $(c.start) does not fit UIR v0.6")
-    f - 1 < EDGE_NOFORM || error("edge $e: form $f does not fit UIR v0.6")
+    (iseven(c.start) && c.start ÷ 2 < 2^15) || error("edge $e: start plane $(c.start) does not fit UIR v0.7")
+    f - 1 < EDGE_NOFORM || error("edge $e: form $f does not fit UIR v0.7")
     c.components < 16 || error("edge $e: $(c.components) components")
     form = f == 0 ? EDGE_NOFORM : f - 1
     return UInt32(c.start ÷ 2) | UInt32(form) << 15 | UInt32(c.components) << 23 | UInt32(Int(c.type)) << 27
@@ -141,11 +145,12 @@ function encode(l::Lowered)::Encoded
     foreach(s -> encode_row!(words, source_row(s)), l.sources)
     n = length(words)
     foreach(op -> encode_row!(words, op), l.ops)
+    encode_row!(words, LOp(END))
     return Encoded(l.version, words, n, [encode_edge(l, e) for e in eachindex(l.edges)])
 end
 
-# the rows of an encoded stream
-function decode_rows(words::Vector{UInt64})::Vector{LOp}
+# the rows of an encoded stream (no END)
+function decode_rows(words::AbstractVector{UInt64})::Vector{LOp}
     ops = LOp[]
     k = 1
     while k <= length(words)
@@ -155,6 +160,18 @@ function decode_rows(words::Vector{UInt64})::Vector{LOp}
     return ops
 end
 
+# the sources and the rows of an Encoded: SOURCE rows exactly up to source_words, then rows up to
+# the one END, the last word
+function decode_stream(e::Encoded)::Tuple{Vector{LOp},Vector{LOp}}
+    n = length(e.rows)
+    n > e.source_words && e.rows[n] & 31 == Int(END) || error("the stream does not end with END")
+    sources = decode_rows(view(e.rows, 1:e.source_words))
+    ops = decode_rows(view(e.rows, e.source_words+1:n-1))
+    all(o -> o.op == SOURCE, sources) || error("a row among the sources")
+    any(o -> o.op == SOURCE || o.op == END, ops) && error("a SOURCE or END among the rows")
+    return (sources, ops)
+end
+
 # What a device sees, as a Lowered: the sources, rows and edges decoded from `e`, the other tables
 # from `l`. Each edge becomes its own current (its planes, components and type from the entry), so
 # the decoded Lowered holds only what the encoding carries; its values must still equal `l`'s.
@@ -162,7 +179,7 @@ function decode(e::Encoded, l::Lowered)::Lowered
     entries = decode_edge.(e.edges)
     currents = [LCurrent(start, n, ty) for (start, _, n, ty) in entries]
     edges = [LEdge(k, form) for (k, (_, form, _, _)) in enumerate(entries)]
-    sources = row_source.(decode_rows(e.rows[1:e.source_words]))
-    return validate(with(l; version = e.version, currents = currents, edges = edges, sources = sources,
-                         ops = decode_rows(e.rows[e.source_words+1:end])))
+    (sources, ops) = decode_stream(e)
+    return validate(with(l; version = e.version, currents = currents, edges = edges, sources = row_source.(sources),
+                         ops = ops))
 end

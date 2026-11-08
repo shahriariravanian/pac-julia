@@ -1,7 +1,7 @@
-# UIR, the Unified Intermediate Representation (v0.6): a Program lowered to a flat list of
+# UIR, the Unified Intermediate Representation (v0.7): a Program lowered to a flat list of
 # fixed-size operations with every operand resolved, which the back ends read (the C generator, the
 # GPU interpreters' 8-byte encoding). `lower(p::Program)` (lower.jl) builds it. The design is section
-# 7 of the pac-julia design doc ("The lowered IR: UIR v0.6").
+# 7 of the pac-julia design doc ("The lowered IR: UIR v0.7").
 #
 # Operands are edges: an edge is a (current, momentum form) pair, and the edge table gives each
 # edge's current, whose layout entry gives its planes. So a layout change (plane reuse) touches only
@@ -18,7 +18,7 @@ const ScaleSetIndex = Int   # a kernel scale set: Lowered.scalesets
 const InstanceIndex = Int   # a binding instance (stub, scale set): Lowered.instances
 const ListIndex = Int       # a closure's component-factor list: Lowered.lists
 const PlaneOffset = Int     # a plane (one complex component of the arena), 0-based
-const UIR_VERSION = v"0.6"
+const UIR_VERSION = v"0.7"
 
 # what a current holds; the component count follows from it (SCALAR 1, WEYL 2, DIRAC 4, VECTOR 4,
 # TENSOR 6). UNTYPED: no row or source says (a current only kernels touch)
@@ -43,6 +43,7 @@ const TYPE_COMPONENTS = Dict(SCALAR => 1, WEYL => 2, DIRAC => 4, VECTOR => 4, TE
     KERNEL = 11
     KERNEL_DIRECT = 12    # a direct binding whose factor is exactly 1: the pairs stored as they are
     SOURCE = 13           # a source: in the encoding only, at the head of the stream (Lowered.sources here)
+    END = 31              # the end of the stream: in the encoding only, its last word
 end
 
 is_vertex(op::Opcode) = op <= V_THREE_VECTOR
