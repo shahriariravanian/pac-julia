@@ -286,6 +286,16 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         @test length(encode(wide).rows) > length(wide.sources) + length(wide.ops) + 1
         @test_throws ErrorException compile(mktempdir(), wide; interpreter = true)
         @test isdir(compile(mktempdir(), wide))   # the straight-line C has no word fields
+        # the interpreter: closure and scale rows of more than 6 components (an UNTYPED current may
+        # have up to 15); vm_unsupported finds them (the rows here are made up: not valid programs)
+        @test isempty(PacRunner.vm_unsupported(l))
+        k = findfirst(o -> o.op == PacRunner.CLOSURE, l.ops)
+        lists = copy(l.lists)
+        lists[l.ops[k].t] = fill(1, 8)
+        ops = copy(l.ops)
+        push!(ops, PacRunner.LOp(PacRunner.SCALE_ROW; d = 1, n = 7, x = 1))
+        sharing = count(o -> o.op == PacRunner.CLOSURE && o.t == l.ops[k].t, l.ops)   # every closure of that list
+        @test length(PacRunner.vm_unsupported(PacRunner.with(l; lists, ops))) == sharing + 1
     end
 
     @testset "the compiled folder" begin

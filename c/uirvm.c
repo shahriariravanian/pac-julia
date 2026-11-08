@@ -146,14 +146,15 @@ PAC_FN static UIR_INLINE void closure_row(const uir_program *g, const uir_arena 
 PAC_FN static UIR_INLINE void run_closure(const uir_program *g, const uir_arena *a, const uint32_t *w)
 {
     uint32_t t = UIR_T(w), first = g->list_first[t];
-    switch (g->list_first[t + 1] - first) {   /* 0 to 6 (validate), each a constant count */
+    switch (g->list_first[t + 1] - first) {   /* 0 to 6 (compile refuses more), each a constant count */
     case 0: break;
     case 1: closure_row(g, a, w, first, 1); break;
     case 2: closure_row(g, a, w, first, 2); break;
     case 3: closure_row(g, a, w, first, 3); break;
     case 4: closure_row(g, a, w, first, 4); break;
     case 5: closure_row(g, a, w, first, 5); break;
-    default: closure_row(g, a, w, first, 6); break;
+    case 6: closure_row(g, a, w, first, 6); break;
+    default: break;   /* refused by compile (vm_unsupported) */
     }
 }
 
@@ -169,14 +170,15 @@ PAC_FN static UIR_INLINE void scale_row(const uir_program *g, const uir_arena *a
 
 PAC_FN static UIR_INLINE void run_scale(const uir_program *g, const uir_arena *a, const uint32_t *w)
 {
-    switch (UIR_N(w)) {   /* 0 to 6 (validate), each a constant count */
+    switch (UIR_N(w)) {   /* 0 to 6 (compile refuses more), each a constant count */
     case 0: break;
     case 1: scale_row(g, a, w, 1); break;
     case 2: scale_row(g, a, w, 2); break;
     case 3: scale_row(g, a, w, 3); break;
     case 4: scale_row(g, a, w, 4); break;
     case 5: scale_row(g, a, w, 5); break;
-    default: scale_row(g, a, w, 6); break;
+    case 6: scale_row(g, a, w, 6); break;
+    default: break;   /* refused by compile (vm_unsupported) */
     }
 }
 
@@ -239,7 +241,8 @@ PAC_FN static UIR_INLINE void run_source(const uir_program *g, const uir_arena *
     case 1: source_row(g, a, w, FAMILY_SCALAR, 1); break;
     case 2: source_row(g, a, w, FAMILY_WEYL, 2); break;
     case 3: source_row(g, a, w, FAMILY_DIRAC, 4); break;
-    default: source_row(g, a, w, FAMILY_VECTOR, 4); break;
+    case 4: source_row(g, a, w, FAMILY_VECTOR, 4); break;
+    default: break;   /* not a source family (validate) */
     }
 }
 

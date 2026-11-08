@@ -74,6 +74,20 @@ function run_gpu_c(prog::Lowered)::String
     """
 end
 
+# the most components uirvm's closure and scale rows take (UIR_MAX_COMPONENTS: each count 0-6 has its
+# constant-count code); a kernel-only (UNTYPED) current may have more
+const VM_MAX_COMPONENTS = 6
+
+# what uirvm cannot run in `prog`: closure and scale rows beyond VM_MAX_COMPONENTS
+function vm_unsupported(prog::Lowered)::Vector{String}
+    out = String[]
+    for (k, op) in enumerate(prog.ops)
+        n = op.op == CLOSURE ? length(prog.lists[op.t]) : op.op == SCALE_ROW ? op.n : 0
+        n > VM_MAX_COMPONENTS && push!(out, "row $k ($(op.op)): $n components, beyond the interpreter's $VM_MAX_COMPONENTS")
+    end
+    return out
+end
+
 function compile_interpreter(path, prog::Lowered; examples = nothing)
     validate(prog)
     b = ArenaIndex(prog)
@@ -84,8 +98,9 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         error("$(prog.process) $(prog.colour): $(length(e.rows) - length(prog.sources) - length(prog.ops) - 1) wide rows " *
               "(an index beyond the one-word fields: 13-bit edges, 10-bit T, 6-bit factors); the UIR interpreter " *
               "reads one-word rows only")
+    bad = vm_unsupported(prog)
+    isempty(bad) || error("$(prog.process) $(prog.colour): " * join(bad, "; "))
     kernels = used_kernels(prog)
-    number = Dict(k.name => n - 1 for (n, k) in enumerate(kernels))
     writer = CodeWriterCpu(path)
     try
         copy_home(writer, "c/uirvm.c")
@@ -112,11 +127,6 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         end
         carray(writer, "uint32_t", "list_first", firsts(length.(prog.lists)))
         carray(writer, "uint32_t", "list_factor", [x - 1 for list in prog.lists for x in list])
-        carray(writer, "uint32_t", "stub_kernel", [number[s.kernel.name] for s in prog.stubs])
-        carray(writer, "uint32_t", "stub_inputs", firsts(length(s.inputs) for s in prog.stubs))
-        carray(writer, "uint32_t", "input_code", [input_code(i) for s in prog.stubs for i in s.inputs])
-        carray(writer, "uint32_t", "stub_outputs", firsts(length(s.outputs) for s in prog.stubs))
-        carray(writer, "uint32_t", "output_component", [j - 1 for s in prog.stubs for j in s.outputs])
         carray(writer, "uint32_t", "scaleset_first", firsts(length.(prog.scalesets)))
         carray(writer, "uint32_t", "scaleset_scale", [x - 1 for set in prog.scalesets for x in set])
         carray(writer, "uint32_t", "instance", [x - 1 for (s, set) in prog.instances for x in (s, set)])
@@ -132,7 +142,6 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         emit(writer, "rows, $(length(e.rows)), $(e.source_words), edges, scales, factors,")
         emit(writer, "form_first, term_leg, term_coefficient, $(crossed ? "crossing_leg" : "NULL"), $(crossed ? "crossing_sign" : "NULL"),")
         emit(writer, "list_first, list_factor,")
-        emit(writer, "stub_kernel, stub_inputs, input_code, stub_outputs, output_component,")
         emit(writer, "scaleset_first, scaleset_scale, instance,")
         emit(writer, "output_first, term_amplitude, term_weight, $(num)L, $(den)L")
         emit(writer, "};")

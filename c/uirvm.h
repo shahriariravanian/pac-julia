@@ -85,8 +85,7 @@ typedef struct {
     const double *crossing_sign;
 
     const uint32_t *list_first, *list_factor;     /* the closures' component factors */
-    /* the kernel stubs: stub s's kernel, its input codes and the components of out its output pairs go to */
-    const uint32_t *stub_kernel, *stub_inputs, *input_code, *stub_outputs, *output_component;
+    /* the kernel rows' scale sets (a stub's inputs and outputs are in the program's uir_stub) */
     const uint32_t *scaleset_first, *scaleset_scale;
     const uint32_t *instance;         /* 2 each: stub, scale set */
 
