@@ -216,8 +216,9 @@ function evaluate(op::Kernel, a::Arena, p::Program)
     kernel_store!(a.currents[op.out], values, b.outputs, b.direct, op.mode, factor)
 end
 
-# the momentum forms from the caller's momenta (momenta[leg] = (E, px, py, pz), 1-based legs)
-function fill_forms!(a::Arena, p::Program, momenta)
+# the momentum forms from the caller's momenta (momenta[leg] = (E, px, py, pz), 1-based legs);
+# `a`: an Arena or an LArena, `p`: a Program or a Lowered (both have `forms` and `crossing`)
+function fill_forms!(a, p, momenta)
     ext = p.crossing === nothing ? [Tuple(Float64.(m)) for m in momenta] :
           [Tuple(sign .* Float64.(momenta[leg])) for (leg, sign) in p.crossing]
     for (i, f) in enumerate(p.forms)

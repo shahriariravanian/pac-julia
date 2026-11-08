@@ -11,6 +11,8 @@ a = Arena(p)
 outputs = evaluate(p, a, momenta)              # momenta[leg] = (E, px, py, pz), the caller's legs
 compile("out", p; examples = load_examples("folder/examples.json", 1))   # the folder out/, below
 app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR, lowered to real operations
+l = lower(p)                                   # UIR v0.6: rows on edges, the layout, the tables
+evaluate(l, LArena(l), momenta)                # bit for bit evaluate(p, a, momenta)
 ```
 
 ## The compiled folder
@@ -40,10 +42,11 @@ cd out && make test     # u_ubar_to_z_g_g flow:2,4,5,1: 8 points, 384 outputs; 0
 | `src/wavefunctions.jl`, `src/operations.jl` | the sources and the instructions, RustiCol's arithmetic in the same order |
 | `src/compile.jl` | the C generator |
 | `src/sjb.jl`, `src/complexify.jl` | the reader of saved symjit applications and symjit's Complexifier |
+| `src/uir.jl`, `src/lower.jl`, `src/uireval.jl` | UIR v0.6, the lowered form the back ends will read (`Lowered`); `lower(p)` with its checks (`validate`); `evaluate(::Lowered)`, the third oracle |
 | `c/pacops.c`, `c/pacops.h` | the sources and instructions in C, copied next to each `runner.c` |
 | `CONVENTIONS.md` | the meaning of main.json's fields and instructions (pac2json's legend) |
 | `test/runtests.jl` | the short tests |
-| `test/test_*.jl` | the longer comparisons, one script each (usage at the top of each) |
+| `test/test_*.jl` | the longer comparisons, one script each (usage at the top of each); `test_lower.jl` reads every lowered row back to its operation and runs `evaluate(::Lowered)` against `evaluate(::Program)` |
 | `test/bench_compile.jl` | timing of the compiled C against the Julia runner |
 | `test/data/` | the test cases (`test/data/README.md`) |
 

@@ -20,6 +20,7 @@ module SjbScript include(joinpath(@__DIR__, "test_sjb.jl")) end
 module ComplexifyScript include(joinpath(@__DIR__, "test_complexify.jl")) end
 module CompileScript include(joinpath(@__DIR__, "test_compile.jl")) end
 module VariantsScript include(joinpath(@__DIR__, "test_compile_variants.jl")) end
+module LowerScript include(joinpath(@__DIR__, "test_lower.jl")) end
 
 const CASES = CompileScript.cases()
 const CC = CompileScript.CC
@@ -97,6 +98,71 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         end
     end
 
+    @testset "lower (UIR v0.6)" begin
+        L = LowerScript
+        for case in CASES, p in load_programs(joinpath(case, "main.json"))
+            l = lower(p)
+            @test isempty(L.roundtrip(p, l))
+            @test all(c -> iseven(c.start), l.currents)
+            @test length(l.edges) == length(l.currents)   # every current has one momentum in this data
+        end
+        # validate: a fused run is accepted; SET inside it, reading its destination, a run left open,
+        # an odd plane and a wrong physical type are not
+        l = lower(load_artifact(joinpath(@__DIR__, "data", "uux_zgggg", "main.json")))
+        k = L.fusable(l)
+        @test k !== nothing
+        run = L.with_row(o -> L.setrow(o; first = false), L.with_row(o -> L.setrow(o; last = false), l, k), k + 1)
+        @test isempty(PacRunner.problems(run))
+        has(m, words) = any(occursin(words, s) for s in PacRunner.problems(m))
+        @test has(L.with_row(o -> L.setrow(o; set = true), run, k + 1), "SET on a row that does not start its run")
+        @test has(L.with_row(o -> L.setrow(o; l = run.ops[k].d), run, k + 1), "reads the planes of its run's destination")
+        open = L.with_row(o -> L.setrow(o; last = false), l, k + 1)
+        @test has(open, "inside the fused run") || has(open, "starts inside another run") || has(open, "does not end")
+        odd = deepcopy(l)
+        odd.currents[1] = PacRunner.LCurrent(1, odd.currents[1].components, odd.currents[1].type)
+        @test has(odd, "starts at odd plane")
+        prop = findfirst(o -> o.op == PacRunner.P_WEYL_A, l.ops)
+        vec = findfirst(o -> o.op == PacRunner.P_VECTOR, l.ops)
+        @test has(L.with_row(o -> L.setrow(o; d = l.ops[vec].d), l, prop), "a VECTOR")
+        @test_throws ErrorException validate(odd)
+    end
+
+    @testset "evaluate(::Lowered) against evaluate(::Program)" begin
+        # bit for bit on examples.json's points, plain and with adjacent rows fused (kernel rows: below)
+        L = LowerScript
+        joined = 0
+        for case in CASES
+            ps = load_programs(joinpath(case, "main.json"))
+            ex = read_main(joinpath(case, "examples.json")).programs
+            for (p, e) in zip(ps, ex)
+                has_kernel_rows(p) && continue
+                (plain, fused, j) = L.compare(p, e.points)
+                @test (plain, fused) == (0, 0)
+                joined += j
+            end
+        end
+        @test joined > 0
+        # the comparison sees a changed row: another factor on one vertex row
+        case = joinpath(@__DIR__, "data", "ppjjj_crossed")
+        n = findfirst(!has_kernel_rows, load_programs(joinpath(case, "main.json")))
+        p = load_artifact(joinpath(case, "main.json"), n)
+        l = lower(p)
+        k = findfirst(o -> PacRunner.is_vertex(o.op), l.ops)
+        m = L.with_row(o -> L.setrow(o; x = o.x == 1 ? 2 : 1), l, k)
+        pt = read_main(joinpath(case, "examples.json")).programs[n].points[1]
+        momenta = [Tuple(Float64.(v)) for v in pt.momenta]
+        @test evaluate(l, LArena(l), momenta) == evaluate(p, Arena(p), momenta)
+        @test evaluate(m, LArena(m), momenta) != evaluate(p, Arena(p), momenta)
+        # the paths the data does not reach (compile's variants: crossing signs, scale and clear rows,
+        # several terms per output, a group factor); a null vertex operand is refused
+        points = read_main(joinpath(case, "examples.json")).programs[n].points
+        for (name, v) in VariantsScript.variants(p)
+            @test L.compare(v, points)[1:2] == (0, 0)
+        end
+        refusals = Dict(VariantsScript.refusals(p))
+        @test_throws ErrorException lower(refusals["a null vertex operand"])
+    end
+
     @testset "compile refuses" begin
         p = load_programs(joinpath(@__DIR__, "data", "ppjjj_crossed", "main.json"))[1]
         for (name, v) in VariantsScript.refusals(p)
@@ -164,6 +230,19 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             # every program of every case: C against Julia bit for bit, against RustiCol within 1e-14
             @test sum(c -> CompileScript.test_folder(SJB2OBJ, c), CASES) == 0
             @test VariantsScript.main(SJB2OBJ) == 0
+            # evaluate(::Lowered) on every program, kernel rows included
+            @test sum(c -> LowerScript.test_folder(c; sjb2obj = SJB2OBJ), CASES) == 0
+            # and on compile's variants of programs with kernel rows (direct bindings, an input from out)
+            for (case, n) in [("uux_zgg", 1), ("ppjjj_crossed", 4)]
+                dir = CompileScript.prepare(SJB2OBJ, joinpath(@__DIR__, "data", case); quiet = true)
+                p = load_programs(joinpath(dir, "main.json"))[n]
+                points = read_main(joinpath(dir, "examples.json")).programs[n].points
+                for (name, v) in VariantsScript.variants(p)
+                    @test LowerScript.compare(v, points)[1:2] == (0, 0)
+                end
+                f = Dict(VariantsScript.refusals(p))["a FACTOR kernel input"]
+                @test LowerScript.compare(f, points)[1:2] == (0, 0)   # lower reads it; compile does not yet
+            end
         end
     else
         @info "no sjb2obj (ENV[\"SJB2OBJ\"] or the PATH): programs with kernel rows are not run"
