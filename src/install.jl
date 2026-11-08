@@ -7,7 +7,8 @@
 # rusticol/prepare.sh does, here in Julia so that it runs on Linux and macOS alike (git, tar and
 # patch; no sha256sum): the pyamplicol/ directory of MadGraph7 at rusticol/UPSTREAM, with
 # rusticol/patches; then `cargo build --release --bin pac2json` (pacuda's rust-toolchain.toml
-# names the toolchain; rustup installs it). Only RustiCol's Rust crate is built: no Python, no
+# names the toolchain; rustup installs it), the binary kept in tools/bin and cargo's build folder
+# removed. Only RustiCol's Rust crate is built: no Python, no
 # pyAmpliCol build, no Symbolica.
 #
 # capture(artifact): the folder pac2json writes for the artifact, in the scratch space
@@ -22,7 +23,8 @@ const MADGRAPH7_REPO = "https://github.com/MadGraphTeam/MadGraph7.git"
 tools_dir() = @get_scratch!("tools")
 captures_dir() = @get_scratch!("captures")
 pacuda_dir() = joinpath(tools_dir(), "pacuda")
-pac2json_path() = joinpath(pacuda_dir(), "convert", "target", "release", Sys.iswindows() ? "pac2json.exe" : "pac2json")
+exe_name(name) = Sys.iswindows() ? name * ".exe" : name
+pac2json_path() = joinpath(tools_dir(), "bin", exe_name("pac2json"))
 
 function need(tool::String, why::String)
     Sys.which(tool) === nothing && error("install: `$tool` is not on the PATH ($why)")
@@ -59,8 +61,14 @@ function install(; force::Bool = false, madgraph7::Union{String,Nothing} = nothi
     git(dir, "checkout", "-q", "--force", "FETCH_HEAD")
     prepare_rusticol(dir, madgraph7)
     @info "install: building pac2json (cargo, a few minutes the first time)"
-    run(Cmd(`cargo build --release --bin pac2json`; dir = joinpath(dir, "convert")))
-    isfile(exe) || error("install: cargo did not build $exe")
+    convert = joinpath(dir, "convert")
+    run(Cmd(`cargo build --release --bin pac2json`; dir = convert))
+    built = joinpath(convert, "target", "release", exe_name("pac2json"))
+    isfile(built) || error("install: cargo did not build $built")
+    # only the binary is kept: cargo's build folder is about half a gigabyte
+    mkpath(dirname(exe))
+    cp(built, exe; force = true)
+    rm(joinpath(convert, "target"); recursive = true, force = true)
     write(stamp, PACUDA_COMMIT)
     return exe
 end
@@ -145,7 +153,7 @@ and found there afterwards, by the artifact's artifact_id. `parameters`: a JSON 
 parameters ({"name": value}) to record with instead of the artifact's (pac2json --parameters).
 """
 function capture(artifact::AbstractString; parameters::Union{AbstractString,Nothing} = nothing, force::Bool = false)::String
-    artifact = abspath(artifact)
+    artifact = realpath(abspath(artifact))   # RustiCol refuses an artifact path through a symlink
     id = check_artifact(artifact)
     key = parameters === nothing ? id : id * "-" * bytes2hex(sha256(read(parameters)))[1:16]
     dest = joinpath(captures_dir(), key)

@@ -31,8 +31,14 @@ the artifact's `artifact_id`; afterwards that folder is used. `capture(artifact;
 pac2json is built on first use, or by `PacRunner.install()`: pacuda (github.com/siravan/pacuda at
 a pinned commit) and its patched RustiCol (MadGraph7's `pyamplicol/` at the commit pacuda pins,
 with pacuda's patches; only RustiCol's Rust crate is compiled: no Python, no pyAmpliCol build, no
-Symbolica), into the scratch space. It needs git, tar, patch, a C compiler and Rust installed with
-rustup (pacuda names its toolchain; rustup fetches it). On Linux and macOS.
+Symbolica), into the scratch space; only the pac2json binary is kept. It needs git, tar, patch, a C
+compiler and Rust installed with rustup (pacuda names its toolchain; rustup fetches it). On Linux and
+macOS. A first install takes a few minutes (about 4 on 2 cores). Rustup's default install adds a
+"stable" toolchain beside the one pacuda pins (about 1 GB each); to have only the pinned one:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+```
 
 The Julia runner calls each symjit kernel through a shared library, built on first use into the
 scratch space (`load_programs(path; kernels = ...)`): `:auto` (the default) with symjit-utils'
