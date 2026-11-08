@@ -17,13 +17,32 @@
  * inputs) into `out` (its output pairs, re and im) and returns its status (0: ok).
  *
  * Bit-exactness with the Julia runners needs the plain IEEE operations: -ffp-contract=off (cc),
- * --fmad=false (nvcc). */
+ * --fmad=false (nvcc).
+ *
+ * The same runner.c builds for both: cc gives run(), one point on the host; nvcc -x cu gives
+ * run_gpu(), every point on the device, one thread each (the tables are then __device__ data). */
 
 #ifndef UIRVM_H
 #define UIRVM_H
 
 #include <stddef.h>
 #include <stdint.h>
+
+/* a function of the host and, under nvcc, of the device (as pacops.h's) */
+#ifndef PAC_FN
+#ifdef __CUDACC__
+#define PAC_FN __host__ __device__
+#else
+#define PAC_FN
+#endif
+#endif
+
+/* a program's tables (runner.c's): the device's under nvcc, the host's otherwise */
+#ifdef __CUDACC__
+#define UIR_DATA __device__ const
+#else
+#define UIR_DATA static const
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -86,19 +105,26 @@ typedef struct {
 } uir_row;
 
 /* the program's kernels (the program defines it) */
-int uir_kernel(uint32_t kernel, const double *in, double *out);
+PAC_FN int uir_kernel(uint32_t kernel, const double *in, double *out);
 
 /* the row at w, into o; returns its words (1 or 2) */
-uint32_t uir_decode(const uint64_t *w, uir_row *o);
+PAC_FN uint32_t uir_decode(const uint64_t *w, uir_row *o);
 
 /* one point: the forms from momenta[4 legs] (the caller's (E, px, py, pz) per leg), the sources (the
  * SOURCE rows at the head), the rows (from word source_words up to END), the reduction into
  * out[outputs]. The planes and amplitudes must be zero before. Returns 0, or the first failing kernel's status. */
-void uir_forms(const uir_program *g, const uir_arena *a, const double *momenta);
-void uir_sources(const uir_program *g, const uir_arena *a);
-int uir_rows(const uir_program *g, const uir_arena *a);
-void uir_reduce(const uir_program *g, const uir_arena *a, double *out);
-int uir_run(const uir_program *g, const uir_arena *a, const double *momenta, double *out);
+PAC_FN void uir_forms(const uir_program *g, const uir_arena *a, const double *momenta);
+PAC_FN void uir_sources(const uir_program *g, const uir_arena *a);
+PAC_FN int uir_rows(const uir_program *g, const uir_arena *a);
+PAC_FN void uir_reduce(const uir_program *g, const uir_arena *a, double *out);
+PAC_FN int uir_run(const uir_program *g, const uir_arena *a, const double *momenta, double *out);
+
+#ifdef __CUDACC__
+/* the program on `points` points (the program defines it, runner.c under nvcc): momenta[point][4 legs],
+ * out[point][outputs], both on the host; returns 0, a kernel's failing status, or -1 (a CUDA error,
+ * printed to stderr) */
+int run_gpu(double *out, const double *momenta, size_t points);
+#endif
 
 #ifdef __cplusplus
 }

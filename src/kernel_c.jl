@@ -12,6 +12,7 @@
 # Registers follow symjit's: Ret and Left are one register (r0), Temp and Right another (r1),
 # Gen(k) is gk, and stack slot k the local stackk. A funclet (a Call with no arguments, its label in the code, ".ret" to return) is
 # a goto with the return point kept in `ret`, so the C has no calls and no computed goto (nvcc).
+# Every function is PAC_FN: under nvcc a device function too.
 
 struct KernelCError <: Exception
     msg::String
@@ -25,16 +26,29 @@ const KERNEL_PRELUDE = """
 #include <stdint.h>
 #include <string.h>
 
+/* a function of the host and, under nvcc, of the device (as pacops.h's) */
+#ifndef PAC_FN
+#ifdef __CUDACC__
+#define PAC_FN __host__ __device__
+#else
+#define PAC_FN
+#endif
+#endif
+
+#ifdef __CUDACC__
+#pragma nv_diag_suppress 177  /* a helper a program's kernels do not use */
+#endif
+
 /* the symjit kernels' bit operations on doubles (kernel_c.jl) */
-static inline uint64_t sj_bits(double x) { uint64_t u; memcpy(&u, &x, sizeof u); return u; }
-static inline double sj_double(uint64_t u) { double x; memcpy(&x, &u, sizeof x); return x; }
-static inline double sj_mask(int b) { return sj_double(b ? ~(uint64_t)0 : 0); }
-static inline double sj_and(double a, double b) { return sj_double(sj_bits(a) & sj_bits(b)); }
-static inline double sj_andnot(double a, double b) { return sj_double(~sj_bits(a) & sj_bits(b)); }
-static inline double sj_or(double a, double b) { return sj_double(sj_bits(a) | sj_bits(b)); }
-static inline double sj_xor(double a, double b) { return sj_double(sj_bits(a) ^ sj_bits(b)); }
-static inline double sj_not(double a) { return sj_double(~sj_bits(a)); }
-static inline double sj_sign(double a) { return sj_double(sj_bits(a) & ((uint64_t)1 << 63)); }
+PAC_FN static inline uint64_t sj_bits(double x) { uint64_t u; memcpy(&u, &x, sizeof u); return u; }
+PAC_FN static inline double sj_double(uint64_t u) { double x; memcpy(&x, &u, sizeof x); return x; }
+PAC_FN static inline double sj_mask(int b) { return sj_double(b ? ~(uint64_t)0 : 0); }
+PAC_FN static inline double sj_and(double a, double b) { return sj_double(sj_bits(a) & sj_bits(b)); }
+PAC_FN static inline double sj_andnot(double a, double b) { return sj_double(~sj_bits(a) & sj_bits(b)); }
+PAC_FN static inline double sj_or(double a, double b) { return sj_double(sj_bits(a) | sj_bits(b)); }
+PAC_FN static inline double sj_xor(double a, double b) { return sj_double(sj_bits(a) ^ sj_bits(b)); }
+PAC_FN static inline double sj_not(double a) { return sj_double(~sj_bits(a)); }
+PAC_FN static inline double sj_sign(double a) { return sj_double(sj_bits(a) & ((uint64_t)1 << 63)); }
 """
 
 function reg_c(r::Reg)::String
@@ -165,7 +179,7 @@ function kernel_c(name::String, app::SavedApplication)::String
     end
     out = IOBuffer()
     println(out, "/* the symjit kernel $name ($(length(mir.code)) MIR instructions), from its .plane.symjit by kernel_c.jl */")
-    println(out, "static int $name(double *mem) {")
+    println(out, "PAC_FN static int $name(double *mem) {")
     isempty(slots) || println(out, "double ", join(("stack$k = 0.0" for k in sort(collect(slots))), ", "), ";")
     isempty(regs) || println(out, "double ", join(("$r = 0.0" for r in sort(collect(regs); by = r -> (length(r), r))), ", "), ";")
     has_ret && println(out, "int ret = -1;")

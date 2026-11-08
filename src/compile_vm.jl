@@ -7,14 +7,14 @@
 #
 # The CPU build is the interpreter's test; the same uirvm.c is the GPU's interpreter.
 
-# a C array: `static const <ty> <name>[] = {...};` (an empty one holds a single unused 0: C has no
-# empty arrays)
+# a C array: `UIR_DATA <ty> <name>[] = {...};` (static const, or __device__ const under nvcc; an
+# empty one holds a single unused 0: C has no empty arrays)
 function carray(writer, ty::String, name::String, values; per_line = 8)
     if isempty(values)
-        emit(writer, "static const $ty $name[1] = {0};")
+        emit(writer, "UIR_DATA $ty $name[1] = {0};")
         return
     end
-    emit(writer, "static const $ty $name[] = {")
+    emit(writer, "UIR_DATA $ty $name[] = {")
     v = collect(values)
     for k in 1:per_line:length(v)
         emit(writer, join(v[k:min(k + per_line - 1, end)], ", ") * ",")
@@ -29,6 +29,48 @@ firsts(lengths) = cumsum([0; collect(lengths)])
 
 # a kernel input as uirvm's code: kind, imaginary part, n (0-based component or scale-set slot)
 input_code(i::KernelInput) = UInt32(Int(i.kind)) | UInt32(i.im) << 3 | UInt32(i.kind == FACTOR ? 0 : i.n - 1) << 4
+
+# run_gpu (uirvm.h) of `prog`: every point on the device, one thread each, the arena plane-major
+# (uir_arena's ld = points, i = the thread: each plane a contiguous row of points)
+function run_gpu_c(prog::Lowered)::String
+    (legs, outputs) = (prog.legs, length(prog.reduction))
+    sizes = (forms = 4 * length(prog.forms), amplitudes = 2 * prog.amplitudes, planes = 2 * prog.planes)
+    return """
+    #include <stdio.h>
+    __global__ static void run_points(const double *momenta, double *out, double *forms, double *amplitudes,
+                                      double *planes, size_t points, int *status) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= points) return;
+    uir_arena a = {forms, amplitudes, planes, points, i};
+    int s = uir_run(&program, &a, momenta + (size_t)$(4 * legs) * i, out + (size_t)$outputs * i);
+    if (s != 0) *status = s;
+    }
+    #define GPU_CHECK(x) do { cudaError_t e_ = (x); if (e_ != cudaSuccess) { fprintf(stderr, "run_gpu: %s: %s\\n", #x, cudaGetErrorString(e_)); status = -1; goto done; } } while (0)
+    int run_gpu(double *out, const double *momenta, size_t points) {
+    double *m = NULL, *o = NULL, *f = NULL, *am = NULL, *pl = NULL;
+    int *st = NULL, status = 0;
+    if (points == 0) return 0;
+    GPU_CHECK(cudaMalloc((void **)&m, (size_t)$(4 * legs) * points * sizeof(double)));
+    GPU_CHECK(cudaMalloc((void **)&o, (size_t)$(max(outputs, 1)) * points * sizeof(double)));
+    GPU_CHECK(cudaMalloc((void **)&f, (size_t)$(max(sizes.forms, 1)) * points * sizeof(double)));
+    GPU_CHECK(cudaMalloc((void **)&am, (size_t)$(max(sizes.amplitudes, 1)) * points * sizeof(double)));
+    GPU_CHECK(cudaMalloc((void **)&pl, (size_t)$(max(sizes.planes, 1)) * points * sizeof(double)));
+    GPU_CHECK(cudaMalloc((void **)&st, sizeof(int)));
+    GPU_CHECK(cudaMemcpy(m, momenta, (size_t)$(4 * legs) * points * sizeof(double), cudaMemcpyHostToDevice));
+    GPU_CHECK(cudaMemset(am, 0, (size_t)$(max(sizes.amplitudes, 1)) * points * sizeof(double)));
+    GPU_CHECK(cudaMemset(pl, 0, (size_t)$(max(sizes.planes, 1)) * points * sizeof(double)));
+    GPU_CHECK(cudaMemset(st, 0, sizeof(int)));
+    run_points<<<(unsigned)((points + 127) / 128), 128>>>(m, o, f, am, pl, points, st);
+    GPU_CHECK(cudaGetLastError());
+    GPU_CHECK(cudaDeviceSynchronize());
+    GPU_CHECK(cudaMemcpy(out, o, (size_t)$outputs * points * sizeof(double), cudaMemcpyDeviceToHost));
+    GPU_CHECK(cudaMemcpy(&status, st, sizeof(int), cudaMemcpyDeviceToHost));
+    done:
+    cudaFree(m); cudaFree(o); cudaFree(f); cudaFree(am); cudaFree(pl); cudaFree(st);
+    return status;
+    }
+    """
+end
 
 function compile_interpreter(path, prog::Lowered; examples = nothing)
     validate(prog)
@@ -46,6 +88,9 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         emit(writer, "#define UIR_KERNEL_IN $(max(1, maximum((k.inputs for k in kernels); init = 0)))")
         emit(writer, "#define UIR_KERNEL_OUT $(max(1, maximum((k.outputs for k in kernels); init = 0)))")
         emit(writer, "#include \"uirvm.c\"")
+        emit(writer, "#ifdef __CUDACC__")
+        emit(writer, "#include \"pacops.c\"  /* one translation unit for the device */")
+        emit(writer, "#endif")
         emit(writer, "#include \"runner.h\"")
         newline(writer)
 
@@ -77,7 +122,7 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
 
         crossed = prog.crossing !== nothing
         (num, den) = prog.group_factor
-        emit(writer, "static const uir_program program = {")
+        emit(writer, "UIR_DATA uir_program program = {")
         emit(writer, "UIR_VERSION, $(prog.legs), $(length(prog.forms)), $(prog.planes), $(prog.amplitudes), $(length(prog.reduction)),")
         emit(writer, "rows, $(length(e.rows)), $(e.source_words), edges, scales, factors,")
         emit(writer, "form_first, term_leg, term_coefficient, $(crossed ? "crossing_leg" : "NULL"), $(crossed ? "crossing_sign" : "NULL"),")
@@ -90,7 +135,7 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
 
         # the kernels (kernel_c.jl): each called as compile.jl's adapters call it, its inputs then its outputs in mem
         emit_kernels(writer, kernels)
-        emit(writer, "int uir_kernel(uint32_t kernel, const double *in, double *out) {")
+        emit(writer, "PAC_FN int uir_kernel(uint32_t kernel, const double *in, double *out) {")
         emit(writer, "switch (kernel) {")
         for k in kernels
             emit(writer, "case $(number[k.name]): {")
@@ -106,12 +151,16 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         emit(writer, "}")
         newline(writer)
 
+        emit(writer, "#ifndef __CUDACC__")
         emit(writer, "int run(double *out, double *p, const double *momenta) {")
         emit(writer, "for (int i = 0; i < $(b.size); i++) p[i] = 0.0;")
         emit(writer, "uir_arena a = {p + $(b.forms), p + $(b.amplitudes), p + $(b.planes), 1, 0};")
         emit(writer, "if (uir_run(&program, &a, momenta, out) != 0) abort();  /* a kernel failed */")
         emit(writer, "return 0;")
         emit(writer, "}")
+        emit(writer, "#else")
+        foreach(l -> emit(writer, l), split(chomp(run_gpu_c(prog)), '\n'))
+        emit(writer, "#endif")
     finally
         close(writer)
     end

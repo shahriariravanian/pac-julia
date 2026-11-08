@@ -8,11 +8,11 @@
 
 /* ==== wavefunctions ============================================================================ */
 
-void scalar(double *out) { put(out, 0, cx(1.0, 0.0)); }
+PAC_FN void scalar(double *out) { put(out, 0, cx(1.0, 0.0)); }
 
 /* ---- Weyl spinors (ext_quark_weyl_array, ext_antiquark_weyl_array) ---- */
 
-void weyl_particle(double *out, const double *k, int h, int ch)
+PAC_FN void weyl_particle(double *out, const double *k, int h, int ch)
 {
     double E = k[0], px = k[1], py = k[2], pz = k[3];
     if (E > 0) {
@@ -32,7 +32,7 @@ void weyl_particle(double *out, const double *k, int h, int ch)
     }
 }
 
-void weyl_antiparticle(double *out, const double *k, int h, int ch)
+PAC_FN void weyl_antiparticle(double *out, const double *k, int h, int ch)
 {
     double E = k[0], px = k[1], py = k[2], pz = k[3];
     if (E > 0) {
@@ -54,7 +54,7 @@ void weyl_antiparticle(double *out, const double *k, int h, int ch)
 
 /* ---- massless Dirac spinors (ext_quark_dirac, ext_antiquark_dirac) ---- */
 
-void quark_dirac(double *out, const double *k, int h)
+PAC_FN void quark_dirac(double *out, const double *k, int h)
 {
     double E = k[0], px = k[1], py = k[2], pz = k[3];
     if (E > 0) {
@@ -72,7 +72,7 @@ void quark_dirac(double *out, const double *k, int h)
     }
 }
 
-void antiquark_dirac(double *out, const double *k, int h)
+PAC_FN void antiquark_dirac(double *out, const double *k, int h)
 {
     double E = k[0], px = k[1], py = k[2], pz = k[3];
     if (E > 0) {
@@ -94,7 +94,7 @@ void antiquark_dirac(double *out, const double *k, int h)
  * |mass| < 1e-8 falls back to the massless spinors. The two differ in nsf, the sign of py in chi2
  * and the order of the products; `anti` picks. */
 
-static void dirac_massive(double *out, const double *k, int h, double mass, int anti)
+PAC_FN static void dirac_massive(double *out, const double *k, int h, double mass, int anti)
 {
     double E = k[0], px = k[1], py = k[2], pz = k[3];
     int nsf = anti ? (E > 0 ? -1 : 1) : (E > 0 ? 1 : -1);
@@ -120,13 +120,13 @@ static void dirac_massive(double *out, const double *k, int h, double mass, int 
     else put4(out, mulr(chi2, up2), mulr(chi1, up2), mulr(chi2, lo2), mulr(chi1, lo2));
 }
 
-void quark_dirac_massive(double *out, const double *k, int h, double mass)
+PAC_FN void quark_dirac_massive(double *out, const double *k, int h, double mass)
 {
     if (fabs(mass) < 1.0e-8) quark_dirac(out, k, h);
     else dirac_massive(out, k, h, mass, 0);
 }
 
-void antiquark_dirac_massive(double *out, const double *k, int h, double mass)
+PAC_FN void antiquark_dirac_massive(double *out, const double *k, int h, double mass)
 {
     if (fabs(mass) < 1.0e-8) antiquark_dirac(out, k, h);
     else dirac_massive(out, k, h, mass, 1);
@@ -134,7 +134,7 @@ void antiquark_dirac_massive(double *out, const double *k, int h, double mass)
 
 /* ---- massless vectors: gluon, photon (ext_gluon) ---- */
 
-void gluon(double *out, const double *k, int h)
+PAC_FN void gluon(double *out, const double *k, int h)
 {
     double E = k[0], px = k[1], py = k[2], pz = k[3];
     double sqh = sqrt(0.5);
@@ -171,7 +171,7 @@ void gluon(double *out, const double *k, int h)
 
 /* ---- massive vectors: Z, W (ext_massive_vector) ---- */
 
-void massive_vector(double *out, const double *k, int h, double mass)
+PAC_FN void massive_vector(double *out, const double *k, int h, double mass)
 {
     double E = k[0], px = k[1], py = k[2], pz = k[3];
     if (E < 0) {
@@ -212,7 +212,7 @@ void massive_vector(double *out, const double *k, int h, double mass)
 
 /* the runner's pick (`source_values`): a Dirac source always through the massive spinors, a vector
  * by whether its mass is exactly 0 */
-int wavefunction(double *out, int family, int orientation, const double *k, int h, int ch, double mass)
+PAC_FN int wavefunction(double *out, int family, int orientation, const double *k, int h, int ch, double mass)
 {
     int anti = orientation == ANTIPARTICLE;
     switch (family) {
@@ -230,7 +230,7 @@ int wavefunction(double *out, int family, int orientation, const double *k, int 
     }
 }
 
-int source(double *out, int family, int orientation, const double *k, int h, int ch, double mass,
+PAC_FN int source(double *out, int family, int orientation, const double *k, int h, int ch, double mass,
            const double *factor)
 {
     int n = wavefunction(out, family, orientation, k, h, ch, mass);
@@ -244,7 +244,7 @@ int source(double *out, int family, int orientation, const double *k, int h, int
 /* l Weyl, r vector → Weyl:
  *   o[0] = -i l[0] r[3] - i l[1] r[1] + l[1] r[2] + i l[0] r[0]
  *   o[1] = -l[0] r[2] - i l[0] r[1] + i l[1] r[0] + i l[1] r[3] */
-void vertex_weyl_vector_a(double *out, const double *l, const double *r)
+PAC_FN void vertex_weyl_vector_a(double *out, const double *l, const double *r)
 {
     cplx l0 = get(l, 0), l1 = get(l, 1);
     cplx r0 = get(r, 0), r1 = get(r, 1), r2 = get(r, 2), r3 = get(r, 3);
@@ -256,7 +256,7 @@ void vertex_weyl_vector_a(double *out, const double *l, const double *r)
 /* l Weyl, r vector → Weyl:
  *   o[0] = -l[1] r[2] + i l[0] r[0] + i l[0] r[3] + i l[1] r[1]
  *   o[1] = -i l[1] r[3] + l[0] r[2] + i l[0] r[1] + i l[1] r[0] */
-void vertex_weyl_vector_b(double *out, const double *l, const double *r)
+PAC_FN void vertex_weyl_vector_b(double *out, const double *l, const double *r)
 {
     cplx l0 = get(l, 0), l1 = get(l, 1);
     cplx r0 = get(r, 0), r1 = get(r, 1), r2 = get(r, 2), r3 = get(r, 3);
@@ -270,7 +270,7 @@ void vertex_weyl_vector_b(double *out, const double *l, const double *r)
  *   o[1] = l[0] r[0] + l[3] r[2] + l[4] r[3]
  *   o[2] = l[1] r[0] - l[3] r[1] + l[5] r[3]
  *   o[3] = l[2] r[0] - l[4] r[1] - l[5] r[2] */
-void vertex_tensor_vector(double *out, const double *l, const double *r)
+PAC_FN void vertex_tensor_vector(double *out, const double *l, const double *r)
 {
     cplx l0 = get(l, 0), l1 = get(l, 1), l2 = get(l, 2), l3 = get(l, 3), l4 = get(l, 4), l5 = get(l, 5);
     cplx r0 = get(r, 0), r1 = get(r, 1), r2 = get(r, 2), r3 = get(r, 3);
@@ -284,7 +284,7 @@ void vertex_tensor_vector(double *out, const double *l, const double *r)
 /* l vector, r vector → antisymmetric tensor:
  *   o = (l[0] r[1] - l[1] r[0], l[0] r[2] - l[2] r[0], l[0] r[3] - l[3] r[0],
  *        l[1] r[2] - l[2] r[1], l[1] r[3] - l[3] r[1], l[2] r[3] - l[3] r[2]) */
-void vertex_vector_wedge(double *out, const double *l, const double *r)
+PAC_FN void vertex_vector_wedge(double *out, const double *l, const double *r)
 {
     cplx l0 = get(l, 0), l1 = get(l, 1), l2 = get(l, 2), l3 = get(l, 3);
     cplx r0 = get(r, 0), r1 = get(r, 1), r2 = get(r, 2), r3 = get(r, 3);
@@ -294,20 +294,20 @@ void vertex_vector_wedge(double *out, const double *l, const double *r)
 }
 
 /* a·b of two complex vectors; of a complex vector and a momentum */
-static cplx dot(const double *a, const double *b)
+PAC_FN static cplx dot(const double *a, const double *b)
 {
     return sub(sub(sub(mul(get(a, 0), get(b, 0)), mul(get(a, 1), get(b, 1))), mul(get(a, 2), get(b, 2))),
                mul(get(a, 3), get(b, 3)));
 }
 
-static cplx dot_real(const double *a, const double *b)
+PAC_FN static cplx dot_real(const double *a, const double *b)
 {
     return sub(sub(sub(mulr(get(a, 0), b[0]), mulr(get(a, 1), b[1])), mulr(get(a, 2), b[2])), mulr(get(a, 3), b[3]));
 }
 
 /* l vector, r vector → vector, the colour-ordered three-gluon vertex; u = momenta[0],
  * v = momenta[1]: o[j] = (l·r)(u[j] - v[j]) + 2((l·v) r[j] - (r·u) l[j]) */
-void vertex_three_vector(double *out, const double *l, const double *r, const double *u, const double *v)
+PAC_FN void vertex_three_vector(double *out, const double *l, const double *r, const double *u, const double *v)
 {
     cplx lr = dot(l, r), lv = dot_real(l, v), ru = dot_real(r, u);
     cplx o[4];
@@ -317,7 +317,7 @@ void vertex_three_vector(double *out, const double *l, const double *r, const do
 }
 
 /* the vertex instruction: out[j] (mode)= o[j] × (coupling × factor) */
-void vertex(double *out, int type, int mode, const double *l, const double *r, const double *u,
+PAC_FN void vertex(double *out, int type, int mode, const double *l, const double *r, const double *u,
             const double *v, const double *coupling, const double *factor)
 {
     double o[12];
@@ -336,12 +336,12 @@ void vertex(double *out, int type, int mode, const double *l, const double *r, c
 
 /* ==== propagator: out[j] = o[j] × factor / (k·k) ================================================= */
 
-static double reciprocal_norm(const double *k) { return 1.0 / (((k[0] * k[0] - k[1] * k[1]) - k[2] * k[2]) - k[3] * k[3]); }
+PAC_FN static double reciprocal_norm(const double *k) { return 1.0 / (((k[0] * k[0] - k[1] * k[1]) - k[2] * k[2]) - k[3] * k[3]); }
 
 /* c Weyl:
  *   o[0] = -i c[0] k[3] - i c[1] k[1] + c[1] k[2] + i c[0] k[0]
  *   o[1] = -c[0] k[2] - i c[0] k[1] + i c[1] k[0] + i c[1] k[3] */
-void propagator_weyl_a(double *out, const double *c, const double *k, const double *factor)
+PAC_FN void propagator_weyl_a(double *out, const double *c, const double *k, const double *factor)
 {
     cplx c0 = get(c, 0), c1 = get(c, 1);
     cplx s = mulr(get(factor, 0), reciprocal_norm(k));
@@ -353,7 +353,7 @@ void propagator_weyl_a(double *out, const double *c, const double *k, const doub
 /* c Weyl:
  *   o[0] = -c[1] k[2] + i c[0] k[0] + i c[0] k[3] + i c[1] k[1]
  *   o[1] = -i c[1] k[3] + c[0] k[2] + i c[0] k[1] + i c[1] k[0] */
-void propagator_weyl_b(double *out, const double *c, const double *k, const double *factor)
+PAC_FN void propagator_weyl_b(double *out, const double *c, const double *k, const double *factor)
 {
     cplx c0 = get(c, 0), c1 = get(c, 1);
     cplx s = mulr(get(factor, 0), reciprocal_norm(k));
@@ -363,13 +363,13 @@ void propagator_weyl_b(double *out, const double *c, const double *k, const doub
 }
 
 /* c vector, Feynman gauge: o[j] = -i c[j] */
-void propagator_vector(double *out, const double *c, const double *k, const double *factor)
+PAC_FN void propagator_vector(double *out, const double *c, const double *k, const double *factor)
 {
     cplx s = mulr(mul(get(factor, 0), cx(0.0, -1.0)), reciprocal_norm(k));
     for (int j = 0; j < 4; j++) put(out, j, mul(get(c, j), s));
 }
 
-void propagator(double *out, int type, const double *c, const double *k, const double *factor)
+PAC_FN void propagator(double *out, int type, const double *c, const double *k, const double *factor)
 {
     switch (type) {
     case PROPAGATOR_WEYL_A: propagator_weyl_a(out, c, k, factor); break;
@@ -380,18 +380,18 @@ void propagator(double *out, int type, const double *c, const double *k, const d
 
 /* ==== scale, clear, closure ====================================================================== */
 
-void scale(double *c, int components, const double *factor)
+PAC_FN void scale(double *c, int components, const double *factor)
 {
     cplx f = get(factor, 0);
     for (int j = 0; j < components; j++) put(c, j, mul(f, get(c, j)));
 }
 
-void clear(double *c, int components)
+PAC_FN void clear(double *c, int components)
 {
     for (int j = 0; j < components; j++) put(c, j, ZERO);
 }
 
-void closure(double *amplitude, const double *l, const double *r, const double *component_factors,
+PAC_FN void closure(double *amplitude, const double *l, const double *r, const double *component_factors,
              int components, const double *factor)
 {
     cplx a = get(amplitude, 0), f = get(factor, 0);
@@ -409,7 +409,7 @@ int kernel_call(symjit_kernel fn, double *output, int outputs, double *input, in
     return fn(NULL, states, 0, NULL);
 }
 
-void kernel_store(double *out, const double *values, const int *outputs, int pairs, int direct, int mode,
+PAC_FN void kernel_store(double *out, const double *values, const int *outputs, int pairs, int direct, int mode,
                   const double *factor)
 {
     cplx f = get(factor, 0);
@@ -423,7 +423,7 @@ void kernel_store(double *out, const double *values, const int *outputs, int pai
 
 /* ==== reduction ================================================================================== */
 
-double reduction(const double *amplitudes, const int *terms, const double *weights, int n, long numerator,
+PAC_FN double reduction(const double *amplitudes, const int *terms, const double *weights, int n, long numerator,
                  long denominator)
 {
     double acc = 0.0;
@@ -434,7 +434,7 @@ double reduction(const double *amplitudes, const int *terms, const double *weigh
     return numerator == denominator ? acc : acc * (double)numerator / (double)denominator;
 }
 
-double reduction_single(const double *amplitudes, int term, double weight, long numerator, long denominator)
+PAC_FN double reduction_single(const double *amplitudes, int term, double weight, long numerator, long denominator)
 {
     cplx a = get(amplitudes, term);
     double acc = 0.0 + weight * fma(a.re, a.re, a.im * a.im);  /* as reduction(): 0.0 + the first term */

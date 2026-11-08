@@ -284,7 +284,7 @@ function makefile(prog::Lowered, testing::Bool; interpreter::Bool = false)::Stri
     return """
     # $(prog.process) $(prog.colour), compiled by PacRunner's compile.
     #   make         runner.o and pacops.o$(testing ? ", and testing" : "")
-    $(testing ? "#   make test    runs testing: the points of examples.json against RustiCol's outputs\n" : "")#   make clean
+    $(testing ? "#   make test    runs testing: the points of examples.json against RustiCol's outputs\n" : "")$(interpreter ? "#   make gpu     runner_gpu.o (nvcc): run_gpu, every point on the GPU (uirvm.h)\n" : "")#   make clean
     # CFLAGS may be changed; PACFLAGS may not: the values are bit for bit the Julia runner's only
     # without contracted multiply-adds (-ffp-contract=off).
     CC ?= cc
@@ -297,7 +297,18 @@ function makefile(prog::Lowered, testing::Bool; interpreter::Bool = false)::Stri
 
     pacops.o: pacops.c pacops.h
     \t\$(CC) \$(CFLAGS) \$(PACFLAGS) -c -o \$@ pacops.c
-    $(testing ? """
+    $(interpreter ? """
+
+    # the same runner.c on the GPU; NVFLAGS may be changed, NVPACFLAGS may not (bit for bit the CPU's
+    # only without contracted multiply-adds)
+    NVCC ?= nvcc
+    NVFLAGS ?= -O3 -arch=native
+    NVPACFLAGS = --fmad=false
+    gpu: runner_gpu.o
+
+    runner_gpu.o: runner.c runner.h pacops.c pacops.h$vm
+    \t\$(NVCC) \$(NVFLAGS) \$(NVPACFLAGS) -x cu -c -o \$@ runner.c
+    """ : "")$(testing ? """
 
     testing: testing.c runner.h runner.o pacops.o
     \t\$(CC) \$(CFLAGS) \$(PACFLAGS) -o \$@ testing.c runner.o pacops.o -lm
@@ -306,9 +317,9 @@ function makefile(prog::Lowered, testing::Bool; interpreter::Bool = false)::Stri
     \t./testing
     """ : "")
     clean:
-    \trm -f runner.o pacops.o$(testing ? " testing" : "")
+    \trm -f runner.o pacops.o$(testing ? " testing" : "")$(interpreter ? " runner_gpu.o" : "")
 
-    .PHONY: all$(testing ? " test" : "") clean
+    .PHONY: all$(testing ? " test" : "")$(interpreter ? " gpu" : "") clean
     """
 end
 function compile_scales(writer, prog::Lowered)

@@ -41,6 +41,12 @@ interpreter, copied next to it with `uirvm.h`. `run()`, `runner.h` and the value
 for bit. The straight-line C is the CPU runner (about twice as fast); the interpreter is the GPU's,
 and its CPU build is its test.
 
+The interpreter's `runner.c` also builds with nvcc: `make gpu` gives `runner_gpu.o` with
+`int run_gpu(double *out, const double *momenta, size_t points)` (`uirvm.h`), every point on the GPU,
+one thread each, momenta and outputs point by point on the host. Every function of `pacops`, `uirvm`
+and the kernels is then a device function too (`PAC_FN`), and the tables are `__device__` data
+(`UIR_DATA`). The outputs are the CPU build's bit for bit (`--fmad=false`, as `-ffp-contract=off`).
+
 ## Layout
 
 | Path | What it is |
@@ -82,7 +88,8 @@ SJB2OBJ=/path/to/sjb2obj julia --project -e 'using Pkg; Pkg.test()'
 The scripts compare with symjit and RustiCol directly, for example
 `julia --project test/test_compile.jl SJB2OBJ` (every program of every case, C against Julia and
 RustiCol), `julia --project test/test_kernel_c.jl SJB2OBJ` (each kernel's C against its sjb2obj
-library), `julia --project test/test_sjb.jl SJBDUMP DIR` (the reader against symjit's own, with
+library), `julia --project test/test_gpu.jl` (the GPU build against the CPU build, every program;
+with nvcc and a GPU, `Pkg.test()` runs it too), `julia --project test/test_sjb.jl SJBDUMP DIR` (the reader against symjit's own, with
 `test/sjbdump`) and `julia --project test/test_wavefunctions.jl` (against RustiCol's
 wavefunctions, built with rustc).
 

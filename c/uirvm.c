@@ -19,7 +19,7 @@
 
 /* word 0, low half: op 0-4, EXT 5, SET 6, FIRST 7, LAST 8, D 9-21, T 22-31;
  * high half: L 0-12, R 13-25, N 0-15, X 26-31 (bits 32-63 of the word) */
-uint32_t uir_decode(const uint64_t *w, uir_row *o)
+PAC_FN uint32_t uir_decode(const uint64_t *w, uir_row *o)
 {
     uint32_t lo = (uint32_t)w[0], hi = (uint32_t)(w[0] >> 32);
     uint32_t ext = (lo >> 5) & 1;
@@ -47,17 +47,17 @@ uint32_t uir_decode(const uint64_t *w, uir_row *o)
 }
 
 /* an edge-table entry's fields */
-static inline uint32_t edge_start(const uir_program *g, uint32_t e) { return (g->edges[e] & 0x7fff) * 2; }
-static inline uint32_t edge_form(const uir_program *g, uint32_t e) { return (g->edges[e] >> 15) & 0xff; }
-static inline int edge_components(const uir_program *g, uint32_t e) { return (g->edges[e] >> 23) & 0xf; }
+PAC_FN static inline uint32_t edge_start(const uir_program *g, uint32_t e) { return (g->edges[e] & 0x7fff) * 2; }
+PAC_FN static inline uint32_t edge_form(const uir_program *g, uint32_t e) { return (g->edges[e] >> 15) & 0xff; }
+PAC_FN static inline int edge_components(const uir_program *g, uint32_t e) { return (g->edges[e] >> 23) & 0xf; }
 
 /* ---- the arena ------------------------------------------------------------------------------- */
 
-static inline double *plane_re(const uir_arena *a, uint32_t k) { return a->planes + (2 * (size_t)k) * a->ld + a->i; }
-static inline double *plane_im(const uir_arena *a, uint32_t k) { return a->planes + (2 * (size_t)k + 1) * a->ld + a->i; }
+PAC_FN static inline double *plane_re(const uir_arena *a, uint32_t k) { return a->planes + (2 * (size_t)k) * a->ld + a->i; }
+PAC_FN static inline double *plane_im(const uir_arena *a, uint32_t k) { return a->planes + (2 * (size_t)k + 1) * a->ld + a->i; }
 
 /* n components from plane `start` into v (re, im each), and back */
-static inline void load(const uir_arena *a, uint32_t start, int n, double *v)
+PAC_FN static inline void load(const uir_arena *a, uint32_t start, int n, double *v)
 {
     for (int j = 0; j < n; j++) {
         v[2 * j] = *plane_re(a, start + j);
@@ -65,7 +65,7 @@ static inline void load(const uir_arena *a, uint32_t start, int n, double *v)
     }
 }
 
-static inline void store(const uir_arena *a, uint32_t start, int n, const double *v)
+PAC_FN static inline void store(const uir_arena *a, uint32_t start, int n, const double *v)
 {
     for (int j = 0; j < n; j++) {
         *plane_re(a, start + j) = v[2 * j];
@@ -73,25 +73,25 @@ static inline void store(const uir_arena *a, uint32_t start, int n, const double
     }
 }
 
-static inline cplx load1(const uir_arena *a, uint32_t k) { return cx(*plane_re(a, k), *plane_im(a, k)); }
-static inline void store1(const uir_arena *a, uint32_t k, cplx z) { *plane_re(a, k) = z.re; *plane_im(a, k) = z.im; }
+PAC_FN static inline cplx load1(const uir_arena *a, uint32_t k) { return cx(*plane_re(a, k), *plane_im(a, k)); }
+PAC_FN static inline void store1(const uir_arena *a, uint32_t k, cplx z) { *plane_re(a, k) = z.re; *plane_im(a, k) = z.im; }
 
 /* momentum form f into q[4] */
-static inline void load_form(const uir_arena *a, uint32_t f, double *q)
+PAC_FN static inline void load_form(const uir_arena *a, uint32_t f, double *q)
 {
     for (int j = 0; j < 4; j++) q[j] = a->forms[(4 * (size_t)f + j) * a->ld + a->i];
 }
 
-static inline double *amplitude_re(const uir_arena *a, uint32_t k) { return a->amplitudes + (2 * (size_t)k) * a->ld + a->i; }
-static inline double *amplitude_im(const uir_arena *a, uint32_t k) { return a->amplitudes + (2 * (size_t)k + 1) * a->ld + a->i; }
+PAC_FN static inline double *amplitude_re(const uir_arena *a, uint32_t k) { return a->amplitudes + (2 * (size_t)k) * a->ld + a->i; }
+PAC_FN static inline double *amplitude_im(const uir_arena *a, uint32_t k) { return a->amplitudes + (2 * (size_t)k + 1) * a->ld + a->i; }
 
 /* ---- the rows -------------------------------------------------------------------------------- */
 
-/* the components a vertex writes */
-static const int VERTEX_OUT[5] = {2, 2, 4, 6, 4};
+/* the components a vertex writes (a function, not a table: a host table is not the device's) */
+PAC_FN static inline int vertex_out(uint32_t op) { return op == UIR_V_TENSOR_VECTOR || op == UIR_V_THREE_VECTOR ? 4 : op == UIR_V_VECTOR_WEDGE ? 6 : 2; }
 
 /* a vertex row: its values × (coupling × factor) into the run's sum `acc`; stored at LAST */
-static void run_vertex(const uir_program *g, const uir_arena *a, const uir_row *o, cplx *acc)
+PAC_FN static void run_vertex(const uir_program *g, const uir_arena *a, const uir_row *o, cplx *acc)
 {
     double l[2 * UIR_MAX_COMPONENTS], r[2 * UIR_MAX_COMPONENTS], v[2 * UIR_MAX_COMPONENTS];
     load(a, edge_start(g, o->l), edge_components(g, o->l), l);
@@ -108,7 +108,7 @@ static void run_vertex(const uir_program *g, const uir_arena *a, const uir_row *
         vertex_three_vector(v, l, r, u, w);
     }
     }
-    int n = VERTEX_OUT[o->op];
+    int n = vertex_out(o->op);
     uint32_t d = edge_start(g, o->d);
     cplx s = mul(get(g->scales, o->t), get(g->factors, o->x));
     for (int j = 0; j < n; j++) {
@@ -122,7 +122,7 @@ static void run_vertex(const uir_program *g, const uir_arena *a, const uir_row *
 }
 
 /* a propagator row: the current's new values */
-static void run_propagator(const uir_program *g, const uir_arena *a, const uir_row *o)
+PAC_FN static void run_propagator(const uir_program *g, const uir_arena *a, const uir_row *o)
 {
     double c[8], q[4], v[8];
     uint32_t d = edge_start(g, o->d);
@@ -134,7 +134,7 @@ static void run_propagator(const uir_program *g, const uir_arena *a, const uir_r
 }
 
 /* a closure row: amplitude += Σ l[j] r[j] × component factor j × factor */
-static void run_closure(const uir_program *g, const uir_arena *a, const uir_row *o)
+PAC_FN static void run_closure(const uir_program *g, const uir_arena *a, const uir_row *o)
 {
     double l[2 * UIR_MAX_COMPONENTS], r[2 * UIR_MAX_COMPONENTS], cf[2 * UIR_MAX_COMPONENTS], amp[2];
     uint32_t first = g->list_first[o->t];
@@ -154,7 +154,7 @@ static void run_closure(const uir_program *g, const uir_arena *a, const uir_row 
 }
 
 /* a kernel input */
-static double kernel_input(const uir_program *g, const uir_arena *a, const uir_row *o, uint32_t code,
+PAC_FN static double kernel_input(const uir_program *g, const uir_arena *a, const uir_row *o, uint32_t code,
                            const uint32_t *scaleset)
 {
     uint32_t kind = code & 7, im = (code >> 3) & 1, n = code >> 4;
@@ -171,7 +171,7 @@ static double kernel_input(const uir_program *g, const uir_arena *a, const uir_r
 }
 
 /* a kernel row: the stub's inputs, the kernel, its pairs into out (KERNEL_DIRECT: as they are) */
-static int run_kernel(const uir_program *g, const uir_arena *a, const uir_row *o)
+PAC_FN static int run_kernel(const uir_program *g, const uir_arena *a, const uir_row *o)
 {
     double in[UIR_KERNEL_IN], out[UIR_KERNEL_OUT];
     uint32_t s = g->instance[2 * (size_t)o->t], set = g->instance[2 * (size_t)o->t + 1];
@@ -193,7 +193,7 @@ static int run_kernel(const uir_program *g, const uir_arena *a, const uir_row *o
 }
 
 /* a source row: factor × the wavefunction at its edge's form, into its edge's current */
-static void run_source(const uir_program *g, const uir_arena *a, const uir_row *o)
+PAC_FN static void run_source(const uir_program *g, const uir_arena *a, const uir_row *o)
 {
     double q[4], v[2 * UIR_MAX_COMPONENTS];
     uint32_t t = o->n;
@@ -204,7 +204,7 @@ static void run_source(const uir_program *g, const uir_arena *a, const uir_row *
     store(a, edge_start(g, o->d), n, v);
 }
 
-int uir_rows(const uir_program *g, const uir_arena *a)
+PAC_FN int uir_rows(const uir_program *g, const uir_arena *a)
 {
     cplx acc[UIR_MAX_COMPONENTS];
     uir_row o;
@@ -236,7 +236,7 @@ int uir_rows(const uir_program *g, const uir_arena *a)
 
 /* ---- forms, sources, reduction --------------------------------------------------------------- */
 
-void uir_forms(const uir_program *g, const uir_arena *a, const double *momenta)
+PAC_FN void uir_forms(const uir_program *g, const uir_arena *a, const double *momenta)
 {
     for (uint32_t f = 0; f < g->forms; f++)
         for (int j = 0; j < 4; j++) {
@@ -253,7 +253,7 @@ void uir_forms(const uir_program *g, const uir_arena *a, const double *momenta)
 
 /* the sources: the SOURCE rows at the head of the stream (a pass of their own, so a GPU runner may
  * run them in f64 before converting the arena) */
-void uir_sources(const uir_program *g, const uir_arena *a)
+PAC_FN void uir_sources(const uir_program *g, const uir_arena *a)
 {
     uir_row o;
     for (uint32_t k = 0;;) {
@@ -264,7 +264,7 @@ void uir_sources(const uir_program *g, const uir_arena *a)
 }
 
 /* out[h] = group factor × Σ weight × |amplitude|² over output h's terms, as pacops' reduction */
-void uir_reduce(const uir_program *g, const uir_arena *a, double *out)
+PAC_FN void uir_reduce(const uir_program *g, const uir_arena *a, double *out)
 {
     for (uint32_t h = 0; h < g->outputs; h++) {
         uint32_t first = g->output_first[h], last = g->output_first[h + 1];
@@ -284,7 +284,7 @@ void uir_reduce(const uir_program *g, const uir_arena *a, double *out)
     }
 }
 
-int uir_run(const uir_program *g, const uir_arena *a, const double *momenta, double *out)
+PAC_FN int uir_run(const uir_program *g, const uir_arena *a, const double *momenta, double *out)
 {
     uir_forms(g, a, momenta);
     uir_sources(g, a);

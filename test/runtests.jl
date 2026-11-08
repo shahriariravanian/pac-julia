@@ -7,6 +7,8 @@
 # kernels as C (kernel_c.jl), and (with make) the compiled folders' own `make test` of every program,
 # kernel rows included, straight-line and on the UIR interpreter (c/uirvm.c, whose decoder is also
 # checked against decode_row).
+# With nvcc and a GPU (NVCC, nvidia-smi): every program on the GPU build of the interpreter, bit for
+# bit its CPU build.
 # With symjit-utils' sjb2obj (ENV["SJB2OBJ"], or sjb2obj on the PATH): the kernels' libraries are
 # built, the kernels' C is checked against them bit for bit, and every program of every case runs,
 # in Julia and in C.
@@ -24,6 +26,7 @@ module CompileScript include(joinpath(@__DIR__, "test_compile.jl")) end
 module VariantsScript include(joinpath(@__DIR__, "test_compile_variants.jl")) end
 module LowerScript include(joinpath(@__DIR__, "test_lower.jl")) end
 module KernelCScript include(joinpath(@__DIR__, "test_kernel_c.jl")) end
+module GpuScript include(joinpath(@__DIR__, "test_gpu.jl")) end
 
 const CASES = CompileScript.cases()
 const CC = CompileScript.CC
@@ -378,6 +381,14 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         end
     else
         @info "no C compiler ($CC): the compiled C is not tested"
+    end
+
+    if HAVE_CC && HAVE_MAKE && GpuScript.have_gpu()
+        @testset "the interpreter on the GPU" begin
+            @test sum(c -> GpuScript.test_folder(c; quiet = true), CASES) == 0
+        end
+    else
+        @info "no nvcc or no GPU: the GPU build is not run"
     end
 
     if HAVE_CC && SJB2OBJ !== nothing
