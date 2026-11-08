@@ -7,7 +7,7 @@
 #      test/compile_driver.c and the kernels' libraries (cc -ffp-contract=off -Werror), and run on
 #      its examples.json points; the folder's own `make test` (testing.c) must pass too;
 #      with `interpreter`, the program runs on the UIR interpreter (compile's `interpreter`);
-#   3. each output is compared bit for bit with the Julia runner (pacrun.jl's evaluate) and with
+#   3. each output is compared bit for bit with the Julia runner (evaluators/progeval.jl's evaluate) and with
 #      the CPU's outputs in examples.json (RustiCol) within TOLERANCE of the point's total, as
 #      test_pacrun.jl does; the bit-identical outputs are counted (RustiCol's symjit 2.27.3 AVX
 #      kernels may round differently from the scalar kernel libraries, see test_operations.jl).

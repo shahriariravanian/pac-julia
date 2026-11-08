@@ -380,7 +380,7 @@ function compile_forms(writer, prog::Lowered, b::ArenaIndex)
     emit(writer, "void forms(double *p, const double *momenta) {")
 
     # the program's leg l: the caller's leg `leg` (1-based) times `sign`, or the caller's leg l
-    # (as pacrun.jl's fill_forms!: q = 0.0 + Σ coef × (sign × p[leg]), in term order)
+    # (as evaluators/progeval.jl's fill_forms!: q = 0.0 + Σ coef × (sign × p[leg]), in term order)
     external(l, j) = prog.crossing === nothing ? "momenta[$(4*(l-1)+j)]" :
         "($(lit(prog.crossing[l][2])) * momenta[$(4*(prog.crossing[l][1]-1)+j)])"
 
@@ -458,13 +458,13 @@ end
 # real part of a scale (by its slot in the scale set), a part of the row's factor
 function kernel_arg(i::KernelInput, op::LOp, prog::Lowered, b::ArenaIndex, scaleset::Vector{ScaleIndex})::String
     j = i.n - 1
-    im = i.im ? 1 : 0
+    im_ = i.im ? 1 : 0
     if i.kind == IN_L
-        return "p[$(edge_at(b, prog, op.l) + 2*j + im)]"
+        return "p[$(edge_at(b, prog, op.l) + 2*j + im_)]"
     elseif i.kind == IN_R
-        return "p[$(edge_at(b, prog, op.r) + 2*j + im)]"
+        return "p[$(edge_at(b, prog, op.r) + 2*j + im_)]"
     elseif i.kind == OUT
-        return "p[$(edge_at(b, prog, op.d) + 2*j + im)]"
+        return "p[$(edge_at(b, prog, op.d) + 2*j + im_)]"
     elseif i.kind == MOMENTUM_U
         return "p[$(form_at(b, edge_form(prog, op.l)) + j)]"
     elseif i.kind == MOMENTUM_V
@@ -472,7 +472,7 @@ function kernel_arg(i::KernelInput, op::LOp, prog::Lowered, b::ArenaIndex, scale
     elseif i.kind == SCALE
         return scale(scaleset[i.n])
     else  # FACTOR
-        return "factors[$(2*(op.x-1) + im)]"
+        return "factors[$(2*(op.x-1) + im_)]"
     end
 end
 

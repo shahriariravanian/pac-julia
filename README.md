@@ -46,12 +46,12 @@ and its CPU build is its test.
 | Path | What it is |
 | --- | --- |
 | `src/PacRunner.jl` | the module |
-| `src/types.jl`, `src/arena.jl` | the program (`Program`, its instructions) and the values of one point (`Arena`) |
-| `src/pacrun.jl` | the loader of `main.json` and `evaluate` |
-| `src/wavefunctions.jl`, `src/operations.jl` | the sources and the instructions, RustiCol's arithmetic in the same order |
+| `src/types.jl` | the program (`Program`, its instructions) |
+| `src/program.jl` | the loader of `main.json` |
+| `src/evaluators/` | the Julia runners: `arena.jl` (`Arena`, the values of one point of a `Program`), `wavefunctions.jl`, `operations.jl` (the sources and the instructions, RustiCol's arithmetic in the same order), `progeval.jl` (`evaluate(::Program)`), `uireval.jl` (`evaluate(::Lowered)`, the third oracle) |
 | `src/compile.jl` | the C generator, from a `Lowered` (`compile(dir, p::Program)` lowers `p` first); `ArenaIndex`, runner.c's arena |
 | `src/sjb.jl`, `src/complexify.jl` | the reader of saved symjit applications and symjit's Complexifier |
-| `src/uir.jl`, `src/lower.jl`, `src/uireval.jl` | UIR v0.6, the lowered form the back ends will read (`Lowered`); `lower(p)` with its checks (`validate`); `evaluate(::Lowered)`, the third oracle |
+| `src/uir.jl`, `src/lower.jl` | UIR v0.6, the lowered form the back ends read (`Lowered`); `lower(p)` with its checks (`validate`) |
 | `src/passes.jl` | the optional passes over a `Lowered`: `sort_runs`, `fuse`, `reuse_planes` (the liveness layout), `optimize` (all three) |
 | `src/encode.jl` | `encode(l)`: the device form (64-bit rows, 32-bit edge table, source records), and `decode` |
 | `c/pacops.c`, `c/pacops.h` | the sources and instructions in C, copied next to each `runner.c` |

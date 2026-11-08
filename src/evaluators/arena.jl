@@ -9,7 +9,7 @@ struct Arena
 end
 
 # an arena sized for programs of `forms` forms, currents of `components` components, `amplitudes`
-# amplitudes; Arena(p::Program) in pacrun.jl
+# amplitudes; Arena(p::Program) in progeval.jl
 Arena(forms::Int, components::Vector{Int}, amplitudes::Int) =
     Arena(fill((0.0, 0.0, 0.0, 0.0), forms), [zeros(Complex{Float64}, n) for n in components], zeros(Complex{Float64}, amplitudes))
 

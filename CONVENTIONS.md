@@ -1,8 +1,8 @@
 # main.json conventions
 
 The legend that pac2json writes into `main.json` as `configs.conventions` and `configs.instructions`,
-kept here word for word. PacRunner's sources are the reference: `src/types.jl` and `src/pacrun.jl` (the
-fields), `src/wavefunctions.jl` (the sources), `src/operations.jl` (the instructions).
+kept here word for word. PacRunner's sources are the reference: `src/types.jl` and `src/program.jl` (the
+fields), `src/evaluators/wavefunctions.jl` (the sources), `src/evaluators/operations.jl` (the instructions).
 
 ## Conventions
 

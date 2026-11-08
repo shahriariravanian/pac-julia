@@ -2,7 +2,7 @@
 #
 # The runner: `load_artifact` reads one program of main.json into a Program (the template: every
 # name resolved to an index), `evaluate` runs it on one phase-space point with an Arena (the
-# values). The instructions are operations.jl's, the sources wavefunctions.jl's.
+# values). The instructions are evaluators/operations.jl's, the sources evaluators/wavefunctions.jl's.
 #
 #   p = load_artifact("folder/main.json", 1)        # or load_programs("folder/main.json")
 #   a = Arena(p)
@@ -23,15 +23,17 @@ using JSON
 using Libdl
 
 include("types.jl")
-include("wavefunctions.jl")
-include("operations.jl")
-include("arena.jl")
-include("pacrun.jl")
+include("program.jl")
 include("uir.jl")
 include("lower.jl")
 include("passes.jl")
 include("encode.jl")
-include("uireval.jl")
+# the evaluators: the arithmetic, then the runners of a Program and of a Lowered
+include("evaluators/arena.jl")
+include("evaluators/wavefunctions.jl")
+include("evaluators/operations.jl")
+include("evaluators/progeval.jl")
+include("evaluators/uireval.jl")
 include("compile.jl")
 include("compile_vm.jl")
 include("sjb.jl")
