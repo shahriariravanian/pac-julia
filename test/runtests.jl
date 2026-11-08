@@ -168,6 +168,52 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         @test_throws ErrorException lower(refusals["a null vertex operand"])
     end
 
+    @testset "encode (UIR v0.6)" begin
+        P = PacRunner
+        # the word layout: op 0-4, EXT 5, SET 6, FIRST 7, LAST 8, D 9-21, T 22-31, L 32-44, R 45-57, X 58-63,
+        # N 32-47; values 0-based
+        o = P.LOp(P.V_THREE_VECTOR; set = true, first = true, d = 3, t = 2, l = 5, r = 7, x = 4)
+        @test P.encode_row!(UInt64[], o) == [UInt64(4) | 1 << 6 | 1 << 7 | 2 << 9 | 1 << 22 | 4 << 32 | 6 << 45 | 3 << 58]
+        c = P.LOp(P.CLEAR; d = 1, n = 6)
+        @test P.encode_row!(UInt64[], c) == [UInt64(Int(P.CLEAR)) | UInt64(6) << 32]
+        # a kernel's null operand is all ones; decoded, it is 0 again
+        k = P.LOp(P.KERNEL; d = 1, t = 1, l = 2, r = 0, x = 1)
+        @test (P.encode_row!(UInt64[], k)[1] >> 45) & 0x1fff == 0x1fff
+        @test P.decode_row(P.encode_row!(UInt64[], k), 1) == (k, 2)
+        # no field crosses bit 32, in word 0 or in word 1
+        for f in (P.FD, P.FT, P.FL, P.FR, P.FN, P.FX)
+            @test (f.shift + f.width <= 32 || f.shift >= 32) && (f.hishift + f.hiwidth <= 32 || f.hishift >= 32)
+        end
+        # random rows of every opcode: one word when the values fit, two when not, and back
+        rng = Xoshiro(7)
+        for op in instances(P.Opcode), wide in (false, true), _ in 1:50
+            fs = P.fields(op)
+            val(f, index) = index ? rand(rng, 1:(wide ? 2^(f.width + f.hiwidth) - 1 : 2^f.width - 1)) :
+                                    rand(rng, 0:(wide ? 2^(f.width + f.hiwidth) - 1 : 2^f.width - 1))
+            v = Dict(s => val(f, index) for (s, f, index) in fs)
+            wide && (v[:d] = 2^13 + rand(rng, 0:1000))      # forces the wide form
+            P.is_kernel(op) && rand(rng, Bool) && (v[:r] = 0)
+            flags = P.is_vertex(op) ? (rand(rng, Bool), rand(rng, Bool), rand(rng, Bool)) :
+                    P.is_kernel(op) ? (rand(rng, Bool), false, false) : (false, false, false)
+            row = P.LOp(op, flags..., get(v, :d, 0), get(v, :t, 0), get(v, :l, 0), get(v, :r, 0), get(v, :n, 0), get(v, :x, 0))
+            words = P.encode_row!(UInt64[], row)
+            @test length(words) == (wide ? 2 : 1)
+            @test P.decode_row(words, 1) == (row, length(words) + 1)
+        end
+        # beyond the wide form: refused
+        @test_throws ErrorException P.encode_row!(UInt64[], P.LOp(P.V_WEYL_VECTOR_A; first = true, last = true, d = 2^20 + 1, t = 1, l = 1, r = 1, x = 1))
+        @test_throws ErrorException P.encode_row!(UInt64[], P.LOp(P.P_VECTOR; d = 1, x = 2^16 + 1))
+        # every program: the rows read back, one word each, and the decoded program evaluates as the
+        # Lowered (in the comparisons above, through LowerScript.passes)
+        for case in CASES, p in load_programs(joinpath(case, "main.json"))
+            l = optimize(lower(p))
+            e = encode(l)
+            @test P.decode_rows(e.rows) == l.ops
+            @test length(e.rows) == length(l.ops)
+            @test [P.decode_edge(x)[1] for x in e.edges] == [P.edge_plane(l, k) for k in eachindex(l.edges)]
+        end
+    end
+
     @testset "compile refuses" begin
         p = load_programs(joinpath(@__DIR__, "data", "ppjjj_crossed", "main.json"))[1]
         for (name, v) in VariantsScript.refusals(p)

@@ -1,8 +1,8 @@
 # lower.jl and uireval.jl on pac2json folders (default: every case in test/data): every program is
 # lowered and validated; every row is read back through the edge table to the Program operation it
 # came from (operands, momenta, tables, flags); and on examples.json's points evaluate(::Lowered)
-# must equal evaluate(::Program) bit for bit, plain and after each pass (passes.jl: sort_runs, fuse,
-# reuse_planes, optimize). Programs with kernel rows run only with SJB2OBJ (their libraries are built
+# must equal evaluate(::Program) bit for bit, plain, after each pass (passes.jl: sort_runs, fuse,
+# reuse_planes, optimize) and decoded from its encoding (encode.jl). Programs with kernel rows run only with SJB2OBJ (their libraries are built
 # in a copy of the folder, as test_compile.jl does).
 # usage: julia --project test/test_lower.jl [--sjb2obj SJB2OBJ] [PAC2JSON_DIR...]
 include(joinpath(@__DIR__, "compile_common.jl"))
@@ -85,8 +85,12 @@ end
 same(x::Float64, y::Float64) = reinterpret(UInt64, x) == reinterpret(UInt64, y) || (isnan(x) && isnan(y))
 
 # `lower(p)` and its forms after each pass, by name
-passes(l::Lowered) = ["plain" => l, "sort_runs" => sort_runs(l), "fuse" => fuse(l), "reuse_planes" => reuse_planes(l),
-                      "optimize" => optimize(l)]
+# and what a device reads: the encoded rows, edges and sources decoded (encode.jl), plain and optimized
+function passes(l::Lowered)
+    o = optimize(l)
+    return ["plain" => l, "sort_runs" => sort_runs(l), "fuse" => fuse(l), "reuse_planes" => reuse_planes(l),
+            "encoded" => decode(encode(l), l), "encoded optimized" => decode(encode(o), o), "optimize" => o]
+end
 
 # The outputs of `lower(p)` and of each pass on `points` that differ (bit for bit) from the Program's
 # (`differ`, by pass in `by`), with what the passes did: the rows fused by `optimize`, the planes of
@@ -145,7 +149,7 @@ function test_folder(dir::String; sjb2obj = nothing)::Int
     end
     println("$(basename(dir)): ", failed == 0 ? "every program lowers and reads back" : "$failed programs FAILED",
             ex === nothing ? " (no examples.json: not evaluated)" :
-            "; $outputs outputs bit for bit, plain and after each pass; optimize: $joined rows fused, " *
+            "; $outputs outputs bit for bit, plain, after each pass and encoded; optimize: $joined rows fused, " *
             "$plain → $reused planes (peak live $peak)" *
             (skipped > 0 ? "; $skipped programs with kernel rows not run (no --sjb2obj)" : ""))
     return failed

@@ -14,6 +14,7 @@ app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR, lowere
 l = lower(p)                                   # UIR v0.6: rows on edges, the layout, the tables
 evaluate(l, LArena(l), momenta)                # bit for bit evaluate(p, a, momenta)
 o = optimize(l)                                # sort_runs, fuse, reuse_planes: the same values
+e = encode(o)                                  # the 8-byte rows, the edge table, the sources
 ```
 
 ## The compiled folder
@@ -45,6 +46,7 @@ cd out && make test     # u_ubar_to_z_g_g flow:2,4,5,1: 8 points, 384 outputs; 0
 | `src/sjb.jl`, `src/complexify.jl` | the reader of saved symjit applications and symjit's Complexifier |
 | `src/uir.jl`, `src/lower.jl`, `src/uireval.jl` | UIR v0.6, the lowered form the back ends will read (`Lowered`); `lower(p)` with its checks (`validate`); `evaluate(::Lowered)`, the third oracle |
 | `src/passes.jl` | the optional passes over a `Lowered`: `sort_runs`, `fuse`, `reuse_planes` (the liveness layout), `optimize` (all three) |
+| `src/encode.jl` | `encode(l)`: the device form (64-bit rows, 32-bit edge table, source records), and `decode` |
 | `c/pacops.c`, `c/pacops.h` | the sources and instructions in C, copied next to each `runner.c` |
 | `CONVENTIONS.md` | the meaning of main.json's fields and instructions (pac2json's legend) |
 | `test/runtests.jl` | the short tests |
