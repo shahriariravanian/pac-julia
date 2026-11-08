@@ -70,8 +70,8 @@ typedef struct {
     uint32_t version;                 /* UIR_VERSION */
     uint32_t legs, forms, planes, amplitudes, outputs;
 
-    const uint64_t *rows;             /* the encoded words: the sources', the rows', END */
-    uint32_t words, source_words;     /* all of them (END's included); the sources' at the head */
+    const uint32_t *rows;             /* the encoded words, each as two halves (low first): the sources', the rows', END */
+    uint32_t words, source_words;     /* the rows (one 64-bit word each): all of them (END included); the sources at the head */
     const uint32_t *edges;            /* the edge table: start / 2 (15), form (8, 255 none), components (4), type (4) */
     const double *scales, *factors;   /* (re, im) each */
 
@@ -98,17 +98,24 @@ typedef struct {
     size_t ld, i;
 } uir_arena;
 
-/* a row decoded: its fields 0-based as they are in the word (a null operand all ones of its width:
- * 13 or 20 bits for D, L, R; 10 or 16 for T; 6 or 16 for X) */
-typedef struct {
-    uint32_t op, set, first, last, d, t, l, r, n, x;
-} uir_row;
+/* A row is its word, as two 32-bit halves: w[0] the low, w[1] the high. A field is read where it is
+ * used: low half op 0-4, EXT 5, SET 6, FIRST 7, LAST 8, D 9-21, T 22-31; high half L 0-12, R 13-25,
+ * N 0-15, X 26-31. Index fields are 0-based; a null operand is all ones (which no row reads).
+ * The interpreter reads one-word rows only: a wide row (EXT, a second word for indices beyond these
+ * widths) is not supported, and compile(...; interpreter = true) refuses a program that has one. */
+#define UIR_OP(w) ((w)[0] & 31u)
+#define UIR_SET(w) (((w)[0] >> 6) & 1u)
+#define UIR_FIRST(w) (((w)[0] >> 7) & 1u)
+#define UIR_LAST(w) (((w)[0] >> 8) & 1u)
+#define UIR_D(w) (((w)[0] >> 9) & 0x1fffu)
+#define UIR_T(w) ((w)[0] >> 22)
+#define UIR_L(w) ((w)[1] & 0x1fffu)
+#define UIR_R(w) (((w)[1] >> 13) & 0x1fffu)
+#define UIR_N(w) ((w)[1] & 0xffffu)                     /* a count, or a SOURCE's template */
+#define UIR_X(w) ((w)[1] >> 26)
 
 /* the program's kernels (the program defines it) */
 PAC_FN int uir_kernel(uint32_t kernel, const double *in, double *out);
-
-/* the row at w, into o; returns its words (1 or 2) */
-PAC_FN uint32_t uir_decode(const uint64_t *w, uir_row *o);
 
 /* one point: the forms from momenta[4 legs] (the caller's (E, px, py, pz) per leg), the sources (the
  * SOURCE rows at the head), the rows (from word source_words up to END), the reduction into

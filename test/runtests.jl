@@ -5,8 +5,8 @@
 # kernel rows), and compile's refusals.
 # With a C compiler (CC, default cc): the compiled C against the Julia runner, the variants, the
 # kernels as C (kernel_c.jl), and (with make) the compiled folders' own `make test` of every program,
-# kernel rows included, straight-line and on the UIR interpreter (c/uirvm.c, whose decoder is also
-# checked against decode_row).
+# kernel rows included, straight-line and on the UIR interpreter (c/uirvm.c, whose field macros are also
+# checked, field by field, against decode_row on one-word rows).
 # With nvcc and a GPU (NVCC, nvidia-smi): every program on the GPU build of the interpreter, bit for
 # bit its CPU build.
 # With symjit-utils' sjb2obj (ENV["SJB2OBJ"], or sjb2obj on the PATH): the kernels' libraries are
@@ -216,26 +216,28 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             @test P.decode_row(words, 1) == (row, length(words) + 1)
             push!(random_rows, row)
         end
-        # uirvm's decoder (c/uirvm.c) on the same rows: each field as decode_row reads it, 0-based
+        # uirvm.h's field macros on the one-word rows (uirvm reads no wide rows): each field as
+        # decode_row reads it, 0-based
+        narrow = filter(o -> length(P.encode_row!(UInt64[], o)) == 1, random_rows)
         if HAVE_CC
             dir = mktempdir()
             exe = joinpath(dir, "decode_driver")
             home = joinpath(@__DIR__, "..")
             run(`$CC -std=c99 -O2 -Wall -Werror -I$(joinpath(home, "c")) -o $exe $(joinpath(@__DIR__, "decode_driver.c")) $(joinpath(home, "c", "pacops.c")) -lm`)
-            words = foldl(P.encode_row!, random_rows; init = UInt64[])
+            words = foldl(P.encode_row!, narrow; init = UInt64[])
             text = read(pipeline(`$exe`; stdin = IOBuffer(join(string.(words; base = 16), " "))), String)
             lines = split(strip(text), "\n")
-            @test length(lines) == length(random_rows)
+            @test length(lines) == length(narrow)
             # an index 0-based, a Lowered's none (0) as -1; a count as it is
             want(o) = Dict(s => getfield(o, s) - index for (s, _, index) in P.fields(o.op))
             decoded = 0
-            for (o, line) in zip(random_rows, lines)
+            for (o, line) in zip(narrow, lines)
                 v = parse.(Int, split(line))
                 got = Dict(:d => v[5], :t => v[6], :l => v[7], :r => v[8], :n => v[9], :x => v[10])
                 ok = v[1:4] == [Int(o.op), o.set, o.first, o.last] && all(got[s] == w for (s, w) in want(o))
                 decoded += ok
             end
-            @test decoded == length(random_rows)
+            @test decoded == length(narrow)
         end
         # beyond the wide form: refused
         @test_throws ErrorException P.encode_row!(UInt64[], P.LOp(P.V_WEYL_VECTOR_A; first = true, last = true, d = 2^20 + 1, t = 1, l = 1, r = 1, x = 1))
@@ -273,6 +275,17 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         # another program's examples
         ex = load_examples(joinpath(@__DIR__, "data", "ppjjj_crossed", "examples.json"), 2)
         @test_throws ErrorException compile(mktempdir(), p; examples = ex)
+        # the interpreter: a wide row (here a factor index beyond X's 6 bits)
+        l = lower(p)
+        factors = vcat(l.factors, fill(1.0 + 0.0im, 64))
+        k = findfirst(o -> PacRunner.is_propagator(o.op), l.ops)
+        o = l.ops[k]
+        ops = copy(l.ops)
+        ops[k] = PacRunner.LOp(o.op, o.set, o.first, o.last, o.d, o.t, o.l, o.r, o.n, length(factors))
+        wide = PacRunner.with(l; factors, ops)
+        @test length(encode(wide).rows) > length(wide.sources) + length(wide.ops) + 1
+        @test_throws ErrorException compile(mktempdir(), wide; interpreter = true)
+        @test isdir(compile(mktempdir(), wide))   # the straight-line C has no word fields
     end
 
     @testset "the compiled folder" begin

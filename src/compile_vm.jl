@@ -22,7 +22,9 @@ function carray(writer, ty::String, name::String, values; per_line = 8)
     emit(writer, "};")
 end
 
-hex64(w::UInt64) = "0x" * string(w; base = 16, pad = 16) * "ull"
+hex32(w::UInt32) = "0x" * string(w; base = 16, pad = 8) * "u"
+# the words as uirvm reads them: each as two 32-bit halves, low first
+halves(words::Vector{UInt64}) = [UInt32((w >> s) & 0xffffffff) for w in words for s in (0, 32)]
 cdoubles(zs::Vector{Complex{Float64}}) = [lit(f(z)) for z in zs for f in (real, imag)]
 # a "first" table: the offsets of each entry's items, then their total
 firsts(lengths) = cumsum([0; collect(lengths)])
@@ -77,6 +79,11 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
     b = ArenaIndex(prog)
     examples === nothing || check_examples(prog, examples)
     e = encode(prog)
+    # uirvm reads one-word rows only: a wide row (EXT) is refused here
+    length(e.rows) == length(prog.sources) + length(prog.ops) + 1 ||
+        error("$(prog.process) $(prog.colour): $(length(e.rows) - length(prog.sources) - length(prog.ops) - 1) wide rows " *
+              "(an index beyond the one-word fields: 13-bit edges, 10-bit T, 6-bit factors); the UIR interpreter " *
+              "reads one-word rows only")
     kernels = used_kernels(prog)
     number = Dict(k.name => n - 1 for (n, k) in enumerate(kernels))
     writer = CodeWriterCpu(path)
@@ -94,7 +101,7 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         emit(writer, "#include \"runner.h\"")
         newline(writer)
 
-        carray(writer, "uint64_t", "rows", hex64.(e.rows); per_line = 4)
+        carray(writer, "uint32_t", "rows", hex32.(halves(e.rows)); per_line = 8)
         carray(writer, "uint32_t", "edges", e.edges)
         carray(writer, "double", "scales", cdoubles(prog.scales); per_line = 4)
         carray(writer, "double", "factors", cdoubles(prog.factors); per_line = 4)

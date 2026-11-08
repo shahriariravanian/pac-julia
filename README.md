@@ -39,7 +39,9 @@ With `interpreter = true`, `runner.c` holds the program as data (the encoded wor
 edge table and the tables they index, as one `uir_program`) and includes `uirvm.c`, the UIR
 interpreter, copied next to it with `uirvm.h`. `run()`, `runner.h` and the values are the same, bit
 for bit. The straight-line C is the CPU runner (about twice as fast); the interpreter is the GPU's,
-and its CPU build is its test.
+and its CPU build is its test. The interpreter reads each row's fields straight from its word (the
+`UIR_` macros of `uirvm.h`) and takes one-word rows only: a program with a wide row (an index beyond
+the one-word fields) is refused.
 
 The interpreter's `runner.c` also builds with nvcc: `make gpu` gives `runner_gpu.o` with
 `int run_gpu(double *out, const double *momenta, size_t points)` (`uirvm.h`), every point on the GPU,
