@@ -59,15 +59,17 @@ function load_input(code::AbstractString)::KernelInput
     end
 end
 
-# the kernels of main.json, by name: each with its .plane.symjit (the compiled runners' kernels) and
-# its shared library (pac2json --sjb2obj; the Julia runner's)
+# the kernels of main.json, by name: each with its .plane.symjit (the compiled runners' kernels) and,
+# when pac2json built it (--sjb2obj), its shared library (the Julia runner's)
 function load_kernels(main, path)
     kernels = Dict{String,KernelLibrary}()
     for k in main.kernels
         lib = k.library
-        lib === nothing && error("kernel $(k.name) has no library: run pac2json with --sjb2obj")
-        kernels[k.name] = load_kernel(joinpath(dirname(path), lib.path), lib.symbol, lib.states, lib.outputs;
-                                      source = joinpath(dirname(path), k.path))
+        source = joinpath(dirname(path), k.path)
+        # without a library (pac2json without --sjb2obj) the kernel loads as not built: the
+        # compiled runners need only its .plane.symjit, the Julia runner refuses to call it
+        kernels[k.name] = lib === nothing ? load_kernel("", k.name, k.inputs, 2 * k.output_pairs; source) :
+                          load_kernel(joinpath(dirname(path), lib.path), lib.symbol, lib.states, lib.outputs; source)
     end
     return kernels
 end
