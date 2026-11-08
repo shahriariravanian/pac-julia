@@ -47,10 +47,13 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         ps = load_programs(joinpath(@__DIR__, "data", "ppjjj_crossed", "main.json"))
         @test count(p -> p.crossing !== nothing, ps) == 12
         @test count(!has_kernel_rows, ps) == 3
-        # test/data holds no libraries: they load as not built, and a call is an error
-        p = load_artifact(joinpath(@__DIR__, "data", "uux_zgg", "main.json"))
+        # test/data holds no libraries: with kernels = :none they load as not built, and a call is an error
+        p = load_artifact(joinpath(@__DIR__, "data", "uux_zgg", "main.json"); kernels = :none)
         @test !built(p.bindings[1].kernel)
         @test_throws ErrorException evaluate(p, Arena(p), [(500.0, 0.0, 0.0, 500.0) for _ in 1:p.legs])
+        # a folder is its main.json
+        @test length(load_programs(joinpath(@__DIR__, "data", "ppjjj_crossed"); kernels = :none)) == 21
+        @test load_examples(joinpath(@__DIR__, "data", "uux_zgg")).process == p.process
     end
 
     @testset "sjb reader" begin
@@ -82,6 +85,69 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             stack = [ComplexifyScript.rand_value(rng) for _ in 1:max(64, a.stack_size + 2)]
             ComplexifyScript.run_mir!(l, mem, stack, Float64[])
             @test any(!iszero, mem[a.count_states+1:a.count_states+a.count_obs])
+        end
+    end
+
+    if HAVE_CC
+        @testset "Julia runner with kernel_c libraries" begin
+            # every program, kernel rows included: the kernels built from kernel_c's C (kernel_lib.jl),
+            # against RustiCol within 1e-14 of the total
+            for case in CASES
+                ps = load_programs(case; kernels = :c)
+                @test all(k -> built(k), [b.kernel for p in ps for b in p.bindings])
+                for (p, e) in zip(ps, read_main(joinpath(case, "examples.json")).programs), pt in e.points
+                    got = evaluate(p, Arena(p), [Tuple(Float64.(v)) for v in pt.momenta])
+                    cpu = Float64.(pt.outputs)
+                    @test maximum(abs.(got .- cpu)) <= 1e-14 * abs(sum(cpu))
+                end
+                # and bit for bit the sjb2obj libraries' values
+                if SJB2OBJ !== nothing
+                    withenv("SJB2OBJ" => SJB2OBJ) do
+                        qs = load_programs(case; kernels = :sjb2obj)
+                        for (p, q, e) in zip(ps, qs, read_main(joinpath(case, "examples.json")).programs), pt in e.points
+                            m = [Tuple(Float64.(v)) for v in pt.momenta]
+                            @test all(same.(evaluate(p, Arena(p), m), evaluate(q, Arena(q), m)))
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    @testset "artifacts" begin
+        # check_artifact: what pac2json records (a pyAmpliCol LC process or process-set artifact of
+        # schema 3, with its UMAMI provider), and the artifact_id that names its capture
+        id = repeat("ab", 32)
+        function fake(; kind = "pyamplicol-process", schema = 3, colour = "lc", provider = true, artifact_id = id)
+            dir = mktempdir()
+            write(joinpath(dir, "artifact.json"), PacRunner.JSON.json(Dict("artifact_id" => artifact_id, "kind" => kind,
+                "schema_version" => schema, "runtime" => Dict("engine" => "rusticol"),
+                "producer" => Dict("version" => "0.2.1", "versions" => Dict("process_artifact" => schema)),
+                "processes" => [Dict("id" => "p", "color_accuracy" => colour)])))
+            provider && (mkpath(joinpath(dir, "API", "umami")); touch(joinpath(dir, "API", "umami", "provider_p0.h")))
+            return dir
+        end
+        @test PacRunner.is_artifact(fake())
+        @test !PacRunner.is_artifact(joinpath(@__DIR__, "data", "uux_zgg"))
+        @test PacRunner.check_artifact(fake()) == id
+        @test PacRunner.check_artifact(fake(kind = "pyamplicol-process-set")) == id
+        @test_throws ErrorException PacRunner.check_artifact(fake(kind = "something"))
+        @test_throws ErrorException PacRunner.check_artifact(fake(schema = 4))
+        @test_throws ErrorException PacRunner.check_artifact(fake(colour = "nlc"))
+        @test_throws ErrorException PacRunner.check_artifact(fake(provider = false))
+        @test_throws ErrorException PacRunner.check_artifact(fake(artifact_id = "not a sha"))
+        @test_throws ErrorException PacRunner.check_artifact(joinpath(@__DIR__, "data", "uux_zgg"))
+        # a pac2json folder or main.json is used as it is (no capture)
+        @test PacRunner.main_json(joinpath(@__DIR__, "data", "uux_zgg")) == joinpath(@__DIR__, "data", "uux_zgg", "main.json")
+        # with pac2json installed (PacRunner.install()) and ENV["PACRUNNER_ARTIFACT"] an LC artifact:
+        # captured once, then found by its artifact_id
+        art = get(ENV, "PACRUNNER_ARTIFACT", nothing)
+        if art !== nothing && isfile(PacRunner.pac2json_path())
+            dir = capture(art)
+            @test basename(dir) == PacRunner.check_artifact(art)
+            @test isfile(joinpath(dir, "main.json")) && isfile(joinpath(dir, "examples.json"))
+            @test capture(art) == dir
+            @test length(load_programs(art)) == length(read_main(joinpath(dir, "main.json")).programs)
         end
     end
 
@@ -433,6 +499,6 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             end
         end
     else
-        @info "no sjb2obj (ENV[\"SJB2OBJ\"] or the PATH): programs with kernel rows are not run"
+        @info "no sjb2obj (ENV[\"SJB2OBJ\"] or the PATH): the comparisons with its native kernel libraries are not run"
     end
 end

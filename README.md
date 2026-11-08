@@ -6,10 +6,11 @@ reference it is tested against: its values are bit for bit the Julia runner's, w
 
 ```julia
 using PacRunner
-p = load_artifact("folder/main.json", 1)       # or load_programs("folder/main.json")
+p = load_artifact("lc", 1)                     # program 1 of a pyAmpliCol LC artifact (or a pac2json folder, or its main.json)
+ps = load_programs("lc")                       # all of them
 a = Arena(p)
 outputs = evaluate(p, a, momenta)              # momenta[leg] = (E, px, py, pz), the caller's legs
-compile("out", p; examples = load_examples("folder/examples.json", 1))   # the folder out/, below (from lower(p))
+compile("out", p; examples = load_examples("lc", 1))   # the folder out/, below (from lower(p))
 app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR on real registers (ComplexBi kept)
 kernel_c("k0", "kernel.plane.symjit")          # the kernel as C: static int k0(double *mem)
 l = lower(p)                                   # UIR v0.7: rows on edges, the layout, the tables
@@ -18,6 +19,26 @@ o = optimize(l)                                # sort_runs, fuse, reuse_planes: 
 e = encode(o)                                  # one stream of 8-byte words (sources, then rows), the edge table
 compile("out-vm", p; interpreter = true)       # the same folder, runner.c on the UIR interpreter
 ```
+
+## Artifacts and installation
+
+`load_artifact`, `load_programs` and `load_examples` take a pyAmpliCol LC artifact directory (its
+`artifact.json`) as they take a pac2json folder. The first time, the artifact is recorded by
+pac2json (`capture(artifact)`), into this package's scratch space (Scratch.jl), in a folder named by
+the artifact's `artifact_id`; afterwards that folder is used. `capture(artifact; parameters =
+"params.json")` records with other model parameters (a folder of its own).
+
+pac2json is built on first use, or by `PacRunner.install()`: pacuda (github.com/siravan/pacuda at
+a pinned commit) and its patched RustiCol (MadGraph7's `pyamplicol/` at the commit pacuda pins,
+with pacuda's patches; only RustiCol's Rust crate is compiled: no Python, no pyAmpliCol build, no
+Symbolica), into the scratch space. It needs git, tar, patch, a C compiler and Rust installed with
+rustup (pacuda names its toolchain; rustup fetches it). On Linux and macOS.
+
+The Julia runner calls each symjit kernel through a shared library, built on first use into the
+scratch space (`load_programs(path; kernels = ...)`): `:auto` (the default) with symjit-utils'
+`sjb2obj` when it is found (`SJB2OBJ`, or the PATH), else from `kernel_c`'s C with `cc`; `:sjb2obj`,
+`:c`, or `:none` (no library: only programs without kernel rows run). Both give the same values bit
+for bit. The compiled runners need neither: their kernels are C in `runner.c`.
 
 ## The compiled folder
 
@@ -59,6 +80,7 @@ and the kernels is then a device function too (`PAC_FN`), and the tables are `__
 | `src/evaluators/` | the Julia runners: `arena.jl` (`Arena`, the values of one point of a `Program`), `wavefunctions.jl`, `operations.jl` (the sources and the instructions, RustiCol's arithmetic in the same order), `progeval.jl` (`evaluate(::Program)`), `uireval.jl` (`evaluate(::Lowered)`, the third oracle) |
 | `src/compile.jl` | the C generator, from a `Lowered` (`compile(dir, p::Program)` lowers `p` first); `ArenaIndex`, runner.c's arena |
 | `src/sjb.jl`, `src/complexify.jl` | the reader of saved symjit applications and symjit's Complexifier |
+| `src/install.jl`, `src/kernel_lib.jl` | `install`, `capture` (pac2json for pyAmpliCol artifacts) and the Julia runner's kernel libraries |
 | `src/kernel_c.jl` | `kernel_c(name, path)`: a kernel's MIR as one C function, the native code's operations (bit for bit sjb2obj's library); the compiled folders' kernels |
 | `src/uir.jl`, `src/lower.jl` | UIR v0.7, the lowered form the back ends read (`Lowered`); `lower(p)` with its checks (`validate`) |
 | `src/passes.jl` | the optional passes over a `Lowered`: `sort_runs`, `fuse`, `reuse_planes` (the liveness layout), `optimize` (all three) |
@@ -79,12 +101,14 @@ julia --project -e 'using Pkg; Pkg.test()'
 
 Without external tools this tests the loader, the `.sjb` reader, the Complexifier, the Julia runner
 against RustiCol's outputs, and, with a C compiler (`CC`, default `cc`), the compiled C: its kernels
-are C (`kernel_c`), so every program's folder builds and passes `make test`. The Julia runner calls
-the kernels' libraries, built by symjit-utils' `sjb2obj`; with them, every program also runs in
-Julia, C against Julia bit for bit, and each kernel's C against its library:
+are C (`kernel_c`), so every program's folder builds and passes `make test`, and every program runs
+in Julia with kernel libraries built from that C. With symjit-utils' `sjb2obj`, the tests also build
+the kernels' native libraries: Julia and C against them bit for bit, and each kernel's C against its
+library. With nvcc and a GPU, the interpreter's GPU build against its CPU build. With
+`PACRUNNER_ARTIFACT` an LC artifact and pac2json installed, its capture:
 
 ```sh
-SJB2OBJ=/path/to/sjb2obj julia --project -e 'using Pkg; Pkg.test()'
+SJB2OBJ=/path/to/sjb2obj PACRUNNER_ARTIFACT=/path/to/lc julia --project -e 'using Pkg; Pkg.test()'
 ```
 
 The scripts compare with symjit and RustiCol directly, for example

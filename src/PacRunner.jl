@@ -4,7 +4,9 @@
 # name resolved to an index), `evaluate` runs it on one phase-space point with an Arena (the
 # values). The instructions are evaluators/operations.jl's, the sources evaluators/wavefunctions.jl's.
 #
-#   p = load_artifact("folder/main.json", 1)        # or load_programs("folder/main.json")
+#   p = load_artifact("folder", 1)                  # or load_programs("folder"): a pac2json folder (or
+#                                                   # its main.json), or a pyAmpliCol LC artifact, which
+#                                                   # pac2json captures once (install.jl)
 #   a = Arena(p)
 #   outputs = evaluate(p, a, momenta)               # momenta[leg] = (E, px, py, pz), the caller's
 #
@@ -21,6 +23,8 @@ module PacRunner
 
 using JSON
 using Libdl
+using Scratch
+using SHA
 
 include("types.jl")
 include("program.jl")
@@ -39,6 +43,8 @@ include("compile_vm.jl")
 include("sjb.jl")
 include("complexify.jl")
 include("kernel_c.jl")
+include("kernel_lib.jl")
+include("install.jl")
 
 # the runner
 export Program, Arena, ArenaIndex, read_main, load_artifact, load_programs, load_examples, evaluate
@@ -48,5 +54,7 @@ export Lowered, LArena, lower, validate, sort_runs, fuse, reuse_planes, optimize
 export compile
 # the kernels
 export read_sjb, SavedApplication, MIR, complexify, listing, kernel_c
+# pac2json, for pyAmpliCol artifacts
+export install, capture
 
 end

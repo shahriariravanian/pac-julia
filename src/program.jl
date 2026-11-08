@@ -59,19 +59,27 @@ function load_input(code::AbstractString)::KernelInput
     end
 end
 
-# the kernels of main.json, by name: each with its .plane.symjit (the compiled runners' kernels) and,
-# when pac2json built it (--sjb2obj), its shared library (the Julia runner's)
-function load_kernels(main, path)
-    kernels = Dict{String,KernelLibrary}()
+# the kernels of main.json, by name, each with its .plane.symjit (the compiled runners' kernels) and
+# a library for the Julia runner: pac2json's (--sjb2obj), else one built the way `kernels` says
+# (kernel_lib.jl: :auto, :sjb2obj, :c, :none)
+function load_kernels(main, path; kernels::Symbol = :auto)
+    kernels in KERNEL_WAYS || error("kernels = :$kernels: one of $(join(KERNEL_WAYS, ", "))")
+    way = resolve_way(kernels)
+    out = Dict{String,KernelLibrary}()
     for k in main.kernels
         lib = k.library
         source = joinpath(dirname(path), k.path)
-        # without a library (pac2json without --sjb2obj) the kernel loads as not built: the
-        # compiled runners need only its .plane.symjit, the Julia runner refuses to call it
-        kernels[k.name] = lib === nothing ? load_kernel("", k.name, k.inputs, 2 * k.output_pairs; source) :
-                          load_kernel(joinpath(dirname(path), lib.path), lib.symbol, lib.states, lib.outputs; source)
+        (inputs, outputs) = (Int(k.inputs), 2 * Int(k.output_pairs))
+        out[k.name] = if lib !== nothing && isfile(joinpath(dirname(path), lib.path))
+            load_kernel(joinpath(dirname(path), lib.path), lib.symbol, lib.states, lib.outputs; source)
+        elseif way == :none
+            load_kernel("", k.name, inputs, outputs; source)
+        else
+            built = kernel_library(source, String(k.sha256), inputs, outputs, way)
+            load_kernel(something(built, ""), KERNEL_SYMBOL, inputs, outputs; source, name = k.name)
+        end
     end
-    return kernels
+    return out
 end
 
 function load_bindings(prog, kernels)
@@ -154,21 +162,28 @@ function load_program(prog, kernels)::Program
     )
 end
 
-read_main(path::String) = JSON.parse(read(path, String))
+read_main(path::AbstractString) = JSON.parse(read(path, String))
 
-# program `program` (1-based) of main.json at `path`
-function load_artifact(path::String, program::Int = 1)::Program
-    main = read_main(path)
-    return load_program(main.programs[program], load_kernels(main, path))
+# `path` (here and below): a main.json, a pac2json folder, or a pyAmpliCol LC artifact directory
+# (captured by pac2json once: install.jl's capture, with `parameters`). `kernels`: how the Julia
+# runner's kernel libraries are found or built (kernel_lib.jl: :auto, :sjb2obj, :c, :none).
+
+# program `program` (1-based) of `path`
+function load_artifact(path::AbstractString, program::Int = 1; kernels::Symbol = :auto, parameters = nothing)::Program
+    file = main_json(path; parameters)
+    main = read_main(file)
+    return load_program(main.programs[program], load_kernels(main, file; kernels))
 end
 
-# program `program`'s entry of examples.json at `path` (process, colour, points: momenta, outputs),
-# for compile's testing.c
-load_examples(path::String, program::Int = 1) = read_main(path).programs[program]
+# program `program`'s entry of `path`'s examples.json (or of examples.json itself): process, colour,
+# points (momenta, outputs), for compile's testing.c
+load_examples(path::AbstractString, program::Int = 1; parameters = nothing) =
+    read_main(examples_json(path; parameters)).programs[program]
 
-# every program of main.json at `path`
-function load_programs(path::String)::Vector{Program}
-    main = read_main(path)
-    kernels = load_kernels(main, path)
-    return [load_program(prog, kernels) for prog in main.programs]
+# every program of `path`
+function load_programs(path::AbstractString; kernels::Symbol = :auto, parameters = nothing)::Vector{Program}
+    file = main_json(path; parameters)
+    main = read_main(file)
+    libraries = load_kernels(main, file; kernels)
+    return [load_program(prog, libraries) for prog in main.programs]
 end
