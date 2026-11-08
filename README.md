@@ -9,7 +9,7 @@ using PacRunner
 p = load_artifact("folder/main.json", 1)       # or load_programs("folder/main.json")
 a = Arena(p)
 outputs = evaluate(p, a, momenta)              # momenta[leg] = (E, px, py, pz), the caller's legs
-compile("out", p; examples = load_examples("folder/examples.json", 1))   # the folder out/, below
+compile("out", p; examples = load_examples("folder/examples.json", 1))   # the folder out/, below (from lower(p))
 app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR, lowered to real operations
 l = lower(p)                                   # UIR v0.6: rows on edges, the layout, the tables
 evaluate(l, LArena(l), momenta)                # bit for bit evaluate(p, a, momenta)
@@ -37,10 +37,10 @@ cd out && make test     # u_ubar_to_z_g_g flow:2,4,5,1: 8 points, 384 outputs; 0
 | Path | What it is |
 | --- | --- |
 | `src/PacRunner.jl` | the module |
-| `src/types.jl`, `src/arena.jl` | the program (`Program`, its instructions) and the values of one point (`Arena`, `ArenaIndex`) |
+| `src/types.jl`, `src/arena.jl` | the program (`Program`, its instructions) and the values of one point (`Arena`) |
 | `src/pacrun.jl` | the loader of `main.json` and `evaluate` |
 | `src/wavefunctions.jl`, `src/operations.jl` | the sources and the instructions, RustiCol's arithmetic in the same order |
-| `src/compile.jl` | the C generator |
+| `src/compile.jl` | the C generator, from a `Lowered` (`compile(dir, p::Program)` lowers `p` first); `ArenaIndex`, runner.c's arena |
 | `src/sjb.jl`, `src/complexify.jl` | the reader of saved symjit applications and symjit's Complexifier |
 | `src/uir.jl`, `src/lower.jl`, `src/uireval.jl` | UIR v0.6, the lowered form the back ends will read (`Lowered`); `lower(p)` with its checks (`validate`); `evaluate(::Lowered)`, the third oracle |
 | `c/pacops.c`, `c/pacops.h` | the sources and instructions in C, copied next to each `runner.c` |

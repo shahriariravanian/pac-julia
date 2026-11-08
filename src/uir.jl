@@ -138,6 +138,26 @@ edge_form(l::Lowered, e::EdgeIndex)::FormIndex = e == 0 ? 0 : l.edges[e].form
 edge_layout(l::Lowered, e::EdgeIndex)::LCurrent = l.currents[l.edges[e].current]
 edge_plane(l::Lowered, e::EdgeIndex)::PlaneOffset = edge_layout(l, e).start
 
+# A row as text, for the C comments and dumps: main.json's names (c<i>, q<i>, s<i>, x<i>, a<i>, which
+# count from 0), an edge as its current with the momentum it is read with (c12@q3)
+function describe(l::Lowered, op::LOp)::String
+    edge(e) = e == 0 ? "-" : "c$(edge_current(l, e) - 1)" * (edge_form(l, e) == 0 ? "" : "@q$(edge_form(l, e) - 1)")
+    mode = op.set ? "=" : "+="
+    run = !is_vertex(op.op) || op.first && op.last ? "" : op.first ? " [run starts]" : op.last ? " [run ends]" : " [in run]"
+    if is_vertex(op.op) || is_kernel(op.op)
+        what = is_vertex(op.op) ? "s$(op.t - 1)" : "binding instance $(op.t)"
+        return "$(op.op) $(edge(op.d)) $mode $(edge(op.l)), $(edge(op.r)); $what x$(op.x - 1)$run"
+    elseif is_propagator(op.op)
+        return "$(op.op) $(edge(op.d)); x$(op.x - 1)"
+    elseif op.op == CLOSURE
+        return "CLOSURE a$(op.d - 1) += $(edge(op.l)) . $(edge(op.r)); list $(op.t) x$(op.x - 1)"
+    elseif op.op == SCALE_ROW
+        return "SCALE $(edge(op.d)), $(op.n) components; x$(op.x - 1)"
+    else
+        return "$(op.op) $(edge(op.d)), $(op.n) components"
+    end
+end
+
 function Base.show(io::IO, ::MIME"text/plain", l::Lowered)
     count(f) = Base.count(o -> f(o.op), l.ops)
     println(io, "Lowered (UIR v$(l.version)): $(l.process), $(l.colour)")

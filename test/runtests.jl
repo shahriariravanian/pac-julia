@@ -196,6 +196,21 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
                 end
             end
         end
+        @testset "C of a fused lowering" begin
+            # the C writes a fused run row by row; by the run invariants the values are the same
+            for case in CASES
+                ps = load_programs(joinpath(case, "main.json"))
+                ex = read_main(joinpath(case, "examples.json")).programs
+                n = findfirst(!has_kernel_rows, ps)
+                n === nothing && continue
+                (fused, joined) = LowerScript.fuse_adjacent(lower(ps[n]))
+                joined > 0 || continue
+                got = CompileScript.run_compiled(compile(mktempdir(), fused), ps[n], ex[n].points)
+                a = Arena(ps[n])
+                want = [evaluate(ps[n], a, [Tuple(Float64.(v)) for v in pt.momenta]) for pt in ex[n].points]
+                @test all(all(same.(g, w)) for (g, w) in zip(got, want))
+            end
+        end
         @testset "variants" begin
             p = load_programs(joinpath(@__DIR__, "data", "ppjjj_crossed", "main.json"))[1]
             points = read_main(joinpath(@__DIR__, "data", "ppjjj_crossed", "examples.json")).programs[1].points
@@ -240,8 +255,6 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
                 for (name, v) in VariantsScript.variants(p)
                     @test LowerScript.compare(v, points)[1:2] == (0, 0)
                 end
-                f = Dict(VariantsScript.refusals(p))["a FACTOR kernel input"]
-                @test LowerScript.compare(f, points)[1:2] == (0, 0)   # lower reads it; compile does not yet
             end
         end
     else

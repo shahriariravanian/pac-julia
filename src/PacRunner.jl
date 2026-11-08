@@ -8,8 +8,12 @@
 #   a = Arena(p)
 #   outputs = evaluate(p, a, momenta)               # momenta[leg] = (E, px, py, pz), the caller's
 #
+# UIR: `lower(p)` turns a Program into a Lowered (uir.jl, lower.jl), the form the back ends read;
+# `evaluate(l, LArena(l), momenta)` runs it, bit for bit as evaluate(p, ...).
+#
 # The C: `compile(dir, p)` writes dir/runner.c (`int run(double *out, double *p, const double
-# *momenta)`) with pacops.c/h and the kernels' libraries; bit for bit the Julia runner's values.
+# *momenta)`) from lower(p), with pacops.c/h and the kernels' libraries; bit for bit the Julia
+# runner's values.
 #
 # The kernels: `read_sjb(path)` reads a saved symjit application (.sjb, .plane.symjit) and its MIR;
 # `read_sjb(path; lowered = true)` lowers a complex MIR to real operations (complexify.jl).
@@ -23,12 +27,12 @@ include("wavefunctions.jl")
 include("operations.jl")
 include("arena.jl")
 include("pacrun.jl")
-include("compile.jl")
-include("sjb.jl")
-include("complexify.jl")
 include("uir.jl")
 include("lower.jl")
 include("uireval.jl")
+include("compile.jl")
+include("sjb.jl")
+include("complexify.jl")
 
 # the runner
 export Program, Arena, ArenaIndex, read_main, load_artifact, load_programs, load_examples, evaluate

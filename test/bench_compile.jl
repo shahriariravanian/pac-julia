@@ -39,7 +39,7 @@ function bench_folder(sjb2obj::String, source::String)
         out = joinpath(dir, "compiled-$n")
         compile(out, p)  # the first call compiles compile.jl
         tc = @elapsed compile(out, p)
-        b = ArenaIndex(p, Arena(p))
+        b = ArenaIndex(lower(p))
         println("$(basename(dir)) program $n ($(p.process), $(p.colour)): $(length(p.body)) instructions, ",
                 "$(length(p.reduction)) outputs, arena $(b.size) doubles; runner.c ",
                 "$(round(Int, filesize(joinpath(out, "runner.c")) / 1024)) KB in $(round(tc, digits = 3)) s")

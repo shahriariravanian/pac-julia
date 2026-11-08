@@ -21,7 +21,7 @@ same(x::Float64, y::Float64) = reinterpret(UInt64, x) == reinterpret(UInt64, y)
 # the outputs of the compiled program in `dir` (runner.c) on `points`, built with the driver
 function run_compiled(dir::String, p::Program, points)::Vector{Vector{Float64}}
     exe = build(dir, DRIVER, joinpath(dir, "driver"), `-O2 -ffp-contract=off -Wall -Werror`)
-    b = ArenaIndex(p, Arena(p))
+    b = ArenaIndex(lower(p))
     text = read(pipeline(`$exe $(p.legs) $(length(p.reduction)) $(b.size)`; stdin = IOBuffer(points_text(points))), String)
     rows = split(strip(text), "\n")
     length(rows) == length(points) || error("the driver printed $(length(rows)) lines for $(length(points)) points")
