@@ -34,12 +34,12 @@ const FAMILY_NAMES = Dict(t => f for (f, t) in FAMILY_TYPES)
 
 # a vertex row: its values, × (coupling × factor) as vertex! does, into the run's sum
 function run_vertex!(a::LArena, l::Lowered, op::LOp)
-    type = VERTEX_TYPES[op.op]
+    ty = VERTEX_TYPES[op.op]
     reads = op.op == V_THREE_VECTOR
     u = reads ? edge_momentum(a, l, op.l) : nothing
     v = reads ? edge_momentum(a, l, op.r) : nothing
     scale = l.scales[op.t] * l.factors[op.x]
-    o = vertex_values(type, planes(a, l, op.l), planes(a, l, op.r), u, v)
+    o = vertex_values(ty, planes(a, l, op.l), planes(a, l, op.r), u, v)
     out = planes(a, l, op.d)
     if op.first
         resize!(a.acc, length(o))
@@ -58,6 +58,19 @@ function run_vertex!(a::LArena, l::Lowered, op::LOp)
             out[j] = a.acc[j]
         end
     end
+end
+
+# a propagator row: the current's new values, as evaluate(::Propagator) computes them
+function run_propagator!(a::LArena, l::Lowered, op::LOp)
+    c = planes(a, l, op.d)
+    v = propagator(PROPAGATOR_NAMES[op.op], c, edge_momentum(a, l, op.d), l.factors[op.x])
+    c[1:length(v)] = v
+end
+
+# a closure row: the amplitude += Σ l[j] r[j] × component factor j × factor
+function run_closure!(a::LArena, l::Lowered, op::LOp)
+    cf = [l.factors[k] for k in l.lists[op.t]]
+    a.amplitudes[op.d] = closure(a.amplitudes[op.d], planes(a, l, op.l), planes(a, l, op.r), cf, l.factors[op.x])
 end
 
 function kernel_input(i::KernelInput, op::LOp, a::LArena, l::Lowered, scaleset::Vector{ScaleIndex})::Float64
@@ -100,14 +113,11 @@ function run_row!(a::LArena, l::Lowered, op::LOp)
     if is_vertex(op.op)
         run_vertex!(a, l, op)
     elseif is_propagator(op.op)
-        c = planes(a, l, op.d)
-        v = propagator(PROPAGATOR_NAMES[op.op], c, edge_momentum(a, l, op.d), l.factors[op.x])
-        c[1:length(v)] = v
+        run_propagator!(a, l, op)
     elseif is_kernel(op.op)
         run_kernel!(a, l, op)
     elseif op.op == CLOSURE
-        cf = [l.factors[k] for k in l.lists[op.t]]
-        a.amplitudes[op.d] = closure(a.amplitudes[op.d], planes(a, l, op.l), planes(a, l, op.r), cf, l.factors[op.x])
+        run_closure!(a, l, op)
     elseif op.op == SCALE_ROW
         scale!(planes(a, l, op.d), op.n, l.factors[op.x])
     elseif op.op == CLEAR
