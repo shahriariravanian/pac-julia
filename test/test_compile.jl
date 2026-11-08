@@ -6,6 +6,7 @@
 #   2. each program is compiled to C (compile.jl, with its examples), built with
 #      test/compile_driver.c and the kernels' libraries (cc -ffp-contract=off -Werror), and run on
 #      its examples.json points; the folder's own `make test` (testing.c) must pass too;
+#      with `interpreter`, the program runs on the UIR interpreter (compile's `interpreter`);
 #   3. each output is compared bit for bit with the Julia runner (pacrun.jl's evaluate) and with
 #      the CPU's outputs in examples.json (RustiCol) within TOLERANCE of the point's total, as
 #      test_pacrun.jl does; the bit-identical outputs are counted (RustiCol's symjit 2.27.3 AVX
@@ -27,8 +28,8 @@ function run_compiled(dir::String, p::Program, points)::Vector{Vector{Float64}}
     return [[reinterpret(Float64, parse(UInt64, h; base = 16)) for h in split(r)] for r in rows]
 end
 
-function test_folder(sjb2obj::String, source::String)::Int
-    println("$source:")
+function test_folder(sjb2obj::String, source::String; interpreter::Bool = false)::Int
+    println("$source$(interpreter ? " (the UIR interpreter)" : ""):")
     dir = prepare(sjb2obj, source)
     programs = load_programs(joinpath(dir, "main.json"))
     ex = read_main(joinpath(dir, "examples.json"))
@@ -36,7 +37,7 @@ function test_folder(sjb2obj::String, source::String)::Int
     for (n, (p, e)) in enumerate(zip(programs, ex.programs))
         (p.process, p.colour) == (e.process, e.colour) || error("examples.json is not in main.json's order")
         out = joinpath(dir, "compiled-$n")
-        compile(out, p; examples = e)
+        compile(out, p; examples = e, interpreter)
         got = run_compiled(out, p, e.points)
         # the folder's own test: make test (testing.c, against examples.json)
         made = success(pipeline(`make -s -C $out test`; stdout = devnull, stderr = devnull))
@@ -68,7 +69,7 @@ end
 function main(args)
     sjb2obj = args[1]
     dirs = length(args) > 1 ? args[2:end] : cases()
-    failed = sum(d -> test_folder(sjb2obj, d), dirs)
+    failed = sum(d -> test_folder(sjb2obj, d) + test_folder(sjb2obj, d; interpreter = true), dirs)
     println(failed == 0 ? "all programs pass" : "$failed programs FAILED")
     return failed == 0 ? 0 : 1
 end

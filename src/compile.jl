@@ -96,13 +96,16 @@ c_mode(op::LOp) = op.set ? "MODE_SET" : "MODE_ADD"
 # a Makefile (`make`: runner.o and pacops.o). With `examples`, the program's entry of examples.json
 # (load_examples), also testing.c, which runs those points and compares with RustiCol's outputs
 # (`make test`). A Program is lowered first, and with `optimize` (the default)
-# sorted, fused and laid out by liveness (passes.jl); a Lowered is compiled as it is.
-function compile(path, prog::Program; examples = nothing, optimize::Bool = true)
+# sorted, fused and laid out by liveness (passes.jl); a Lowered is compiled as it is. With
+# `interpreter`, runner.c runs the program on the UIR interpreter (compile_vm.jl, c/uirvm.c) instead
+# of straight-line code, with the same runner.h and values.
+function compile(path, prog::Program; examples = nothing, optimize::Bool = true, interpreter::Bool = false)
     l = lower(prog)
-    return compile(path, optimize ? PacRunner.optimize(l) : l; examples)
+    return compile(path, optimize ? PacRunner.optimize(l) : l; examples, interpreter)
 end
 
-function compile(path, prog::Lowered; examples = nothing)
+function compile(path, prog::Lowered; examples = nothing, interpreter::Bool = false)
+    interpreter && return compile_interpreter(path, prog; examples)
     validate(prog)
     b = ArenaIndex(prog)
     examples === nothing || check_examples(prog, examples)
@@ -252,8 +255,9 @@ function testing_c(prog::Lowered, examples)::String
     """
 end
 
-function makefile(prog::Lowered, testing::Bool)::String
+function makefile(prog::Lowered, testing::Bool; interpreter::Bool = false)::String
     kernels = join(libraries(prog), " ")
+    vm = interpreter ? " uirvm.c uirvm.h" : ""
     return """
     # $(prog.process) $(prog.colour), compiled by PacRunner's compile.
     #   make         runner.o and pacops.o$(testing ? ", and testing" : "")
@@ -268,7 +272,7 @@ function makefile(prog::Lowered, testing::Bool)::String
 
     all: runner.o pacops.o$(testing ? " testing" : "")
 
-    runner.o: runner.c runner.h pacops.h
+    runner.o: runner.c runner.h pacops.h$vm
     \t\$(CC) \$(CFLAGS) \$(PACFLAGS) -c -o \$@ runner.c
 
     pacops.o: pacops.c pacops.h

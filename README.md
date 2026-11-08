@@ -15,6 +15,7 @@ l = lower(p)                                   # UIR v0.6: rows on edges, the la
 evaluate(l, LArena(l), momenta)                # bit for bit evaluate(p, a, momenta)
 o = optimize(l)                                # sort_runs, fuse, reuse_planes: the same values
 e = encode(o)                                  # the 8-byte rows, the edge table, the sources
+compile("out-vm", p; interpreter = true)       # the same folder, runner.c on the UIR interpreter
 ```
 
 ## The compiled folder
@@ -34,6 +35,12 @@ e = encode(o)                                  # the 8-byte rows, the edge table
 cd out && make test     # u_ubar_to_z_g_g flow:2,4,5,1: 8 points, 384 outputs; 0 beyond 1e-14 of the total ...
 ```
 
+With `interpreter = true`, `runner.c` holds the program as data (the encoded rows, the edge table,
+the sources and the tables they index, as one `uir_program`) and includes `uirvm.c`, the UIR
+interpreter, copied next to it with `uirvm.h`. `run()`, `runner.h` and the values are the same, bit
+for bit. The straight-line C is the CPU runner (about twice as fast); the interpreter is the GPU's,
+and its CPU build is its test.
+
 ## Layout
 
 | Path | What it is |
@@ -48,10 +55,11 @@ cd out && make test     # u_ubar_to_z_g_g flow:2,4,5,1: 8 points, 384 outputs; 0
 | `src/passes.jl` | the optional passes over a `Lowered`: `sort_runs`, `fuse`, `reuse_planes` (the liveness layout), `optimize` (all three) |
 | `src/encode.jl` | `encode(l)`: the device form (64-bit rows, 32-bit edge table, source records), and `decode` |
 | `c/pacops.c`, `c/pacops.h` | the sources and instructions in C, copied next to each `runner.c` |
+| `src/compile_vm.jl`, `c/uirvm.c`, `c/uirvm.h` | `compile(dir, p; interpreter = true)`: the program as tables for the UIR interpreter, in portable C (one source for the CPU and the GPU) |
 | `CONVENTIONS.md` | the meaning of main.json's fields and instructions (pac2json's legend) |
 | `test/runtests.jl` | the short tests |
 | `test/test_*.jl` | the longer comparisons, one script each (usage at the top of each); `test_lower.jl` reads every lowered row back to its operation and runs `evaluate(::Lowered)` against `evaluate(::Program)`, plain and after each pass |
-| `test/bench_compile.jl` | timing of the compiled C against the Julia runner |
+| `test/bench_compile.jl` | timing of the compiled C (straight-line and interpreted) against the Julia runner |
 | `test/data/` | the test cases (`test/data/README.md`) |
 
 ## Tests

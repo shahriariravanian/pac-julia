@@ -3,7 +3,8 @@
 # clear instructions, direct bindings, a kernel input read from the destination or from the row's
 # factor), each compiled,
 # built with test/compile_driver.c and compared bit for bit with the Julia runner on the
-# examples.json points. A variant must change the Julia runner's outputs (else it tests nothing).
+# examples.json points, straight-line and on the UIR interpreter (compile's `interpreter`). A
+# variant must change the Julia runner's outputs (else it tests nothing).
 # What lower refuses, compile refuses (a null vertex operand).
 # usage: julia --project test/test_compile_variants.jl SJB2OBJ     (CC: the C compiler, default cc)
 include(joinpath(@__DIR__, "compile_common.jl"))
@@ -16,9 +17,9 @@ same(x::Float64, y::Float64) = reinterpret(UInt64, x) == reinterpret(UInt64, y)
 # a copy of `p` with some fields replaced
 with(p::Program; kw...) = Program((haskey(kw, f) ? kw[f] : getfield(p, f) for f in fieldnames(Program))...)
 
-# the outputs of `p` at `points` by the compiled C and by the Julia runner
-function both(p::Program, points, dir::String)
-    compile(dir, p)
+# the outputs of `p` at `points` by the compiled C (straight-line, or the interpreter) and by the Julia runner
+function both(p::Program, points, dir::String; interpreter::Bool = false)
+    compile(dir, p; interpreter)
     exe = build(dir, DRIVER, joinpath(dir, "driver"), `-O2 -ffp-contract=off -Wall -Werror`)
     text = read(pipeline(`$exe $(p.legs) $(length(p.reduction)) $(arena_size(dir))`; stdin = IOBuffer(points_text(points))), String)
     c = [[reinterpret(Float64, parse(UInt64, h; base = 16)) for h in split(r)] for r in split(strip(text), "\n")]
@@ -88,14 +89,14 @@ function main(sjb2obj)
         points = read_main(joinpath(dir, "examples.json")).programs[n].points
         (_, base) = both(p, points, joinpath(dir, "base"))
         println("$case program $n ($(p.process), $(p.colour)):")
-        for (k, (name, v)) in enumerate(variants(p))
-            (c, julia) = both(v, points, joinpath(dir, "variant-$k"))
+        for (k, (name, v)) in enumerate(variants(p)), interpreter in (false, true)
+            (c, julia) = both(v, points, joinpath(dir, "variant-$k" * (interpreter ? "-vm" : "")); interpreter)
             differ = count(!same(x, y) for (cr, jr) in zip(c, julia) for (x, y) in zip(cr, jr))
             changed = any(!same(x, y) for (jr, br) in zip(julia, base) for (x, y) in zip(jr, br))
             ok = differ == 0 && changed
             ok || (failed += 1)
-            println("  $(rpad(name, 34)) C vs Julia: $differ differ; changes the outputs: $(changed ? "yes" : "NO")",
-                    ok ? "" : "  FAILED")
+            println("  $(rpad(name, 34)) $(interpreter ? "interpreter" : "C          ") vs Julia: $differ differ; ",
+                    "changes the outputs: $(changed ? "yes" : "NO")", ok ? "" : "  FAILED")
         end
         for (k, (name, v)) in enumerate(refusals(p))
             refused = try

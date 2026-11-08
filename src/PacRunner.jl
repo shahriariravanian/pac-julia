@@ -33,6 +33,7 @@ include("passes.jl")
 include("encode.jl")
 include("uireval.jl")
 include("compile.jl")
+include("compile_vm.jl")
 include("sjb.jl")
 include("complexify.jl")
 

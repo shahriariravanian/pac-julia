@@ -1,4 +1,4 @@
-# Timing of the compiled C (compile.jl) against the Julia runner (pacrun.jl's evaluate), per
+# Timing of the compiled C (compile.jl: straight-line, and on the UIR interpreter) against the Julia runner (pacrun.jl's evaluate), per
 # phase-space point, on pac2json folders (default: every case in test/data). Each folder is
 # prepared as in test_compile.jl (the kernels' libraries built by sjb2obj in a temporary copy);
 # each program is compiled once and built with test/bench_driver.c at each of FLAGS (all with
@@ -44,14 +44,15 @@ function bench_folder(sjb2obj::String, source::String)
                 "$(length(p.reduction)) outputs, arena $size doubles; runner.c ",
                 "$(round(Int, filesize(joinpath(out, "runner.c")) / 1024)) KB in $(round(tc, digits = 3)) s")
         input = points_text(e.points)
-        for (name, flags) in FLAGS
-            exe = joinpath(out, "bench-" * replace(name, " " => "-"))
-            tb = @elapsed build(out, DRIVER, exe, flags)
+        vm = compile(joinpath(dir, "interpreted-$n"), p; interpreter = true)
+        for (what, folder) in ("C" => out, "interpreter" => vm), (name, flags) in FLAGS
+            exe = joinpath(folder, "bench-" * replace(name, " " => "-"))
+            tb = @elapsed build(folder, DRIVER, exe, flags)
             # one quick pass to size the repetitions to about SECONDS over the trials
             t1 = parse(Float64, split(read(pipeline(`$exe $(p.legs) $(length(p.reduction)) $size 1 1`; stdin = IOBuffer(input)), String))[1])
             reps = max(1, round(Int, SECONDS / 5 * 1e9 / (t1 * length(e.points))))
             t = parse(Float64, split(read(pipeline(`$exe $(p.legs) $(length(p.reduction)) $size $reps 5`; stdin = IOBuffer(input)), String))[1])
-            println("  C $(rpad(name, 15)) $(us(t))   (cc $(round(tb, digits = 2)) s)")
+            println("  $(rpad(what, 11)) $(rpad(name, 15)) $(us(t))   (cc $(round(tb, digits = 2)) s)")
         end
         ms = [[Tuple(Float64.(v)) for v in pt.momenta] for pt in e.points]
         println("  Julia runner      $(us(julia_time(p, Arena(p), ms)))")

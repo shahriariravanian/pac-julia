@@ -5,7 +5,8 @@
 # kernel give the same values), the Julia runner against RustiCol's outputs (programs without
 # kernel rows), and compile's refusals.
 # With a C compiler (CC, default cc): the compiled C against the Julia runner, the variants, and
-# (with make) the compiled folders' own `make test`.
+# (with make) the compiled folders' own `make test`, straight-line and on the UIR interpreter
+# (c/uirvm.c, whose decoder is also checked against decode_row).
 # With symjit-utils' sjb2obj (ENV["SJB2OBJ"], or sjb2obj on the PATH): the kernels' libraries are
 # built and every program of every case runs, in Julia and in C.
 # The longer comparisons with symjit and RustiCol themselves (sjbdump, wavefunctions_ref.rs, the
@@ -186,6 +187,7 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         end
         # random rows of every opcode: one word when the values fit, two when not, and back
         rng = Xoshiro(7)
+        random_rows = P.LOp[]
         for op in instances(P.Opcode), wide in (false, true), _ in 1:50
             fs = P.fields(op)
             val(f, index) = index ? rand(rng, 1:(wide ? 2^(f.width + f.hiwidth) - 1 : 2^f.width - 1)) :
@@ -199,6 +201,28 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             words = P.encode_row!(UInt64[], row)
             @test length(words) == (wide ? 2 : 1)
             @test P.decode_row(words, 1) == (row, length(words) + 1)
+            push!(random_rows, row)
+        end
+        # uirvm's decoder (c/uirvm.c) on the same rows: each field as decode_row reads it, 0-based
+        if HAVE_CC
+            dir = mktempdir()
+            exe = joinpath(dir, "decode_driver")
+            home = joinpath(@__DIR__, "..")
+            run(`$CC -std=c99 -O2 -Wall -Werror -I$(joinpath(home, "c")) -o $exe $(joinpath(@__DIR__, "decode_driver.c")) $(joinpath(home, "c", "pacops.c")) -lm`)
+            words = foldl(P.encode_row!, random_rows; init = UInt64[])
+            text = read(pipeline(`$exe`; stdin = IOBuffer(join(string.(words; base = 16), " "))), String)
+            lines = split(strip(text), "\n")
+            @test length(lines) == length(random_rows)
+            # an index 0-based, a Lowered's none (0) as -1; a count as it is
+            want(o) = Dict(s => getfield(o, s) - index for (s, _, index) in P.fields(o.op))
+            decoded = 0
+            for (o, line) in zip(random_rows, lines)
+                v = parse.(Int, split(line))
+                got = Dict(:d => v[5], :t => v[6], :l => v[7], :r => v[8], :n => v[9], :x => v[10])
+                ok = v[1:4] == [Int(o.op), o.set, o.first, o.last] && all(got[s] == w for (s, w) in want(o))
+                decoded += ok
+            end
+            @test decoded == length(random_rows)
         end
         # beyond the wide form: refused
         @test_throws ErrorException P.encode_row!(UInt64[], P.LOp(P.V_WEYL_VECTOR_A; first = true, last = true, d = 2^20 + 1, t = 1, l = 1, r = 1, x = 1))
@@ -237,6 +261,10 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         plain = compile(mktempdir(), p; optimize = false)
         @test CompileScript.arena_size(plain) == ArenaIndex(lower(p)).size > CompileScript.arena_size(dir) ==
               ArenaIndex(optimize(lower(p))).size
+        # on the UIR interpreter: its source next to pacops, the same runner.h
+        vm = compile(mktempdir(), p; interpreter = true)
+        @test files(vm) == ["Makefile", "pacops.c", "pacops.h", "runner.c", "runner.h", "uirvm.c", "uirvm.h"]
+        @test read(joinpath(vm, "runner.h"), String) == read(joinpath(compile(mktempdir(), p), "runner.h"), String)
     end
 
     if HAVE_CC
@@ -251,6 +279,11 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
                     # and the plain lowering (compile's optimize = false)
                     dir = compile(mktempdir(), p; optimize = false)
                     @test all(all(same.(cr, jr)) for (cr, jr) in zip(CompileScript.run_compiled(dir, p, e.points), julia))
+                    # and on the UIR interpreter, optimized and plain
+                    for optimize in (true, false)
+                        dir = compile(mktempdir(), p; optimize, interpreter = true)
+                        @test all(all(same.(cr, jr)) for (cr, jr) in zip(CompileScript.run_compiled(dir, p, e.points), julia))
+                    end
                 end
             end
         end
@@ -275,8 +308,8 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             p = load_programs(joinpath(@__DIR__, "data", "ppjjj_crossed", "main.json"))[1]
             points = read_main(joinpath(@__DIR__, "data", "ppjjj_crossed", "examples.json")).programs[1].points
             base = VariantsScript.both(p, points, mktempdir())[2]
-            for (name, v) in VariantsScript.variants(p)
-                (c, julia) = VariantsScript.both(v, points, mktempdir())
+            for (name, v) in VariantsScript.variants(p), interpreter in (false, true)
+                (c, julia) = VariantsScript.both(v, points, mktempdir(); interpreter)
                 @test all(all(same.(cr, jr)) for (cr, jr) in zip(c, julia))
                 @test julia != base
             end
@@ -288,8 +321,10 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
                     ps = load_programs(joinpath(case, "main.json"))
                     for (n, p) in enumerate(ps)
                         has_kernel_rows(p) && continue
-                        dir = compile(mktempdir(), p; examples = load_examples(joinpath(case, "examples.json"), n))
-                        @test success(pipeline(`make -s -C $dir test`; stdout = devnull, stderr = devnull))
+                        for interpreter in (false, true)
+                            dir = compile(mktempdir(), p; examples = load_examples(joinpath(case, "examples.json"), n), interpreter)
+                            @test success(pipeline(`make -s -C $dir test`; stdout = devnull, stderr = devnull))
+                        end
                     end
                 end
             end
@@ -304,6 +339,7 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         @testset "end to end with the kernels (sjb2obj)" begin
             # every program of every case: C against Julia bit for bit, against RustiCol within 1e-14
             @test sum(c -> CompileScript.test_folder(SJB2OBJ, c), CASES) == 0
+            @test sum(c -> CompileScript.test_folder(SJB2OBJ, c; interpreter = true), CASES) == 0
             @test VariantsScript.main(SJB2OBJ) == 0
             # evaluate(::Lowered) on every program, kernel rows included
             @test sum(c -> LowerScript.test_folder(c; sjb2obj = SJB2OBJ), CASES) == 0
