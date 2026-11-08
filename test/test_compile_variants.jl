@@ -20,8 +20,7 @@ with(p::Program; kw...) = Program((haskey(kw, f) ? kw[f] : getfield(p, f) for f 
 function both(p::Program, points, dir::String)
     compile(dir, p)
     exe = build(dir, DRIVER, joinpath(dir, "driver"), `-O2 -ffp-contract=off -Wall -Werror`)
-    b = ArenaIndex(lower(p))
-    text = read(pipeline(`$exe $(p.legs) $(length(p.reduction)) $(b.size)`; stdin = IOBuffer(points_text(points))), String)
+    text = read(pipeline(`$exe $(p.legs) $(length(p.reduction)) $(arena_size(dir))`; stdin = IOBuffer(points_text(points))), String)
     c = [[reinterpret(Float64, parse(UInt64, h; base = 16)) for h in split(r)] for r in split(strip(text), "\n")]
     a = Arena(p)
     julia = [evaluate(p, a, [Tuple(Float64.(v)) for v in pt.momenta]) for pt in points]

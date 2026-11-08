@@ -95,8 +95,12 @@ c_mode(op::LOp) = op.set ? "MODE_SET" : "MODE_ADD"
 # *momenta)`), runner.h (its sizes and prototype), pacops.c and pacops.h, the kernels' libraries, and
 # a Makefile (`make`: runner.o and pacops.o). With `examples`, the program's entry of examples.json
 # (load_examples), also testing.c, which runs those points and compares with RustiCol's outputs
-# (`make test`).
-compile(path, prog::Program; examples = nothing) = compile(path, lower(prog); examples)
+# (`make test`). A Program is lowered first, and with `optimize` (the default)
+# sorted, fused and laid out by liveness (passes.jl); a Lowered is compiled as it is.
+function compile(path, prog::Program; examples = nothing, optimize::Bool = true)
+    l = lower(prog)
+    return compile(path, optimize ? PacRunner.optimize(l) : l; examples)
+end
 
 function compile(path, prog::Lowered; examples = nothing)
     validate(prog)

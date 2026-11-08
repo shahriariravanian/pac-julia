@@ -29,6 +29,7 @@ include("arena.jl")
 include("pacrun.jl")
 include("uir.jl")
 include("lower.jl")
+include("passes.jl")
 include("uireval.jl")
 include("compile.jl")
 include("sjb.jl")
@@ -37,7 +38,7 @@ include("complexify.jl")
 # the runner
 export Program, Arena, ArenaIndex, read_main, load_artifact, load_programs, load_examples, evaluate
 # UIR
-export Lowered, LArena, lower, validate
+export Lowered, LArena, lower, validate, sort_runs, fuse, reuse_planes, optimize
 # the C
 export compile
 # the kernels

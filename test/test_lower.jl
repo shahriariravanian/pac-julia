@@ -1,9 +1,9 @@
 # lower.jl and uireval.jl on pac2json folders (default: every case in test/data): every program is
 # lowered and validated; every row is read back through the edge table to the Program operation it
 # came from (operands, momenta, tables, flags); and on examples.json's points evaluate(::Lowered)
-# must equal evaluate(::Program) bit for bit, also with the adjacent vertex rows on one destination
-# fused into runs (`fuse_adjacent`). Programs with kernel rows run only with SJB2OBJ (their libraries
-# are built in a copy of the folder, as test_compile.jl does).
+# must equal evaluate(::Program) bit for bit, plain and after each pass (passes.jl: sort_runs, fuse,
+# reuse_planes, optimize). Programs with kernel rows run only with SJB2OBJ (their libraries are built
+# in a copy of the folder, as test_compile.jl does).
 # usage: julia --project test/test_lower.jl [--sjb2obj SJB2OBJ] [PAC2JSON_DIR...]
 include(joinpath(@__DIR__, "compile_common.jl"))
 using PacRunner
@@ -82,49 +82,47 @@ function fusable(l::Lowered)
     return k
 end
 
-# `l` with every vertex row joined to the run of the vertex row before it when both write the same
-# destination, it is "+=", and it does not read the destination's planes; and the number of rows joined
-function fuse_adjacent(l::Lowered)::Tuple{Lowered,Int}
-    m = deepcopy(l)
-    span(e) = (PacRunner.edge_plane(m, e), PacRunner.edge_plane(m, e) + PacRunner.edge_layout(m, e).components - 1)
-    overlaps(a, b) = a[1] <= b[2] && b[1] <= a[2]
-    joined = 0
-    for k in 2:length(m.ops)
-        (a, b) = (m.ops[k-1], m.ops[k])
-        is_vertex(a.op) && is_vertex(b.op) && a.d == b.d && !b.set || continue
-        any(e -> overlaps(span(e), span(b.d)), (b.l, b.r)) && continue
-        m.ops[k-1] = setrow(a; last = false)
-        m.ops[k] = setrow(b; first = false)
-        joined += 1
-    end
-    validate(m)
-    return (m, joined)
-end
-
 same(x::Float64, y::Float64) = reinterpret(UInt64, x) == reinterpret(UInt64, y) || (isnan(x) && isnan(y))
 
-# the outputs of `p`, `lower(p)` and its fused form on `points` that differ (bit for bit) from the
-# Program's, and the rows fused
-function compare(p::Program, points)::Tuple{Int,Int,Int}
+# `lower(p)` and its forms after each pass, by name
+passes(l::Lowered) = ["plain" => l, "sort_runs" => sort_runs(l), "fuse" => fuse(l), "reuse_planes" => reuse_planes(l),
+                      "optimize" => optimize(l)]
+
+# The outputs of `lower(p)` and of each pass on `points` that differ (bit for bit) from the Program's
+# (`differ`, by pass in `by`), with what the passes did: the rows fused by `optimize`, the planes of
+# the plain and the optimized layout, and the peak of live planes
+function compare(p::Program, points)
     l = lower(p)
-    (f, joined) = fuse_adjacent(l)
-    (a, la, fa) = (Arena(p), LArena(l), LArena(f))
-    (plain, fused) = (0, 0)
+    variants = passes(l)
+    a = Arena(p)
+    arenas = [LArena(m) for (_, m) in variants]
+    by = Dict(name => 0 for (name, _) in variants)
     for pt in points
         momenta = [Tuple(Float64.(v)) for v in pt.momenta]
         want = evaluate(p, a, momenta)
-        plain += count(!, same.(evaluate(l, la, momenta), want))
-        fused += count(!, same.(evaluate(f, fa, momenta), want))
+        for ((name, m), la) in zip(variants, arenas)
+            by[name] += count(!, same.(evaluate(m, la, momenta), want))
+        end
     end
-    return (plain, fused, joined)
+    o = last(variants)[2]
+    return (differ = sum(values(by)), by = by, fused = PacRunner.fused_rows(o), planes = l.planes,
+            reused = o.planes, peak = PacRunner.liveness_layout(o)[3])
 end
 
 has_kernel_rows(p::Program) = any(op -> op isa Kernel, p.body)
 
+# `p` with every "=" vertex row made "+=": the currents then start from zero and accumulate, with the
+# same values (0 + c is c) but no fresh first write, so reuse_planes must keep them live from the start
+function first_writes_add(p::Program)::Program
+    body = [op isa Vertex && op.mode == "=" ? Vertex(op.type, op.out, "+=", op.l, op.r, op.u, op.v, op.coupling, op.factor) : op
+            for op in p.body]
+    return Program((f == :body ? body : getfield(p, f) for f in fieldnames(Program))...)
+end
+
 function test_folder(dir::String; sjb2obj = nothing)::Int
     sjb2obj === nothing || (dir = prepare(sjb2obj, dir; quiet = true))
     ex = isfile(joinpath(dir, "examples.json")) ? read_main(joinpath(dir, "examples.json")).programs : nothing
-    (failed, skipped, outputs, joined) = (0, 0, 0, 0)
+    (failed, skipped, outputs, joined, plain, reused, peak) = (0, 0, 0, 0, 0, 0, 0)
     for (n, p) in enumerate(load_programs(joinpath(dir, "main.json")))
         diffs = try
             roundtrip(p, lower(p))
@@ -135,18 +133,20 @@ function test_folder(dir::String; sjb2obj = nothing)::Int
             if has_kernel_rows(p) && sjb2obj === nothing
                 skipped += 1
             else
-                (plain, fused, j) = compare(p, ex[n].points)
+                r = compare(p, ex[n].points)
                 outputs += length(ex[n].points) * length(p.reduction)
-                joined += j
-                plain == 0 || push!(diffs, "evaluate(::Lowered): $plain outputs differ")
-                fused == 0 || push!(diffs, "evaluate(::Lowered), fused: $fused outputs differ")
+                (joined, plain, reused, peak) = (joined + r.fused, plain + r.planes, reused + r.reused, peak + r.peak)
+                for (name, d) in r.by
+                    d == 0 || push!(diffs, "evaluate(::Lowered), $name: $d outputs differ")
+                end
             end
         end
         isempty(diffs) || (failed += 1; println("  program $n ($(p.process), $(p.colour)): ", join(first(diffs, 5), "; ")))
     end
     println("$(basename(dir)): ", failed == 0 ? "every program lowers and reads back" : "$failed programs FAILED",
             ex === nothing ? " (no examples.json: not evaluated)" :
-            "; $outputs outputs bit for bit, plain and with $joined rows fused" *
+            "; $outputs outputs bit for bit, plain and after each pass; optimize: $joined rows fused, " *
+            "$plain → $reused planes (peak live $peak)" *
             (skipped > 0 ? "; $skipped programs with kernel rows not run (no --sjb2obj)" : ""))
     return failed
 end

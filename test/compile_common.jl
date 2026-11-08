@@ -44,6 +44,14 @@ function prepare(sjb2obj::String, source::String; quiet = false)::String
     return dir
 end
 
+# the arena size of the compiled program in `dir`, from its runner.h (RUNNER_ARENA_SIZE)
+function arena_size(dir::String)::Int
+    for l in eachline(joinpath(dir, "runner.h"))
+        startswith(l, "#define RUNNER_ARENA_SIZE ") && return parse(Int, split(l)[3])
+    end
+    error("$dir/runner.h has no RUNNER_ARENA_SIZE")
+end
+
 # the points of examples.json as the drivers read them: one line of 4 × legs momenta per point
 points_text(points) = join([join([repr(Float64(x)) for v in pt.momenta for x in v], " ") for pt in points], "\n") * "\n"
 

@@ -39,18 +39,18 @@ function bench_folder(sjb2obj::String, source::String)
         out = joinpath(dir, "compiled-$n")
         compile(out, p)  # the first call compiles compile.jl
         tc = @elapsed compile(out, p)
-        b = ArenaIndex(lower(p))
+        size = arena_size(out)
         println("$(basename(dir)) program $n ($(p.process), $(p.colour)): $(length(p.body)) instructions, ",
-                "$(length(p.reduction)) outputs, arena $(b.size) doubles; runner.c ",
+                "$(length(p.reduction)) outputs, arena $size doubles; runner.c ",
                 "$(round(Int, filesize(joinpath(out, "runner.c")) / 1024)) KB in $(round(tc, digits = 3)) s")
         input = points_text(e.points)
         for (name, flags) in FLAGS
             exe = joinpath(out, "bench-" * replace(name, " " => "-"))
             tb = @elapsed build(out, DRIVER, exe, flags)
             # one quick pass to size the repetitions to about SECONDS over the trials
-            t1 = parse(Float64, split(read(pipeline(`$exe $(p.legs) $(length(p.reduction)) $(b.size) 1 1`; stdin = IOBuffer(input)), String))[1])
+            t1 = parse(Float64, split(read(pipeline(`$exe $(p.legs) $(length(p.reduction)) $size 1 1`; stdin = IOBuffer(input)), String))[1])
             reps = max(1, round(Int, SECONDS / 5 * 1e9 / (t1 * length(e.points))))
-            t = parse(Float64, split(read(pipeline(`$exe $(p.legs) $(length(p.reduction)) $(b.size) $reps 5`; stdin = IOBuffer(input)), String))[1])
+            t = parse(Float64, split(read(pipeline(`$exe $(p.legs) $(length(p.reduction)) $size $reps 5`; stdin = IOBuffer(input)), String))[1])
             println("  C $(rpad(name, 15)) $(us(t))   (cc $(round(tb, digits = 2)) s)")
         end
         ms = [[Tuple(Float64.(v)) for v in pt.momenta] for pt in e.points]

@@ -136,9 +136,9 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             ex = read_main(joinpath(case, "examples.json")).programs
             for (p, e) in zip(ps, ex)
                 has_kernel_rows(p) && continue
-                (plain, fused, j) = L.compare(p, e.points)
-                @test (plain, fused) == (0, 0)
-                joined += j
+                r = L.compare(p, e.points)
+                @test r.differ == 0
+                joined += r.fused
             end
         end
         @test joined > 0
@@ -157,8 +157,13 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         # several terms per output, a group factor); a null vertex operand is refused
         points = read_main(joinpath(case, "examples.json")).programs[n].points
         for (name, v) in VariantsScript.variants(p)
-            @test L.compare(v, points)[1:2] == (0, 0)
+            @test L.compare(v, points).differ == 0
         end
+        # reuse_planes on currents that start at zero (no fresh first write): the same values
+        acc = L.first_writes_add(p)
+        @test evaluate(acc, Arena(acc), momenta) == evaluate(p, Arena(p), momenta)
+        @test L.compare(acc, points).differ == 0
+        @test optimize(lower(acc)).planes > optimize(lower(p)).planes
         refusals = Dict(VariantsScript.refusals(p))
         @test_throws ErrorException lower(refusals["a null vertex operand"])
     end
@@ -182,6 +187,10 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         dir = compile(mktempdir(), p; examples = load_examples(joinpath(case, "examples.json"), n))
         @test files(dir) == ["Makefile", "pacops.c", "pacops.h", "runner.c", "runner.h", "testing.c"]
         @test occursin("#define RUNNER_OUTPUTS $(length(p.reduction))", read(joinpath(dir, "runner.h"), String))
+        # optimize (the default) against the plain lowering: a smaller arena
+        plain = compile(mktempdir(), p; optimize = false)
+        @test CompileScript.arena_size(plain) == ArenaIndex(lower(p)).size > CompileScript.arena_size(dir) ==
+              ArenaIndex(optimize(lower(p))).size
     end
 
     if HAVE_CC
@@ -193,17 +202,22 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
                     has_kernel_rows(p) && continue
                     (c, julia) = VariantsScript.both(p, e.points, mktempdir())
                     @test all(all(same.(cr, jr)) for (cr, jr) in zip(c, julia))
+                    # and the plain lowering (compile's optimize = false)
+                    dir = compile(mktempdir(), p; optimize = false)
+                    @test all(all(same.(cr, jr)) for (cr, jr) in zip(CompileScript.run_compiled(dir, p, e.points), julia))
                 end
             end
         end
-        @testset "C of a fused lowering" begin
-            # the C writes a fused run row by row; by the run invariants the values are the same
+        @testset "C of an optimized lowering" begin
+            # sorted, fused and with reused planes: the C writes a fused run row by row, and by the run
+            # invariants the values are the same
             for case in CASES
                 ps = load_programs(joinpath(case, "main.json"))
                 ex = read_main(joinpath(case, "examples.json")).programs
                 n = findfirst(!has_kernel_rows, ps)
                 n === nothing && continue
-                (fused, joined) = LowerScript.fuse_adjacent(lower(ps[n]))
+                fused = optimize(lower(ps[n]))
+                joined = PacRunner.fused_rows(fused)
                 joined > 0 || continue
                 got = CompileScript.run_compiled(compile(mktempdir(), fused), ps[n], ex[n].points)
                 a = Arena(ps[n])
@@ -253,7 +267,7 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
                 p = load_programs(joinpath(dir, "main.json"))[n]
                 points = read_main(joinpath(dir, "examples.json")).programs[n].points
                 for (name, v) in VariantsScript.variants(p)
-                    @test LowerScript.compare(v, points)[1:2] == (0, 0)
+                    @test LowerScript.compare(v, points).differ == 0
                 end
             end
         end
