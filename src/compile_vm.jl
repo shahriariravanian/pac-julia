@@ -1,8 +1,8 @@
 # compile(path, l; interpreter = true): the folder of compile.jl, but runner.c runs the program on
 # the UIR interpreter (c/uirvm.c, which runner.c includes) instead of straight-line code. The
 # program is data there: encode(l)'s words (the sources, then the rows) and edge table, and the tables they index, as C
-# arrays of one uir_program (c/uirvm.h); the kernels are reached through uir_kernel, a switch over
-# the kernels' numbers (the kernels' C as compile.jl's). runner.h, testing.c and the Makefile are compile.jl's, so run() has the
+# arrays of one uir_program (c/uirvm.h); the kernels are reached through uir_stub, a switch over
+# the stubs (each a kernel and its input layout, the kernels' C as compile.jl's). runner.h, testing.c and the Makefile are compile.jl's, so run() has the
 # same prototype and the values must be the straight-line C's bit for bit.
 #
 # The CPU build is the interpreter's test; the same uirvm.c is the GPU's interpreter.
@@ -92,8 +92,6 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         copy_home(writer, "c/uirvm.h")
         emit(writer, "/* $(prog.process) $(prog.colour) on the UIR interpreter (uirvm.c), compiled by PacRunner's compile */")
         emit(writer, "#include <stdlib.h>")
-        emit(writer, "#define UIR_KERNEL_IN $(max(1, maximum((k.inputs for k in kernels); init = 0)))")
-        emit(writer, "#define UIR_KERNEL_OUT $(max(1, maximum((k.outputs for k in kernels); init = 0)))")
         emit(writer, "#include \"uirvm.c\"")
         emit(writer, "#ifdef __CUDACC__")
         emit(writer, "#include \"pacops.c\"  /* one translation unit for the device */")
@@ -140,17 +138,24 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         emit(writer, "};")
         newline(writer)
 
-        # the kernels (kernel_c.jl): each called as compile.jl's adapters call it, its inputs then its outputs in mem
+        # the kernels (kernel_c.jl), and one case per stub: its inputs gathered into the kernel's mem
+        # (constant codes), the kernel, its output pairs stored (constant components)
         emit_kernels(writer, kernels)
-        emit(writer, "PAC_FN int uir_kernel(uint32_t kernel, const double *in, double *out) {")
-        emit(writer, "switch (kernel) {")
-        for k in kernels
-            emit(writer, "case $(number[k.name]): {")
+        emit(writer, "PAC_FN int uir_stub(uint32_t stub, const uir_program *g, const uir_arena *a, const uint32_t *w, const uint32_t *scaleset) {")
+        emit(writer, "switch (stub) {")
+        for (s, stub) in enumerate(prog.stubs)
+            k = stub.kernel
+            emit(writer, "case $(s - 1): {  /* $(k.name) */")
             emit(writer, "double mem[$(k.inputs + k.outputs + 1)];")
-            emit(writer, "for (int j = 0; j < $(k.inputs); j++) mem[j] = in[j];")
+            for (j, i) in enumerate(stub.inputs)
+                emit(writer, "mem[$(j - 1)] = uir_input(g, a, w, $(input_code(i))u, scaleset);")
+            end
             emit(writer, "int status = $(k.name)(mem);")
-            emit(writer, "for (int j = 0; j < $(k.outputs); j++) out[j] = mem[$(k.inputs) + j];")
-            emit(writer, "return status;")
+            emit(writer, "if (status != 0) return status;")
+            for (n, c) in enumerate(stub.outputs)
+                emit(writer, "uir_output(g, a, w, $(c - 1), cx(mem[$(k.inputs + 2(n - 1))], mem[$(k.inputs + 2(n - 1) + 1)]));")
+            end
+            emit(writer, "return 0;")
             emit(writer, "}")
         end
         emit(writer, "default: return -1;")

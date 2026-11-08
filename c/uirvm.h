@@ -13,8 +13,10 @@
  * straight-line runner's layout of one point (doubles in order); with ld = points, i = the point,
  * every plane is a contiguous row of points (coalesced on a GPU).
  *
- * The program supplies its kernels: uir_kernel(kernel, in, out) runs kernel `kernel` on `in` (its
- * inputs) into `out` (its output pairs, re and im) and returns its status (0: ok).
+ * The program supplies its kernel stubs: uir_stub(stub, g, a, w, scaleset) runs kernel row w through
+ * stub `stub` (a kernel and its input layout): its inputs gathered (uir_input), the kernel, its
+ * output pairs stored (uir_output); it returns the kernel's status (0: ok). Generated per program,
+ * so every input code and output component is a constant there.
  *
  * Bit-exactness with the Julia runners needs the plain IEEE operations: -ffp-contract=off (cc),
  * --fmad=false (nvcc).
@@ -114,8 +116,8 @@ typedef struct {
 #define UIR_N(w) ((w)[1] & 0xffffu)                     /* a count, or a SOURCE's template */
 #define UIR_X(w) ((w)[1] >> 26)
 
-/* the program's kernels (the program defines it) */
-PAC_FN int uir_kernel(uint32_t kernel, const double *in, double *out);
+/* the program's kernel stubs (the program defines it, after including uirvm.c) */
+PAC_FN int uir_stub(uint32_t stub, const uir_program *g, const uir_arena *a, const uint32_t *w, const uint32_t *scaleset);
 
 /* one point: the forms from momenta[4 legs] (the caller's (E, px, py, pz) per leg), the sources (the
  * SOURCE rows at the head), the rows (from word source_words up to END), the reduction into

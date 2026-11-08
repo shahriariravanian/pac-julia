@@ -7,7 +7,11 @@
 #include <stdlib.h>
 #include "uirvm.c"
 
-int uir_kernel(uint32_t kernel, const double *in, double *out) { (void)kernel; (void)in; (void)out; return -1; }
+int uir_stub(uint32_t stub, const uir_program *g, const uir_arena *a, const uint32_t *w, const uint32_t *scaleset)
+{
+    (void)stub; (void)g; (void)a; (void)w; (void)scaleset;
+    return -1;
+}
 
 static long field(uint32_t v, uint32_t none) { return v == none ? -1 : (long)v; }
 
