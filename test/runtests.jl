@@ -185,6 +185,15 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         for f in (P.FD, P.FT, P.FL, P.FR, P.FN, P.FX)
             @test (f.shift + f.width <= 32 || f.shift >= 32) && (f.hishift + f.hiwidth <= 32 || f.hishift >= 32)
         end
+        # the fields of an opcode never share a bit, in word 0 (with op and the flags, bits 0-8) or in word 1 (with EXT, bit 0)
+        bits(shift, width) = width == 0 ? UInt64(0) : ((UInt64(1) << width) - 1) << shift
+        for op in instances(P.Opcode)
+            (w0, w1) = (bits(0, 9), bits(0, 1))
+            for (_, f, _) in P.fields(op)
+                @test w0 & bits(f.shift, f.width) == 0 && w1 & bits(f.hishift, f.hiwidth) == 0
+                (w0, w1) = (w0 | bits(f.shift, f.width), w1 | bits(f.hishift, f.hiwidth))
+            end
+        end
         # random rows of every opcode: one word when the values fit, two when not, and back
         rng = Xoshiro(7)
         random_rows = P.LOp[]
@@ -227,13 +236,24 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         # beyond the wide form: refused
         @test_throws ErrorException P.encode_row!(UInt64[], P.LOp(P.V_WEYL_VECTOR_A; first = true, last = true, d = 2^20 + 1, t = 1, l = 1, r = 1, x = 1))
         @test_throws ErrorException P.encode_row!(UInt64[], P.LOp(P.P_VECTOR; d = 1, x = 2^16 + 1))
-        # every program: the rows read back, one word each, and the decoded program evaluates as the
-        # Lowered (in the comparisons above, through LowerScript.passes)
+        # a source: D edge, T mass scale, N template (family 0-2, antiparticle 3, helicity + 2 at 4-6,
+        # chirality + 1 at 7-8), X factor; every template value reads back
+        src = P.LSource(3, P.WEYL, true, -1, 1, 2, 5)
+        @test P.encode_row!(UInt64[], P.source_row(src)) ==
+              [UInt64(Int(P.SOURCE)) | 2 << 9 | 1 << 22 | UInt64(2 | 1 << 3 | 1 << 4 | 2 << 7) << 32 | UInt64(4) << 58]
+        for ty in (P.SCALAR, P.WEYL, P.DIRAC, P.VECTOR), anti in (false, true), h in -2:2, ch in -1:1
+            s = P.LSource(7, ty, anti, h, ch, 1, 1)
+            @test P.row_source(P.decode_row(P.encode_row!(UInt64[], P.source_row(s)), 1)[1]) == s
+        end
+        # every program: the sources at the head of the stream, then the rows, one word each; the
+        # decoded program evaluates as the Lowered (in the comparisons above, through LowerScript.passes)
         for case in CASES, p in load_programs(joinpath(case, "main.json"))
             l = optimize(lower(p))
             e = encode(l)
-            @test P.decode_rows(e.rows) == l.ops
-            @test length(e.rows) == length(l.ops)
+            @test e.source_words == length(l.sources)
+            @test P.row_source.(P.decode_rows(e.rows[1:e.source_words])) == l.sources
+            @test P.decode_rows(e.rows[e.source_words+1:end]) == l.ops
+            @test length(e.rows) == length(l.sources) + length(l.ops)
             @test [P.decode_edge(x)[1] for x in e.edges] == [P.edge_plane(l, k) for k in eachindex(l.edges)]
         end
     end

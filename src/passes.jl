@@ -112,7 +112,7 @@ function liveness_layout(l::Lowered)::Tuple{Vector{LCurrent},Int,Int}
     start = fill(-1, nc)     # the row a current becomes live (0: before the rows)
     stop = zeros(Int, nc)    # its last row
     for s in l.sources
-        start[s.current] = 0
+        start[edge_current(l, s.edge)] = 0
     end
     for (k, op) in enumerate(l.ops)
         for c in reads(l, op)

@@ -2,8 +2,9 @@
  * 8-byte encoding"), in portable C: one source for the CPU (cc, a test of the encoding against the
  * straight-line C and the Julia runners) and the GPU (nvcc, hipcc: one thread per point).
  *
- * A program is data (uir_program): the encoded rows, the edge table, the sources, and the tables
- * the rows index. Every index is 0-based; in a row's index field all ones means none.
+ * A program is data (uir_program): one stream of encoded words, the sources (SOURCE rows) first and
+ * then the rows, the edge table, and the tables the rows index. Every index is 0-based; in a row's
+ * index field all ones means none.
  *
  * The arena of a point (uir_arena): plane k (one complex component) is (re, im) at
  * planes[(2k) ld + i], planes[(2k + 1) ld + i]; component j of momentum form f at forms[(4f + j) ld + i];
@@ -34,8 +35,11 @@ extern "C" {
 enum {
     UIR_V_WEYL_VECTOR_A, UIR_V_WEYL_VECTOR_B, UIR_V_TENSOR_VECTOR, UIR_V_VECTOR_WEDGE, UIR_V_THREE_VECTOR,
     UIR_P_WEYL_A, UIR_P_WEYL_B, UIR_P_VECTOR,
-    UIR_CLOSURE, UIR_SCALE, UIR_CLEAR, UIR_KERNEL, UIR_KERNEL_DIRECT
+    UIR_CLOSURE, UIR_SCALE, UIR_CLEAR, UIR_KERNEL, UIR_KERNEL_DIRECT, UIR_SOURCE
 };
+
+/* a SOURCE row's template (its N): family 0-2 (the physical type: SCALAR 1, WEYL 2, DIRAC 3, VECTOR 4),
+ * antiparticle 3, helicity + 2 at 4-6, chirality + 1 at 7-8 */
 
 /* a kernel input's code: kind (bits 0-2), imaginary part (bit 3), n (bits 4-31: the component, or
  * the slot in the scale set) */
@@ -46,12 +50,9 @@ typedef struct {
     uint32_t version;                 /* UIR_VERSION */
     uint32_t legs, forms, planes, amplitudes, outputs;
 
-    const uint64_t *rows;             /* the encoded rows */
-    uint32_t words;
+    const uint64_t *rows;             /* the encoded words: the sources', then the rows' */
+    uint32_t words, source_words;     /* all of them; the sources' at the head */
     const uint32_t *edges;            /* the edge table: start / 2 (15), form (8, 255 none), components (4), type (4) */
-    uint32_t sources;
-    const int32_t *source;            /* 8 each: edge, form, factor, mass scale, family (physical type),
-                                         antiparticle, helicity, chirality */
     const double *scales, *factors;   /* (re, im) each */
 
     /* the momentum forms: q_f = 0.0 + Σ coefficient × leg, in term order; with a crossing, program
@@ -88,9 +89,9 @@ int uir_kernel(uint32_t kernel, const double *in, double *out);
 /* the row at w, into o; returns its words (1 or 2) */
 uint32_t uir_decode(const uint64_t *w, uir_row *o);
 
-/* one point: the forms from momenta[4 legs] (the caller's (E, px, py, pz) per leg), the sources, the
- * rows, the reduction into out[outputs]. The planes and amplitudes must be zero before. Returns 0,
- * or the first failing kernel's status. */
+/* one point: the forms from momenta[4 legs] (the caller's (E, px, py, pz) per leg), the sources (the
+ * stream's first source_words), the rows (the rest), the reduction into out[outputs]. The planes and
+ * amplitudes must be zero before. Returns 0, or the first failing kernel's status. */
 void uir_forms(const uir_program *g, const uir_arena *a, const double *momenta);
 void uir_sources(const uir_program *g, const uir_arena *a);
 int uir_rows(const uir_program *g, const uir_arena *a);

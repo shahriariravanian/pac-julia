@@ -27,7 +27,7 @@ function roundtrip(p::Program, l::Lowered)::Vector{String}
     srcs = [(c, cur.source) for (c, cur) in enumerate(p.currents) if cur.source !== nothing]
     length(srcs) == length(l.sources) || push!(out, "source count")
     for ((c, s), ls) in zip(srcs, l.sources)
-        (ls.current, ls.form, ls.family, ls.antiparticle, ls.helicity, ls.chirality, ls.mass, ls.factor) ==
+        (edge_current(l, ls.edge), edge_form(l, ls.edge), ls.family, ls.antiparticle, ls.helicity, ls.chirality, ls.mass, ls.factor) ==
             (c, s.form, FAMILY_TYPES[s.family], s.orientation == "antiparticle", s.helicity, s.chirality, s.mass, s.factor) ||
             push!(out, "source of current $c")
     end

@@ -14,7 +14,7 @@ app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR, lowere
 l = lower(p)                                   # UIR v0.6: rows on edges, the layout, the tables
 evaluate(l, LArena(l), momenta)                # bit for bit evaluate(p, a, momenta)
 o = optimize(l)                                # sort_runs, fuse, reuse_planes: the same values
-e = encode(o)                                  # the 8-byte rows, the edge table, the sources
+e = encode(o)                                  # one stream of 8-byte words (sources, then rows), the edge table
 compile("out-vm", p; interpreter = true)       # the same folder, runner.c on the UIR interpreter
 ```
 
@@ -35,8 +35,8 @@ compile("out-vm", p; interpreter = true)       # the same folder, runner.c on th
 cd out && make test     # u_ubar_to_z_g_g flow:2,4,5,1: 8 points, 384 outputs; 0 beyond 1e-14 of the total ...
 ```
 
-With `interpreter = true`, `runner.c` holds the program as data (the encoded rows, the edge table,
-the sources and the tables they index, as one `uir_program`) and includes `uirvm.c`, the UIR
+With `interpreter = true`, `runner.c` holds the program as data (the encoded words, sources first, the
+edge table and the tables they index, as one `uir_program`) and includes `uirvm.c`, the UIR
 interpreter, copied next to it with `uirvm.h`. `run()`, `runner.h` and the values are the same, bit
 for bit. The straight-line C is the CPU runner (about twice as fast); the interpreter is the GPU's,
 and its CPU build is its test.
@@ -53,7 +53,7 @@ and its CPU build is its test.
 | `src/sjb.jl`, `src/complexify.jl` | the reader of saved symjit applications and symjit's Complexifier |
 | `src/uir.jl`, `src/lower.jl` | UIR v0.6, the lowered form the back ends read (`Lowered`); `lower(p)` with its checks (`validate`) |
 | `src/passes.jl` | the optional passes over a `Lowered`: `sort_runs`, `fuse`, `reuse_planes` (the liveness layout), `optimize` (all three) |
-| `src/encode.jl` | `encode(l)`: the device form (64-bit rows, 32-bit edge table, source records), and `decode` |
+| `src/encode.jl` | `encode(l)`: the device form (one stream of 64-bit words, the SOURCE rows first; the 32-bit edge table), and `decode` |
 | `c/pacops.c`, `c/pacops.h` | the sources and instructions in C, copied next to each `runner.c` |
 | `src/compile_vm.jl`, `c/uirvm.c`, `c/uirvm.h` | `compile(dir, p; interpreter = true)`: the program as tables for the UIR interpreter, in portable C (one source for the CPU and the GPU) |
 | `CONVENTIONS.md` | the meaning of main.json's fields and instructions (pac2json's legend) |

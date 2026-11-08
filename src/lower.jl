@@ -134,7 +134,8 @@ function lower(p::Program)::Lowered
         s = cur.source
         s === nothing && continue
         s.orientation in ("particle", "antiparticle") || error("$(cname(c)): unknown orientation $(s.orientation)")
-        push!(sources, LSource(c, s.form, FAMILY_TYPES[s.family], s.orientation == "antiparticle", s.helicity,
+        # its edge: the current with the source's form (its own edge, unless a row reads it with another)
+        push!(sources, LSource(edge(c, s.form), FAMILY_TYPES[s.family], s.orientation == "antiparticle", s.helicity,
                                s.chirality, s.mass, s.factor))
     end
 
@@ -221,9 +222,12 @@ function problems(l::Lowered)::Vector{String}
     end
     length(unique(l.edges)) == ne || bad("an edge is listed twice")
     for s in l.sources
-        inrange(s.current, nc) && inrange(s.form, nf) && inrange(s.mass, length(l.scales)) &&
-            inrange(s.factor, length(l.factors)) || (bad("source of $(cname(s.current)): an index out of range"); continue)
-        l.currents[s.current].type == s.family || bad("source of $(cname(s.current)): $(s.family) into a $(l.currents[s.current].type)")
+        inrange(s.edge, ne) && inrange(s.mass, length(l.scales)) && inrange(s.factor, length(l.factors)) ||
+            (bad("source on edge $(s.edge): an index out of range"); continue)
+        at = "source of $(cname(edge_current(l, s.edge)))"
+        edge_form(l, s.edge) == 0 && bad("$at: its edge has no momentum")
+        edge_layout(l, s.edge).type == s.family || bad("$at: $(s.family) into a $(edge_layout(l, s.edge).type)")
+        -2 <= s.helicity <= 2 && -1 <= s.chirality <= 1 || bad("$at: helicity $(s.helicity), chirality $(s.chirality)")
     end
 
     components(e) = edge_layout(l, e).components
@@ -232,6 +236,7 @@ function problems(l::Lowered)::Vector{String}
     open = 0          # the destination edge of the open fused run (0: none)
     for (k, op) in enumerate(l.ops)
         at = "row $k ($(op.op))"
+        op.op == SOURCE && (bad("$at: a source among the rows (Lowered.sources holds them)"); continue)
         # the edges each opcode names: d (not for a closure), l and r (vertex, closure; a kernel's may be 0)
         edges_ok = (op.op == CLOSURE || inrange(op.d, ne)) &&
                    (is_vertex(op.op) || op.op == CLOSURE ? inrange(op.l, ne) && inrange(op.r, ne) :

@@ -41,7 +41,7 @@ uint32_t uir_decode(const uint64_t *w, uir_row *o)
         o->l |= ((lo1 >> 8) & 0x7f) << 13;
         o->r |= ((lo1 >> 15) & 0x7f) << 13;
         o->t |= ((lo1 >> 22) & 0x3f) << 10;
-        o->n |= ((lo1 >> 8) & 0xffff) << 16;
+        if (o->op != UIR_SOURCE) o->n |= ((lo1 >> 8) & 0xffff) << 16;   /* a SOURCE's N is word 0's only */
         o->x |= (hi1 & 0x3ff) << 6;
         nd = 0xfffff, nt = 0xffff, nlr = 0xfffff, nx = 0xffff;
     }
@@ -199,11 +199,23 @@ static int run_kernel(const uir_program *g, const uir_arena *a, const uir_row *o
     return 0;
 }
 
+/* a source row: factor × the wavefunction at its edge's form, into its edge's current */
+static void run_source(const uir_program *g, const uir_arena *a, const uir_row *o)
+{
+    double q[4], v[2 * UIR_MAX_COMPONENTS];
+    uint32_t t = o->n;
+    load_form(a, edge_form(g, o->d), q);
+    /* pacops' families count from 0 (the physical type's number − 1) */
+    int n = source(v, (int)(t & 7) - 1, (t >> 3) & 1 ? ANTIPARTICLE : PARTICLE, q, (int)((t >> 4) & 7) - 2,
+                   (int)((t >> 7) & 3) - 1, g->scales[2 * (size_t)o->t], g->factors + 2 * (size_t)o->x);
+    store(a, edge_start(g, o->d), n, v);
+}
+
 int uir_rows(const uir_program *g, const uir_arena *a)
 {
     cplx acc[UIR_MAX_COMPONENTS];
     uir_row o;
-    for (uint32_t k = 0; k < g->words;) {
+    for (uint32_t k = g->source_words; k < g->words;) {
         k += uir_decode(g->rows + k, &o);
         if (o.op <= UIR_V_THREE_VECTOR) {
             run_vertex(g, a, &o, acc);
@@ -220,6 +232,8 @@ int uir_rows(const uir_program *g, const uir_arena *a)
         } else if (o.op == UIR_CLEAR) {
             uint32_t d = edge_start(g, o.d);
             for (uint32_t j = 0; j < o.n; j++) store1(a, d + j, ZERO);
+        } else if (o.op == UIR_SOURCE) {
+            run_source(g, a, &o);
         } else {
             int status = run_kernel(g, a, &o);
             if (status != 0) return status;
@@ -245,16 +259,14 @@ void uir_forms(const uir_program *g, const uir_arena *a, const double *momenta)
         }
 }
 
+/* the sources: the SOURCE rows at the head of the stream (a pass of their own, so a GPU runner may
+ * run them in f64 before converting the arena) */
 void uir_sources(const uir_program *g, const uir_arena *a)
 {
-    for (uint32_t k = 0; k < g->sources; k++) {
-        const int32_t *s = g->source + 8 * (size_t)k;
-        double q[4], v[2 * UIR_MAX_COMPONENTS];
-        load_form(a, (uint32_t)s[1], q);
-        /* the physical type's number: SCALAR 1, WEYL 2, DIRAC 3, VECTOR 4; pacops' families count from 0 */
-        int n = source(v, s[4] - 1, s[5] ? ANTIPARTICLE : PARTICLE, q, s[6], s[7], g->scales[2 * (size_t)s[3]],
-                       g->factors + 2 * (size_t)s[2]);
-        store(a, edge_start(g, (uint32_t)s[0]), n, v);
+    uir_row o;
+    for (uint32_t k = 0; k < g->source_words;) {
+        k += uir_decode(g->rows + k, &o);
+        run_source(g, a, &o);
     }
 }
 

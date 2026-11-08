@@ -1,6 +1,6 @@
 # compile(path, l; interpreter = true): the folder of compile.jl, but runner.c runs the program on
 # the UIR interpreter (c/uirvm.c, which runner.c includes) instead of straight-line code. The
-# program is data there: encode(l)'s rows, edge table and sources, and the tables they index, as C
+# program is data there: encode(l)'s words (the sources, then the rows) and edge table, and the tables they index, as C
 # arrays of one uir_program (c/uirvm.h); the kernels are reached through uir_kernel, a switch over
 # the kernels' numbers. runner.h, testing.c and the Makefile are compile.jl's, so run() has the
 # same prototype and the values must be the straight-line C's bit for bit.
@@ -66,7 +66,6 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
 
         carray(writer, "uint64_t", "rows", hex64.(e.rows); per_line = 4)
         carray(writer, "uint32_t", "edges", e.edges)
-        carray(writer, "int32_t", "sources", [x for s in e.sources for x in s])
         carray(writer, "double", "scales", cdoubles(prog.scales); per_line = 4)
         carray(writer, "double", "factors", cdoubles(prog.factors); per_line = 4)
         carray(writer, "uint32_t", "form_first", firsts(length(f.terms) for f in prog.forms))
@@ -95,7 +94,7 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         (num, den) = prog.group_factor
         emit(writer, "static const uir_program program = {")
         emit(writer, "UIR_VERSION, $(prog.legs), $(length(prog.forms)), $(prog.planes), $(prog.amplitudes), $(length(prog.reduction)),")
-        emit(writer, "rows, $(length(e.rows)), edges, $(length(e.sources)), sources, scales, factors,")
+        emit(writer, "rows, $(length(e.rows)), $(e.source_words), edges, scales, factors,")
         emit(writer, "form_first, term_leg, term_coefficient, $(crossed ? "crossing_leg" : "NULL"), $(crossed ? "crossing_sign" : "NULL"),")
         emit(writer, "list_first, list_factor,")
         emit(writer, "stub_kernel, stub_inputs, input_code, stub_outputs, output_component,")

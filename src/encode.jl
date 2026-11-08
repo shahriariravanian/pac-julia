@@ -1,7 +1,7 @@
 # encode(l::Lowered) -> Encoded: the device form of UIR v0.6 (design doc, "The 8-byte encoding (UIR
-# v0.6)"): the rows as 64-bit words, the edge table as 32-bit entries, the sources as fixed records.
-# The other tables (scales, factors, component-factor lists, stubs, scale sets, binding instances,
-# forms, reduction) are still the Lowered's; the container that holds them all comes next.
+# v0.6)"): one stream of 64-bit words, the sources first (SOURCE rows), then the rows; and the edge
+# table as 32-bit entries. The other tables (scales, factors, component-factor lists, stubs, scale
+# sets, binding instances, forms, reduction) are the Lowered's.
 #
 # Indices are 0-based here (the Lowered's minus 1), the only place besides the C generator that
 # converts. In an index field, all ones means none (the null operand of a kernel row).
@@ -16,14 +16,15 @@
 #
 # An edge-table entry (32 bits): bits 0-14 start plane / 2, 15-22 form (8; 255 none), 23-26
 # components, 27-30 physical type (PhysicalType's number), 31 spare.
-# A source (8 × Int32): edge, form, factor, mass scale, family (PhysicalType's number),
-# antiparticle (0/1), helicity, chirality.
+# A source is a SOURCE row: D its edge (the current and the form), T its mass scale, X its factor,
+# N its template: bits 0-2 family (PhysicalType's number), 3 antiparticle, 4-6 helicity + 2,
+# 7-8 chirality + 1. A SOURCE's N has no high bits: in a wide SOURCE, word 1 holds D, T and X only.
 
 struct Encoded
     version::VersionNumber
-    rows::Vector{UInt64}
+    rows::Vector{UInt64}     # the sources' words, then the rows'
+    source_words::Int        # the sources' words at the head of `rows`
     edges::Vector{UInt32}
-    sources::Vector{NTuple{8,Int32}}
 end
 
 # a field: (shift, width) in word 0, and (shift, width) of its high bits in word 1
@@ -39,6 +40,7 @@ const FL = Field(32, 13, 8, 7)
 const FR = Field(45, 13, 15, 7)
 const FN = Field(32, 16, 8, 16)
 const FX = Field(58, 6, 32, 10)
+const FTEMPLATE = Field(32, 16, 8, 0)   # a SOURCE's N: word 0 only (its high bits would cross T's in word 1)
 const EXT = UInt64(1) << 5
 
 none(f::Field; wide::Bool) = (UInt64(1) << (f.width + (wide ? f.hiwidth : 0))) - 1
@@ -52,6 +54,8 @@ function fields(op::Opcode)::Vector{Tuple{Symbol,Field,Bool}}
         return [(:d, FD, true), (:x, FX, true)]
     elseif op == SCALE_ROW
         return [(:d, FD, true), (:n, FN, false), (:x, FX, true)]
+    elseif op == SOURCE
+        return [(:d, FD, true), (:t, FT, true), (:n, FTEMPLATE, false), (:x, FX, true)]
     elseif op == CLEAR
         return [(:d, FD, true), (:n, FN, false)]
     end
@@ -119,15 +123,25 @@ function decode_edge(x::UInt32)::Tuple{PlaneOffset,FormIndex,Int,PhysicalType}
     return (Int(x & 0x7fff) * 2, form == EDGE_NOFORM ? 0 : form + 1, Int((x >> 23) & 0xf), PhysicalType((x >> 27) & 0xf))
 end
 
-encode_source(s::LSource) = (Int32(s.current - 1), Int32(s.form - 1), Int32(s.factor - 1), Int32(s.mass - 1),
-                             Int32(Int(s.family)), Int32(s.antiparticle), Int32(s.helicity), Int32(s.chirality))
-decode_source(r::NTuple{8,Int32}) = LSource(r[1] + 1, r[2] + 1, PhysicalType(r[5]), r[6] != 0, r[7], r[8], r[4] + 1, r[3] + 1)
+# a source as its SOURCE row, and back
+function source_row(s::LSource)::LOp
+    -2 <= s.helicity <= 5 && -1 <= s.chirality <= 2 || error("source on edge $(s.edge): helicity $(s.helicity), chirality $(s.chirality)")
+    template = Int(s.family) | Int(s.antiparticle) << 3 | (s.helicity + 2) << 4 | (s.chirality + 1) << 7
+    return LOp(SOURCE; d = s.edge, t = s.mass, n = template, x = s.factor)
+end
+
+function row_source(o::LOp)::LSource
+    o.op == SOURCE || error("a $(o.op) row among the sources")
+    return LSource(o.d, PhysicalType(o.n & 7), (o.n >> 3) & 1 == 1, ((o.n >> 4) & 7) - 2, ((o.n >> 7) & 3) - 1, o.t, o.x)
+end
 
 function encode(l::Lowered)::Encoded
     validate(l)
     words = UInt64[]
+    foreach(s -> encode_row!(words, source_row(s)), l.sources)
+    n = length(words)
     foreach(op -> encode_row!(words, op), l.ops)
-    return Encoded(l.version, words, [encode_edge(l, e) for e in eachindex(l.edges)], encode_source.(l.sources))
+    return Encoded(l.version, words, n, [encode_edge(l, e) for e in eachindex(l.edges)])
 end
 
 # the rows of an encoded stream
@@ -141,13 +155,14 @@ function decode_rows(words::Vector{UInt64})::Vector{LOp}
     return ops
 end
 
-# What a device sees, as a Lowered: the rows, edges and sources decoded from `e`, the other tables
+# What a device sees, as a Lowered: the sources, rows and edges decoded from `e`, the other tables
 # from `l`. Each edge becomes its own current (its planes, components and type from the entry), so
 # the decoded Lowered holds only what the encoding carries; its values must still equal `l`'s.
 function decode(e::Encoded, l::Lowered)::Lowered
     entries = decode_edge.(e.edges)
     currents = [LCurrent(start, n, ty) for (start, _, n, ty) in entries]
     edges = [LEdge(k, form) for (k, (_, form, _, _)) in enumerate(entries)]
-    return validate(with(l; version = e.version, currents = currents, edges = edges, sources = decode_source.(e.sources),
-                         ops = decode_rows(e.rows)))
+    sources = row_source.(decode_rows(e.rows[1:e.source_words]))
+    return validate(with(l; version = e.version, currents = currents, edges = edges, sources = sources,
+                         ops = decode_rows(e.rows[e.source_words+1:end])))
 end

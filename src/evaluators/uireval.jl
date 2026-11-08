@@ -131,9 +131,9 @@ end
 function fill_sources!(a::LArena, l::Lowered)
     fill!(a.planes, complex(0.0, 0.0))
     for s in l.sources
-        w = wavefunction(FAMILY_NAMES[s.family], s.antiparticle ? "antiparticle" : "particle", a.forms[s.form],
+        w = wavefunction(FAMILY_NAMES[s.family], s.antiparticle ? "antiparticle" : "particle", edge_momentum(a, l, s.edge),
                          s.helicity, s.chirality, real(l.scales[s.mass]))
-        c = l.currents[s.current]
+        c = edge_layout(l, s.edge)
         factor = l.factors[s.factor]
         for j in 1:c.components
             a.planes[c.start+j] = factor * w[j]

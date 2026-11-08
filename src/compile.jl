@@ -406,7 +406,7 @@ function compile_currents(writer, prog::Lowered, b::ArenaIndex)
 
     for s in prog.sources
         ori = s.antiparticle ? "ANTIPARTICLE" : "PARTICLE"
-        emit(writer, "source(p+$(current_at(b, prog, s.current)), $(C_FAMILY[s.family]), $ori, p+$(form_at(b, s.form)), " *
+        emit(writer, "source(p+$(edge_at(b, prog, s.edge)), $(C_FAMILY[s.family]), $ori, p+$(form_at(b, edge_form(prog, s.edge))), " *
                      "$(s.helicity), $(s.chirality), $(lit(real(prog.scales[s.mass]))), &$(factor(s.factor)));")
     end
 

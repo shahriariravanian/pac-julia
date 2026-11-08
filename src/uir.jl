@@ -42,6 +42,7 @@ const TYPE_COMPONENTS = Dict(SCALAR => 1, WEYL => 2, DIRAC => 4, VECTOR => 4, TE
     CLEAR = 10
     KERNEL = 11
     KERNEL_DIRECT = 12    # a direct binding whose factor is exactly 1: the pairs stored as they are
+    SOURCE = 13           # a source: in the encoding only, at the head of the stream (Lowered.sources here)
 end
 
 is_vertex(op::Opcode) = op <= V_THREE_VECTOR
@@ -86,10 +87,10 @@ end
 LOp(op::Opcode; set = false, first = false, last = false, d = 0, t = 0, l = 0, r = 0, n = 0, x = 0) =
     LOp(op, set, first, last, d, t, l, r, n, x)
 
-# A source: its own table, run before the rows (factor × the wavefunction at `form`)
+# A source: its own table, run before the rows: factor × the wavefunction at the edge's form, into the
+# edge's current (the edge names both, as a row's operands do; encoded as a SOURCE row)
 struct LSource
-    current::CurrentIndex
-    form::FormIndex
+    edge::EdgeIndex
     family::PhysicalType   # SCALAR, WEYL, DIRAC, VECTOR
     antiparticle::Bool
     helicity::Helicity
