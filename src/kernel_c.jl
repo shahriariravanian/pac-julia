@@ -10,7 +10,7 @@
 # × or ÷ (ComplexBi) is the generator's sequence: fused, through Gen(2), Gen(3) (and Temp for ÷);
 # + and − are two real operations. LoadMath and LoadConstMath of a complex model go through Temp.
 # Registers follow symjit's: Ret and Left are one register (r0), Temp and Right another (r1),
-# Gen(k) is gk. A funclet (a Call with no arguments, its label in the code, ".ret" to return) is
+# Gen(k) is gk, and stack slot k the local stackk. A funclet (a Call with no arguments, its label in the code, ".ret" to return) is
 # a goto with the return point kept in `ret`, so the C has no calls and no computed goto (nvcc).
 
 struct KernelCError <: Exception
@@ -44,9 +44,11 @@ function reg_c(r::Reg)::String
     refuse("a static register $r")
 end
 
+# a location as C: mem[k], or the local stack<k> (symjit's stack slots are fixed indices, the low
+# ones mostly unused, so each slot a kernel names is a variable of its own)
 function loc_c(l::Loc, offset::Int = 0)::String
     l.kind == LOC_MEM && return "mem[$(l.index + offset)]"
-    l.kind == LOC_STACK && return "stack[$(l.index + offset)]"
+    l.kind == LOC_STACK && return "stack$(l.index + offset)"
     refuse("a parameter location $l (the kernel must take no parameters)")
 end
 
@@ -90,6 +92,8 @@ function kernel_c(name::String, app::SavedApplication)::String
     labels = Set(i.label for i in mir.code if i isa Label)
     regs = Set{String}()
     used(r::Reg) = (s = reg_c(r); push!(regs, s); s)
+    slots = Set{Int}()
+    at(l::Loc, offset::Int = 0) = (l.kind == LOC_STACK && push!(slots, l.index + offset); loc_c(l, offset))
     returns = 0
     has_ret = false
     body = String[]
@@ -109,19 +113,19 @@ function kernel_c(name::String, app::SavedApplication)::String
         elseif i isa Mov
             line("$(used(i.dst)) = $(used(i.s1));")
         elseif i isa Load
-            line("$(used(i.dst)) = $(loc_c(i.loc));")
+            line("$(used(i.dst)) = $(at(i.loc));")
         elseif i isa Save
-            line("$(loc_c(i.loc)) = $(used(i.src));")
+            line("$(at(i.loc)) = $(used(i.src));")
         elseif i isa LoadConst
             line("$(used(i.dst)) = $(const_c(mir.consts[i.idx+1]));")
         elseif i isa LoadComplex
-            line("$(used(i.xd)) = $(loc_c(i.loc)); $(used(i.yd)) = $(loc_c(i.loc, 1));")
+            line("$(used(i.xd)) = $(at(i.loc)); $(used(i.yd)) = $(at(i.loc, 1));")
         elseif i isa SaveComplex
-            line("$(loc_c(i.loc)) = $(used(i.xs)); $(loc_c(i.loc, 1)) = $(used(i.ys));")
+            line("$(at(i.loc)) = $(used(i.xs)); $(at(i.loc, 1)) = $(used(i.ys));")
         elseif i isa LoadMath || i isa LoadConstMath
             # the operand goes to Temp (complex) or Ret (real) first, as symjit replays it
             t = used(Reg(complex ? REG_TEMP : REG_RET, 0))
-            line("$t = $(i isa LoadMath ? loc_c(i.loc) : const_c(mir.consts[i.idx+1])); $(used(i.dst)) = $(BI_C[i.op](used(i.s1), t));")
+            line("$t = $(i isa LoadMath ? at(i.loc) : const_c(mir.consts[i.idx+1])); $(used(i.dst)) = $(BI_C[i.op](used(i.s1), t));")
         elseif i isa ComplexBi
             (xd, yd, x1, y1, x2, y2) = used.((i.xd, i.yd, i.x1, i.y1, i.x2, i.y2))
             (xt, yt, t) = used.((Reg(REG_GEN, 2), Reg(REG_GEN, 3), Reg(REG_TEMP, 0)))
@@ -137,7 +141,7 @@ function kernel_c(name::String, app::SavedApplication)::String
                 refuse("$name: the complex operation $(i.op)")
             end
         elseif i isa IfElse
-            line("$(used(i.dst)) = $(loc_c(i.cond)) != 0.0 ? $(used(i.true_val)) : $(used(i.false_val));")
+            line("$(used(i.dst)) = $(at(i.cond)) != 0.0 ? $(used(i.true_val)) : $(used(i.false_val));")
         elseif i isa Label
             line("$(label_c(i.label)):;")
         elseif i isa Branch
@@ -162,7 +166,7 @@ function kernel_c(name::String, app::SavedApplication)::String
     out = IOBuffer()
     println(out, "/* the symjit kernel $name ($(length(mir.code)) MIR instructions), from its .plane.symjit by kernel_c.jl */")
     println(out, "static int $name(double *mem) {")
-    println(out, "double stack[$(max(app.stack_size, 1))];")
+    isempty(slots) || println(out, "double ", join(("stack$k = 0.0" for k in sort(collect(slots))), ", "), ";")
     isempty(regs) || println(out, "double ", join(("$r = 0.0" for r in sort(collect(regs); by = r -> (length(r), r))), ", "), ";")
     has_ret && println(out, "int ret = -1;")
     foreach(l -> println(out, l), body)
