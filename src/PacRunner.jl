@@ -18,7 +18,8 @@
 # runner's values.
 #
 # The kernels: `read_sjb(path)` reads a saved symjit application (.sjb, .plane.symjit) and its MIR;
-# `read_sjb(path; lowered = true)` lowers a complex MIR to real operations (complexify.jl).
+# `read_sjb(path; lowered = true)` reads the real MIR symjit lowers a complex MIR to
+# (`complexified(path)`, complexified.jl: the tool tools/sjb-complexify, built by install_complexify).
 module PacRunner
 
 using JSON
@@ -41,10 +42,10 @@ include("evaluators/uireval.jl")
 include("compile.jl")
 include("compile_vm.jl")
 include("sjb.jl")
-include("complexify.jl")
 include("kernel_c.jl")
 include("kernel_lib.jl")
 include("install.jl")
+include("complexified.jl")
 include("alpha_s.jl")
 
 # the runner
@@ -54,7 +55,7 @@ export Lowered, LArena, lower, validate, sort_runs, fuse, reuse_planes, optimize
 # the C
 export compile
 # the kernels
-export read_sjb, SavedApplication, MIR, complexify, listing, kernel_c
+export read_sjb, SavedApplication, MIR, complexified, install_complexify, listing, kernel_c
 # pac2json, for pyAmpliCol artifacts
 export install, capture, alpha_s_power
 

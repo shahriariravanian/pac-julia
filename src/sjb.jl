@@ -1,7 +1,8 @@
 # A reader of saved symjit applications (.sjb; pac2json's kernels are .plane.symjit files of the
 # same format) in pure Julia: the file's header and its MIR, as symjit wrote them. Nothing is
 # lowered or compiled: for a complex model (`is_complex(app.config)`) the MIR is the complex MIR,
-# before symjit's Complexifier lowers it to real operations.
+# before symjit's Complexifier lowers it to real operations, unless the file is one symjit wrote
+# after lowering it (`complexified`, complexified.jl; `is_complexified(app.mir)`).
 #
 # The format (symjit rust/runnable.rs, model.rs, config.rs, builder.rs, serializer.rs, strings.rs;
 # all integers little-endian u64 unless noted):
@@ -327,12 +328,8 @@ function decode(code::Vector{UInt8})::Vector{Instruction}
     return out
 end
 
-# The application of a .sjb. With `lowered`, a complex model's MIR is lowered to real MIR (a real
-# model's is as saved); `stable_math` (true or false) replaces the saved configuration's option
-# before it is lowered, as symjit-utils' `--set stable_math=...`. The lowered MIR has real registers
-# only, but for LoadComplex/SaveComplex (a pair of values at i, i + 1) and symjit's ComplexBi
-# instructions (+, -, ×, ÷ of register pairs).
-function read_sjb(io::IO; lowered::Bool = false, stable_math::Union{Bool,Nothing} = nothing)::SavedApplication
+# The application of a .sjb, as saved.
+function read_sjb(io::IO)::SavedApplication
     magic(io, APPLICATION_MAGIC, "Application")
     version = int(io)
     version in (3, 4) || throw(SjbError("unsupported sjb version $version"))
@@ -361,20 +358,17 @@ function read_sjb(io::IO; lowered::Bool = false, stable_math::Union{Bool,Nothing
     end
     Base.eof(io) || throw(SjbError("bytes after the application"))
 
-    if stable_math !== nothing
-        bit = CONFIG_OPTIONS.stable_math
-        config = Config(stable_math ? config.opt | bit : config.opt & ~bit, config.ty, config.stack_limit, config.num_args)
-    end
-    if lowered && is_complex(config)
-        mir = complexify(mir, reals; stable_math = config.opt & CONFIG_OPTIONS.stable_math != 0)
-        # stable_math appends constants, which symjit copies to the program's
-        length(mir.consts) > length(consts) && (consts = copy(mir.consts))
-    end
-
     return SavedApplication(version, config, states, params, obs, diffs, loops, stack, consts, functions, mask, mir, reals)
 end
 
-read_sjb(path::AbstractString; kw...) = open(io -> read_sjb(io; kw...), path)
+# With `lowered`, a complex model's MIR is the real MIR symjit lowers it to (`complexified(path)`; a
+# real model's is as saved).
+read_sjb(path::AbstractString; lowered::Bool = false) = open(read_sjb, lowered ? complexified(path) : path)
+
+# whether a MIR is complexified: it has the instructions only symjit's Complexifier writes (symjit's
+# serializer reader decides so too). A complex MIR's complex operations are Bi and Uni on complex
+# registers.
+is_complexified(mir::MIR) = any(i -> i isa Union{LoadComplex,SaveComplex,ComplexBi}, mir.code)
 
 # ---- printing, as symjit's Debug ------------------------------------------------------------------
 
