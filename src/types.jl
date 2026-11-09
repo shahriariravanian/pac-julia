@@ -128,7 +128,8 @@ struct Program
     forms::Vector{Form}
     scales::Vector{Complex{Float64}}
     factors::Vector{Complex{Float64}}
-    alpha_s::Union{Nothing,Tuple{Float64,Int}}  # (value, power): the scales are at this value
+    alpha_s::Union{Nothing,Tuple{Float64,Union{Int,Nothing}}}  # (value, power): the scales are at this value;
+                                                # power nothing: not measured (alpha_s.jl)
     helicities::Vector{Vector{Helicity}}        # output h: the helicity of each leg
     currents::Vector{Current}
     amplitudes::Int                             # the number of amplitudes

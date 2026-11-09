@@ -45,6 +45,7 @@ include("complexify.jl")
 include("kernel_c.jl")
 include("kernel_lib.jl")
 include("install.jl")
+include("alpha_s.jl")
 
 # the runner
 export Program, Arena, ArenaIndex, read_main, load_artifact, load_programs, load_examples, evaluate
@@ -55,6 +56,6 @@ export compile
 # the kernels
 export read_sjb, SavedApplication, MIR, complexify, listing, kernel_c
 # pac2json, for pyAmpliCol artifacts
-export install, capture
+export install, capture, alpha_s_power
 
 end

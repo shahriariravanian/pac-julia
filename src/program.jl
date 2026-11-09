@@ -141,7 +141,9 @@ function load_program(prog, kernels)::Program
         push!(reduction, [(ai(t[1]), Float64(t[2])) for t in r.terms])
     end
     out = prog.output
-    alpha_s = inputs.alpha_s === nothing ? nothing : (Float64(inputs.alpha_s.value), Int(inputs.alpha_s.power))
+    # the power: null when the capture did not measure it (pac-miner's pac2json; alpha_s.jl does)
+    power = get(inputs.alpha_s === nothing ? Dict() : inputs.alpha_s, "power", nothing)
+    alpha_s = inputs.alpha_s === nothing ? nothing : (Float64(inputs.alpha_s.value), power === nothing ? nothing : Int(power))
     return Program(
         prog.process,
         prog.colour,
@@ -167,9 +169,13 @@ read_main(path::AbstractString) = JSON.parse(read(path, String))
 # `path` (here and below): a main.json, a pac2json folder, or a pyAmpliCol LC artifact directory
 # (captured by pac2json once: install.jl's capture, with `parameters`). `kernels`: how the Julia
 # runner's kernel libraries are found or built (kernel_lib.jl: :auto, :sjb2obj, :c, :none).
+# `measure_alpha_s`: an alpha_s power the capture did not measure is measured (alpha_s.jl: for an
+# artifact, a second capture at twice its alpha_s; the programs run on the Julia runner).
 
 # program `program` (1-based) of `path`
-function load_artifact(path::AbstractString, program::Int = 1; kernels::Symbol = :auto, parameters = nothing)::Program
+function load_artifact(path::AbstractString, program::Int = 1; kernels::Symbol = :auto, parameters = nothing,
+                       measure_alpha_s::Bool = false)::Program
+    measure_alpha_s && return load_programs(path; kernels, parameters, measure_alpha_s)[program]
     file = main_json(path; parameters)
     main = read_main(file)
     return load_program(main.programs[program], load_kernels(main, file; kernels))
@@ -181,9 +187,15 @@ load_examples(path::AbstractString, program::Int = 1; parameters = nothing) =
     read_main(examples_json(path; parameters)).programs[program]
 
 # every program of `path`
-function load_programs(path::AbstractString; kernels::Symbol = :auto, parameters = nothing)::Vector{Program}
+function load_programs(path::AbstractString; kernels::Symbol = :auto, parameters = nothing,
+                       measure_alpha_s::Bool = false)::Vector{Program}
     file = main_json(path; parameters)
     main = read_main(file)
     libraries = load_kernels(main, file; kernels)
-    return [load_program(prog, libraries) for prog in main.programs]
+    ps = [load_program(prog, libraries) for prog in main.programs]
+    if measure_alpha_s && any(p -> p.alpha_s !== nothing && p.alpha_s[2] === nothing, ps)
+        is_artifact(path) || error("$path: alpha_s powers not measured; give the artifact, or alpha_s_power(base, doubled) the folders at two alpha_s")
+        ps = [with_alpha_s_power(p, power) for (p, power) in zip(ps, alpha_s_power(path; parameters, kernels))]
+    end
+    return ps
 end

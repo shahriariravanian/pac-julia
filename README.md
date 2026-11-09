@@ -28,6 +28,14 @@ pac2json (`capture(artifact)`), into this package's scratch space (Scratch.jl), 
 the artifact's `artifact_id`; afterwards that folder is used. `capture(artifact; parameters =
 "params.json")` records with other model parameters (a folder of its own).
 
+A program's `alpha_s` is `(value, power)`: its scales are at alpha_s = value, and |M|² ∝
+alpha_s^power. A capture that did not measure the power (pac-miner's pac2json evaluates nothing)
+has `power` null, read as `nothing`; `alpha_s_power(artifact)` measures it as pac2json did with
+RustiCol: the artifact captured again at twice its alpha_s, both programs run by the Julia runner at
+16 phase-space points, every ratio of totals 2^power to 1e-12 (else an error).
+`alpha_s_power(base, doubled)` does it for two folders, and `load_programs(artifact;
+measure_alpha_s = true)` fills the powers in.
+
 pac2json is built on first use, or by `PacRunner.install()`: pacuda (github.com/siravan/pacuda at
 a pinned commit) and its patched RustiCol (MadGraph7's `pyamplicol/` at the commit pacuda pins,
 with pacuda's patches; only RustiCol's Rust crate is compiled: no Python, no pyAmpliCol build, no
@@ -87,6 +95,7 @@ and the kernels is then a device function too (`PAC_FN`), and the tables are `__
 | `src/compile.jl` | the C generator, from a `Lowered` (`compile(dir, p::Program)` lowers `p` first); `ArenaIndex`, runner.c's arena |
 | `src/sjb.jl`, `src/complexify.jl` | the reader of saved symjit applications and symjit's Complexifier |
 | `src/install.jl`, `src/kernel_lib.jl` | `install`, `capture` (pac2json for pyAmpliCol artifacts) and the Julia runner's kernel libraries |
+| `src/alpha_s.jl` | `alpha_s_power`: the alpha_s power of the programs, from captures at two alpha_s |
 | `src/kernel_c.jl` | `kernel_c(name, path)`: a kernel's MIR as one C function, the native code's operations (bit for bit sjb2obj's library); the compiled folders' kernels |
 | `src/uir.jl`, `src/lower.jl` | UIR v0.7, the lowered form the back ends read (`Lowered`); `lower(p)` with its checks (`validate`) |
 | `src/passes.jl` | the optional passes over a `Lowered`: `sort_runs`, `fuse`, `reuse_planes` (the liveness layout), `optimize` (all three) |

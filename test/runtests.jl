@@ -148,6 +148,30 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             @test isfile(joinpath(dir, "main.json")) && isfile(joinpath(dir, "examples.json"))
             @test capture(art) == dir
             @test length(load_programs(art)) == length(read_main(joinpath(dir, "main.json")).programs)
+            # the alpha_s powers, measured from a second capture at twice alpha_s
+            powers = alpha_s_power(art)
+            @test length(powers) == length(load_programs(art)) && all(p -> p === nothing || p >= 0, powers)
+            @test [p.alpha_s === nothing ? nothing : p.alpha_s[2] for p in load_programs(art; measure_alpha_s = true)] == powers
+        end
+    end
+
+    @testset "alpha_s power" begin
+        # u u~ > Z g g at alpha_s and at 2 alpha_s (pac-miner's pac2json; RustiCol measured 2)
+        base = joinpath(@__DIR__, "data", "uux_zgg")
+        doubled = joinpath(@__DIR__, "data", "alpha_s", "uux_zgg_2as")
+        @test alpha_s_power(base, doubled) == [2]
+        @test alpha_s_power(doubled, base) == [2]
+        @test_throws ErrorException alpha_s_power(base, base)       # the same alpha_s twice
+        # a power not measured (null, as pac-miner writes it) reads as nothing
+        @test load_programs(doubled)[1].alpha_s == (0.236, nothing)
+        @test PacRunner.with_alpha_s_power(load_programs(doubled)[1], 2).alpha_s == (0.236, 2)
+        # measured on load only for an artifact (a folder has no second capture)
+        @test_throws ErrorException load_programs(doubled; measure_alpha_s = true)
+        @test load_programs(base; measure_alpha_s = true)[1].alpha_s == (0.118, 2)  # measured by the capture: kept
+        # the momenta: massless, momentum conserved
+        for m in PacRunner.rambo_momenta(5, 4)
+            @test all(abs(p[1]^2 - p[2]^2 - p[3]^2 - p[4]^2) <= 1e-9 * p[1]^2 for p in m)
+            @test all(abs(m[1][k] + m[2][k] - sum(p[k] for p in m[3:end])) <= 1e-9 for k in 1:4)
         end
     end
 

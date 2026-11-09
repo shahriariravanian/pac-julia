@@ -118,7 +118,7 @@ struct Lowered
     forms::Vector{Form}
     scales::Vector{Complex{Float64}}
     factors::Vector{Complex{Float64}}
-    alpha_s::Union{Nothing,Tuple{Float64,Int}}
+    alpha_s::Union{Nothing,Tuple{Float64,Union{Int,Nothing}}}
     helicities::Vector{Vector{Helicity}}
     currents::Vector{LCurrent}           # indexed by CurrentIndex, as Program.currents
     planes::Int                          # the arena's planes
