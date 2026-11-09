@@ -27,6 +27,7 @@ module VariantsScript include(joinpath(@__DIR__, "test_compile_variants.jl")) en
 module LowerScript include(joinpath(@__DIR__, "test_lower.jl")) end
 module KernelCScript include(joinpath(@__DIR__, "test_kernel_c.jl")) end
 module GpuScript include(joinpath(@__DIR__, "test_gpu.jl")) end
+module Uir08Script include(joinpath(@__DIR__, "test_uir08.jl")) end
 
 const CASES = CompileScript.cases()
 const CC = CompileScript.CC
@@ -192,7 +193,7 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         end
     end
 
-    @testset "lower (UIR v0.7)" begin
+    @testset "lower (UIR v0.8)" begin
         L = LowerScript
         for case in CASES, p in load_programs(joinpath(case, "main.json"))
             l = lower(p)
@@ -262,7 +263,7 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         @test_throws ErrorException lower(refusals["a null vertex operand"])
     end
 
-    @testset "encode (UIR v0.7)" begin
+    @testset "encode (UIR v0.8)" begin
         P = PacRunner
         # the word layout: op 0-4, EXT 5, SET 6, FIRST 7, LAST 8, D 9-21, T 22-31, L 32-44, R 45-57, X 58-63,
         # N 32-47; values 0-based
@@ -319,11 +320,13 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             lines = split(strip(text), "\n")
             @test length(lines) == length(narrow)
             # an index 0-based, a Lowered's none (0) as -1; a count as it is
+            # (an index field the driver prints as -1 for none; a REDUCE's N, an index, is printed raw: 0xffff)
             want(o) = Dict(s => getfield(o, s) - index for (s, _, index) in P.fields(o.op))
             decoded = 0
             for (o, line) in zip(narrow, lines)
                 v = parse.(Int, split(line))
-                got = Dict(:d => v[5], :t => v[6], :l => v[7], :r => v[8], :n => v[9], :x => v[10])
+                n = o.op == P.REDUCE ? (v[9] == 0xffff ? -1 : v[9]) : v[9]
+                got = Dict(:d => v[5], :t => v[6], :l => o.op == P.SOURCE ? v[11] : v[7], :r => v[8], :n => n, :x => v[10])
                 ok = v[1:4] == [Int(o.op), o.set, o.first, o.last] && all(got[s] == w for (s, w) in want(o))
                 decoded += ok
             end
@@ -333,26 +336,28 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         @test_throws ErrorException P.encode_row!(UInt64[], P.LOp(P.V_WEYL_VECTOR_A; first = true, last = true, d = 2^20 + 1, t = 1, l = 1, r = 1, x = 1))
         @test_throws ErrorException P.encode_row!(UInt64[], P.LOp(P.P_VECTOR; d = 1, x = 2^16 + 1))
         # a source: D edge, T mass scale, N template (family 0-2, antiparticle 3, helicity + 2 at 4-6,
-        # chirality + 1 at 7-8), X factor; every template value reads back
-        src = P.LSource(3, P.WEYL, true, -1, 1, 2, 5)
-        @test P.encode_row!(UInt64[], P.source_row(src)) ==
-              [UInt64(Int(P.SOURCE)) | 2 << 9 | 1 << 22 | UInt64(2 | 1 << 3 | 1 << 4 | 2 << 7) << 32 | UInt64(4) << 58]
+        # chirality + 1 at 7-8), E embedding (bits 48-57; none: all ones), X factor; every template value reads back
+        src = P.source_op(3, P.WEYL, true, -1, 1, 2, 5)
+        @test P.encode_row!(UInt64[], src) ==
+              [UInt64(Int(P.SOURCE)) | 2 << 9 | 1 << 22 | UInt64(2 | 1 << 3 | 1 << 4 | 2 << 7) << 32 | UInt64(0x3ff) << 48 |
+               UInt64(4) << 58]
         for ty in (P.SCALAR, P.WEYL, P.DIRAC, P.VECTOR), anti in (false, true), h in -2:2, ch in -1:1
-            s = P.LSource(7, ty, anti, h, ch, 1, 1)
-            @test P.row_source(P.decode_row(P.encode_row!(UInt64[], P.source_row(s)), 1)[1]) == s
+            s = P.source_op(7, ty, anti, h, ch, 1, 1)
+            d = P.decode_row(P.encode_row!(UInt64[], s), 1)[1]
+            @test d == s && P.source_fields(d) == (ty, anti, h, ch)
         end
+        # an embedded source: its embedding in E, no factor (X none)
+        emb = P.source_op(3, P.VECTOR, false, 1, 0, 2, 5; embedding = 4)
+        @test (emb.l, emb.x) == (4, 0) && P.decode_row(P.encode_row!(UInt64[], emb), 1)[1] == emb
         # END: op 31, no fields, one word
         @test P.encode_row!(UInt64[], P.LOp(P.END)) == [UInt64(31)]
-        # every program: the sources at the head of the stream, then the rows, one word each, then END; the
-        # decoded program evaluates as the Lowered (in the comparisons above, through LowerScript.passes)
+        # every program: the rows (SOURCE rows at the head), one word each, then END; the decoded program
+        # evaluates as the Lowered (in the comparisons above, through LowerScript.passes)
         for case in CASES, p in load_programs(joinpath(case, "main.json"))
             l = optimize(lower(p))
             e = encode(l)
-            @test e.source_words == length(l.sources)
-            (sources, ops) = P.decode_stream(e)
-            @test P.row_source.(sources) == l.sources
-            @test ops == l.ops
-            @test length(e.rows) == length(l.sources) + length(l.ops) + 1 && e.rows[end] == UInt64(31)
+            @test P.decode_stream(e) == l.ops
+            @test length(e.rows) == length(l.ops) + 1 && e.rows[end] == UInt64(31)
             @test [P.decode_edge(x)[1] for x in e.edges] == [P.edge_plane(l, k) for k in eachindex(l.edges)]
         end
     end
@@ -373,7 +378,7 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         ops = copy(l.ops)
         ops[k] = PacRunner.LOp(o.op, o.set, o.first, o.last, o.d, o.t, o.l, o.r, o.n, length(factors))
         wide = PacRunner.with(l; factors, ops)
-        @test length(encode(wide).rows) > length(wide.sources) + length(wide.ops) + 1
+        @test length(encode(wide).rows) > length(wide.ops) + 1
         @test_throws ErrorException compile(mktempdir(), wide; interpreter = true)
         @test isdir(compile(mktempdir(), wide))   # the straight-line C has no word fields
         # the interpreter: closure and scale rows of more than 6 components (an UNTYPED current may
@@ -426,6 +431,9 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
                     end
                 end
             end
+        end
+        @testset "UIR v0.8 rows (copy, scatter, embedded sources, scaled reduce) on every CPU back end" begin
+            @test isempty(Uir08Script.check(joinpath(@__DIR__, "data", "ppjjj_crossed"); quiet = true))
         end
         @testset "C of an optimized lowering" begin
             # sorted, fused and with reused planes: the C writes a fused run row by row, and by the run
@@ -499,6 +507,9 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
     if HAVE_CC && HAVE_MAKE && GpuScript.have_gpu()
         @testset "the interpreter on the GPU" begin
             @test sum(c -> GpuScript.test_folder(c; quiet = true), CASES) == 0
+        end
+        @testset "UIR v0.8 rows on the GPU" begin
+            @test isempty(Uir08Script.check(joinpath(@__DIR__, "data", "ppjjj_crossed"); gpu = GpuScript.NVCC, quiet = true))
         end
     else
         @info "no nvcc or no GPU: the GPU build is not run"

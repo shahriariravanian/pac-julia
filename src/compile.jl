@@ -40,7 +40,7 @@ end
 
 #####################################################################################
 #
-# The C is generated from a Lowered (UIR v0.7, uir.jl): compile(path, p::Program) lowers `p`
+# The C is generated from a Lowered (UIR v0.8, uir.jl): compile(path, p::Program) lowers `p`
 # first. Indices are 1-based in the Lowered and 0-based in the C: the conversions (`- 1`) are made
 # here, where the C is written, and nowhere else.
 #
@@ -122,17 +122,17 @@ function compile(path, prog::Lowered; examples = nothing, interpreter::Bool = fa
         compile_kernels(writer, prog)
 
         compile_forms(writer, prog, b)
-        compile_currents(writer, prog, b)
         compile_tables(writer, prog)
         compile_body(writer, prog, b)
-        compile_reduction(writer, prog, b)
 
+        # the arena and the outputs at zero, the forms, the rows (REDUCE rows add to out), the group factor
+        (num, den) = prog.group_factor
         emit(writer, "int run(double *out, double *p, const double *momenta) {")
         emit(writer, "for(int i=0; i<$(b.size); i++) p[i] = 0.0;")
+        emit(writer, "for(int h=0; h<$(output_count(prog)); h++) out[h] = 0.0;")
         emit(writer, "forms(p, momenta);")
-        emit(writer, "currents(p);")
-        emit(writer, "body(p);")
-        emit(writer, "reducer(out, p);")
+        emit(writer, "body(out, p);")
+        num == den || emit(writer, "for(int h=0; h<$(output_count(prog)); h++) out[h] = group(out[h], $(num)L, $(den)L);")
         emit(writer, "return 0;")
         emit(writer, "}")
     finally
@@ -180,9 +180,9 @@ function check_examples(prog::Lowered, examples)
         error("the examples are of $(examples.process) $(examples.colour), the program $(prog.process) $(prog.colour)")
     isempty(examples.points) && error("the examples have no points")
     for pt in examples.points
-        length(pt.momenta) == prog.legs && all(v -> length(v) == 4, pt.momenta) && length(pt.outputs) == length(prog.reduction) ||
+        length(pt.momenta) == prog.legs && all(v -> length(v) == 4, pt.momenta) && length(pt.outputs) == output_count(prog) ||
             error("an example point has $(length(pt.momenta)) momenta and $(length(pt.outputs)) outputs; " *
-                  "the program has $(prog.legs) legs and $(length(prog.reduction)) outputs")
+                  "the program has $(prog.legs) legs and $(output_count(prog)) outputs")
     end
 end
 
@@ -199,7 +199,7 @@ function runner_h(prog::Lowered, b::ArenaIndex)::String
     #define RUNNER_PROCESS $(cstring(prog.process))
     #define RUNNER_COLOUR $(cstring(prog.colour))
     #define RUNNER_LEGS $(prog.legs)
-    #define RUNNER_OUTPUTS $(length(prog.reduction))
+    #define RUNNER_OUTPUTS $(output_count(prog))
     #define RUNNER_ARENA_SIZE $(b.size)
 
     #ifdef __cplusplus
@@ -355,6 +355,13 @@ function compile_tables(writer, prog::Lowered)
     for (s, stub) in enumerate(prog.stubs)
         emit(writer, "static const int outputs$s[] = {$(join(stub.outputs .- 1, ", "))};")
     end
+    # embedding k (0-based): the current's components, the wavefunction's (-1: zero), the factors
+    for (k, list) in enumerate(prog.embeddings)
+        emit(writer, "static const int emb_components$k[] = {$(join([j - 1 for (j, _, _) in list], ", "))};")
+        emit(writer, "static const int emb_waves$k[] = {$(join([w - 1 for (_, w, _) in list], ", "))};")
+        values = join(["$(lit(real(prog.factors[x]))), $(lit(imag(prog.factors[x])))" for (_, _, x) in list], ", ")
+        emit(writer, "static const double emb_factors$k[] = {$values};")
+    end
     newline(writer)
 end
 
@@ -386,7 +393,7 @@ function compile_kernels(writer, prog::Lowered)
         emit(writer, "cplx f = get(factor, 0);")
         emit(writer, "for (int n = 0; n < $(outputs ÷ 2); n++) {")
         emit(writer, "cplx pair = get(mem + $inputs, n);")
-        emit(writer, "put(out, outputs[n], direct ? pair : combine(get(out, outputs[n]), mul(pair, f), mode));")
+        emit(writer, "put(out, outputs[n], combine(get(out, outputs[n]), direct ? pair : mul(pair, f), mode));")
         emit(writer, "}")
 
         emit(writer, "}")
@@ -418,22 +425,8 @@ function compile_forms(writer, prog::Lowered, b::ArenaIndex)
     newline(writer)
 end
 
-# the sources; every other current is zero (run() zeroes the arena)
-function compile_currents(writer, prog::Lowered, b::ArenaIndex)
-    emit(writer, "void currents(double *p) {")
-
-    for s in prog.sources
-        ori = s.antiparticle ? "ANTIPARTICLE" : "PARTICLE"
-        emit(writer, "source(p+$(edge_at(b, prog, s.edge)), $(C_FAMILY[s.family]), $ori, p+$(form_at(b, edge_form(prog, s.edge))), " *
-                     "$(s.helicity), $(s.chirality), $(lit(real(prog.scales[s.mass]))), &$(factor(s.factor)));")
-    end
-
-    emit(writer, "}")
-    newline(writer)
-end
-
 function compile_body(writer, prog::Lowered, b::ArenaIndex)
-    emit(writer, "void body(double *p) {")
+    emit(writer, "void body(double *out, double *p) {")
 
     for (k, op) in enumerate(prog.ops)
         emit(writer, "// $k: $(describe(prog, op))")
@@ -457,6 +450,26 @@ function compile_op(writer, op::LOp, prog::Lowered, b::ArenaIndex)
         emit(writer, "scale($(p(op.d)), $(op.n), &$(factor(op.x)));")
     elseif op.op == CLEAR
         emit(writer, "clear($(p(op.d)), $(op.n));")
+    elseif op.op == SOURCE
+        (family, anti, h, ch) = source_fields(op)
+        ori = anti ? "ANTIPARTICLE" : "PARTICLE"
+        mass = lit(real(prog.scales[op.t]))
+        if op.l == 0
+            emit(writer, "source($(p(op.d)), $(C_FAMILY[family]), $ori, $(momentum(op.d)), $h, $ch, $mass, &$(factor(op.x)));")
+        else
+            k = op.l
+            emit(writer, "source_embedded($(p(op.d)), $(C_FAMILY[family]), $ori, $(momentum(op.d)), $h, $ch, $mass, " *
+                         "emb_components$k, emb_waves$k, emb_factors$k, $(length(prog.embeddings[k])));")
+        end
+    elseif op.op == CLEAR_AMPLITUDE
+        emit(writer, "p[$(amplitude_at(b, op.d))] = 0.0; p[$(amplitude_at(b, op.d) + 1)] = 0.0;")
+    elseif op.op == COPY
+        emit(writer, "copy_row($(p(op.d)), $(p(op.l)), $(edge_layout(prog, op.d).components), &$(factor(op.x)));")
+    elseif op.op == SCATTER
+        emit(writer, "scatter($(p(op.d)), $(p(op.l)), $(edge_layout(prog, op.d).components), $(c_mode(op)), &$(factor(op.x)));")
+    elseif op.op == REDUCE
+        sc = op.x == 0 ? "NULL" : "&$(factor(op.x))"
+        emit(writer, "out[$(op.d - 1)] = reduce_term(out[$(op.d - 1)], &p[$(amplitude_at(b, op.t))], $sc, $(lit(prog.weights[op.n])));")
     elseif op.op == CLOSURE
         list = prog.lists[op.t]
         cf = isempty(list) ? "NULL" : "cf$(op.t)"
@@ -492,28 +505,4 @@ function kernel_arg(i::KernelInput, op::LOp, prog::Lowered, b::ArenaIndex, scale
     else  # FACTOR
         return "factors[$(2*(op.x-1) + im_)]"
     end
-end
-
-# out[h - 1] = group factor × Σ weight × |amplitude|² over output h's terms (none: 0); the terms
-# (0-based amplitudes) and weights as constant arrays `terms<h>`, `weights<h>`
-function compile_reduction(writer, prog::Lowered, b::ArenaIndex)
-    for (h, terms) in enumerate(prog.reduction)
-        isempty(terms) && continue
-        emit(writer, "static const int terms$h[] = {$(join([x[1]-1 for x in terms], ", "))};")
-        emit(writer, "static const double weights$h[] = {$(join([lit(x[2]) for x in terms], ", "))};")
-    end
-    newline(writer)
-    emit(writer, "void reducer(double *out, double *p) {")
-
-    (num, den) = prog.group_factor
-    for (h, terms) in enumerate(prog.reduction)
-        if isempty(terms)
-            emit(writer, "out[$(h-1)] = 0.0;")
-        else
-            emit(writer, "out[$(h-1)] = reduction(&p[$(amplitude_at(b, 1))], terms$h, weights$h, $(length(terms)), $num, $den);")
-        end
-    end
-
-    emit(writer, "}")
-    newline(writer)
 end

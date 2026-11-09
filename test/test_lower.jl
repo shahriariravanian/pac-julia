@@ -22,18 +22,24 @@ end
 function roundtrip(p::Program, l::Lowered)::Vector{String}
     out = String[]
     check(ok, k, what) = ok || push!(out, "row $k: $what")
-    length(l.ops) == length(p.body) || return ["$(length(l.ops)) rows for $(length(p.body)) operations"]
-    [c.components for c in l.currents] == [c.components for c in p.currents] || push!(out, "component counts")
+    # the rows: the sources (SOURCE rows), the body, the reduction (REDUCE rows)
     srcs = [(c, cur.source) for (c, cur) in enumerate(p.currents) if cur.source !== nothing]
-    length(srcs) == length(l.sources) || push!(out, "source count")
-    for ((c, s), ls) in zip(srcs, l.sources)
-        (edge_current(l, ls.edge), edge_form(l, ls.edge), ls.family, ls.antiparticle, ls.helicity, ls.chirality, ls.mass, ls.factor) ==
-            (c, s.form, FAMILY_TYPES[s.family], s.orientation == "antiparticle", s.helicity, s.chirality, s.mass, s.factor) ||
-            push!(out, "source of current $c")
+    terms = [(h, a, w) for (h, ts) in enumerate(p.reduction) for (a, w) in ts]
+    (ns, nb) = (length(srcs), length(p.body))
+    length(l.ops) == ns + nb + length(terms) ||
+        return ["$(length(l.ops)) rows for $ns sources, $nb operations and $(length(terms)) reduction terms"]
+    [c.components for c in l.currents] == [c.components for c in p.currents] || push!(out, "component counts")
+    for ((c, s), o) in zip(srcs, l.ops[1:ns])
+        (o.op, edge_current(l, o.d), edge_form(l, o.d), PacRunner.source_fields(o)..., o.t, o.x, o.l) ==
+            (PacRunner.SOURCE, c, s.form, FAMILY_TYPES[s.family], s.orientation == "antiparticle", s.helicity, s.chirality,
+             s.mass, s.factor, 0) || push!(out, "source of current $c")
+    end
+    for ((h, a, w), o) in zip(terms, l.ops[ns+nb+1:end])
+        (o.op, o.d, o.t, o.x) == (PacRunner.REDUCE, h, a, 0) && isequal(l.weights[o.n], w) || push!(out, "reduction term ($h, $a)")
     end
     cur(e) = edge_current(l, e)
     form(e) = edge_form(l, e)
-    for (k, (op, o)) in enumerate(zip(p.body, l.ops))
+    for (k, (op, o)) in enumerate(zip(p.body, l.ops[ns+1:ns+nb]))
         if op isa Vertex
             check(o.op == VERTEX_OPS[op.type][1], k, "opcode")
             check((cur(o.d), cur(o.l), cur(o.r)) == (op.out, op.l, op.r), k, "operands")
@@ -48,12 +54,13 @@ function roundtrip(p::Program, l::Lowered)::Vector{String}
             check(binding_inputs(l, o.t) == b.inputs, k, "binding inputs")
             check(l.stubs[l.instances[o.t][1]].outputs == b.outputs, k, "outputs")
             check(l.stubs[l.instances[o.t][1]].kernel.name == b.kernel.name, k, "kernel")
-            check((o.op == KERNEL_DIRECT) == (b.direct && PacRunner.is_one(p.factors[op.factor])), k, "direct")
+            direct = b.direct && PacRunner.is_one(p.factors[op.factor])
+            check((o.op == KERNEL_DIRECT) == direct, k, "direct")
             check((cur(o.d), cur(o.l), cur(o.r)) == (op.out, op.l, op.r), k, "operands")
             kinds = [i.kind for i in b.inputs]
             MOMENTUM_U in kinds && check(form(o.l) == op.u, k, "momentum u")
             MOMENTUM_V in kinds && check(form(o.r) == op.v, k, "momentum v")
-            check((o.x, o.set) == (op.factor, op.mode == "="), k, "factor, mode")
+            check((o.x, o.set) == (op.factor, direct || op.mode == "="), k, "factor, mode")
         elseif op isa Closure
             check((o.op, o.d, cur(o.l), cur(o.r), o.x) == (PacRunner.CLOSURE, op.amplitude, op.l, op.r, op.factor), k, "operands")
             check(l.lists[o.t] == op.component_factors, k, "component factors")

@@ -13,7 +13,7 @@ outputs = evaluate(p, a, momenta)              # momenta[leg] = (E, px, py, pz),
 compile("out", p; examples = load_examples("lc", 1))   # the folder out/, below (from lower(p))
 app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR on real registers (ComplexBi kept)
 kernel_c("k0", "kernel.plane.symjit")          # the kernel as C: static int k0(double *mem)
-l = lower(p)                                   # UIR v0.7: rows on edges, the layout, the tables
+l = lower(p)                                   # UIR v0.8: rows on edges, the layout, the tables
 evaluate(l, LArena(l), momenta)                # bit for bit evaluate(p, a, momenta)
 o = optimize(l)                                # sort_runs, fuse, reuse_planes: the same values
 e = encode(o)                                  # one stream of 8-byte words (sources, then rows), the edge table
@@ -97,7 +97,7 @@ and the kernels is then a device function too (`PAC_FN`), and the tables are `__
 | `src/install.jl`, `src/kernel_lib.jl` | `install`, `capture` (pac2json for pyAmpliCol artifacts) and the Julia runner's kernel libraries |
 | `src/alpha_s.jl` | `alpha_s_power`: the alpha_s power of the programs, from captures at two alpha_s |
 | `src/kernel_c.jl` | `kernel_c(name, path)`: a kernel's MIR as one C function, the native code's operations (bit for bit sjb2obj's library); the compiled folders' kernels |
-| `src/uir.jl`, `src/lower.jl` | UIR v0.7, the lowered form the back ends read (`Lowered`); `lower(p)` with its checks (`validate`) |
+| `src/uir.jl`, `src/lower.jl` | UIR v0.8, the lowered form the back ends read (`Lowered`); `lower(p)` with its checks (`validate`) |
 | `src/passes.jl` | the optional passes over a `Lowered`: `sort_runs`, `fuse`, `reuse_planes` (the liveness layout), `optimize` (all three) |
 | `src/encode.jl` | `encode(l)`: the device form (one stream of 64-bit words, the SOURCE rows first, END last; the 32-bit edge table), and `decode` |
 | `c/pacops.c`, `c/pacops.h` | the sources and instructions in C, copied next to each `runner.c` |
