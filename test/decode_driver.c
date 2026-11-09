@@ -1,7 +1,8 @@
 /* The driver of runtests.jl's test of uirvm's field macros (c/uirvm.h, UIR_OP ... UIR_X): reads
  * encoded words from stdin (hex, whitespace-separated), reads them row by row as uirvm does (as
  * 32-bit halves; one-word rows only) and prints one line per row:
- * op set first last d t l r n x, the index fields 0-based and -1 for none (all ones).
+ * op set first last d t l r n x e, the index fields 0-based and -1 for none (all ones); e: a
+ * SOURCE's embedding field (UIR_E).
  * build: cc -std=c99 -Ic -o decode_driver test/decode_driver.c c/pacops.c -lm */
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,9 +33,9 @@ int main(void)
     }
     for (size_t k = 0; k < n; k++) {
         const uint32_t *r = h + 2 * k;
-        printf("%u %u %u %u %ld %ld %ld %ld %u %ld\n", UIR_OP(r), UIR_SET(r), UIR_FIRST(r), UIR_LAST(r),
+        printf("%u %u %u %u %ld %ld %ld %ld %u %ld %ld\n", UIR_OP(r), UIR_SET(r), UIR_FIRST(r), UIR_LAST(r),
                field(UIR_D(r), 0x1fff), field(UIR_T(r), 0x3ff), field(UIR_L(r), 0x1fff), field(UIR_R(r), 0x1fff),
-               UIR_N(r), field(UIR_X(r), 0x3f));
+               UIR_N(r), field(UIR_X(r), 0x3f), field(UIR_E(r), 0x3ff));
     }
     return 0;
 }

@@ -6,7 +6,7 @@ using PacRunner
 using PacRunner: ARITH_OPS, BIN_OPS, FUSED_OPS, UNI_OPS, Instruction, Nop, End, Uni, Bi, Mov, Load, Save, LoadConst, LoadComplex,
     SaveComplex, LoadArgs, SaveArgs, Fused, IfElse, Label, Branch, BranchIf, Call, LoadMath, LoadConstMath, ComplexBi, Reg, Loc,
     REG_GEN, REG_STATIC, REG_RET, REG_TEMP, REG_LEFT, REG_RIGHT, LOC_MEM, LOC_PARAM, LOC_STACK, SjbError, decode, is_complex,
-    mem_size, CONFIG_OPTIONS, ComplexifyError
+    mem_size, CONFIG_OPTIONS
 
 mask(b::Bool) = b ? reinterpret(Float64, ~UInt64(0)) : 0.0
 bits(x) = reinterpret(UInt64, x)

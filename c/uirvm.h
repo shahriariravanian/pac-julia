@@ -1,9 +1,9 @@
-/* uirvm: the interpreter of UIR v0.7 (the pac-julia design doc, "The lowered IR: UIR v0.7" and "The
- * 8-byte encoding"), in portable C: one source for the CPU (cc, a test of the encoding against the
+/* uirvm: the interpreter of UIR v0.8 (the pac-julia design doc, "The lowered IR" and "The 8-byte
+ * encoding"), in portable C: one source for the CPU (cc, a test of the encoding against the
  * straight-line C and the Julia runners) and the GPU (nvcc, hipcc: one thread per point).
  *
- * A program is data (uir_program): one stream of encoded words, the sources (SOURCE rows) first and
- * then the rows, then one END row; the edge table, and the tables the rows index. Every index is
+ * A program is data (uir_program): one stream of encoded words, the rows (SOURCE rows among them),
+ * then one END row; the edge table, and the tables the rows index. Every index is
  * 0-based; in a row's index field all ones means none (a null operand, which no row reads: validate
  * checks it).
  *
@@ -50,13 +50,14 @@
 extern "C" {
 #endif
 
-#define UIR_VERSION ((0u << 16) | 7u)   /* major << 16 | minor */
+#define UIR_VERSION ((0u << 16) | 8u)   /* major << 16 | minor */
 
 /* the opcodes (bits 0-4 of word 0) */
 enum {
     UIR_V_WEYL_VECTOR_A, UIR_V_WEYL_VECTOR_B, UIR_V_TENSOR_VECTOR, UIR_V_VECTOR_WEDGE, UIR_V_THREE_VECTOR,
     UIR_P_WEYL_A, UIR_P_WEYL_B, UIR_P_VECTOR,
     UIR_CLOSURE, UIR_SCALE, UIR_CLEAR, UIR_KERNEL, UIR_KERNEL_DIRECT, UIR_SOURCE,
+    UIR_CLEAR_AMPLITUDE, UIR_COPY, UIR_SCATTER, UIR_REDUCE,
     UIR_END = 31                      /* the stream's last word: no fields */
 };
 
@@ -72,8 +73,8 @@ typedef struct {
     uint32_t version;                 /* UIR_VERSION */
     uint32_t legs, forms, planes, amplitudes, outputs;
 
-    const uint32_t *rows;             /* the encoded words, each as two halves (low first): the sources', the rows', END */
-    uint32_t words, source_words;     /* the rows (one 64-bit word each): all of them (END included); the sources at the head */
+    const uint32_t *rows;             /* the encoded words, each as two halves (low first): the rows', END */
+    uint32_t words;                   /* the rows (one 64-bit word each), END included */
     const uint32_t *edges;            /* the edge table: start / 2 (15), form (8, 255 none), components (4), type (4) */
     const double *scales, *factors;   /* (re, im) each */
 
@@ -85,12 +86,16 @@ typedef struct {
     const double *crossing_sign;
 
     const uint32_t *list_first, *list_factor;     /* the closures' component factors */
+    /* the sources' embeddings: entry e writes component embedding_component[e] of the current, the
+       wavefunction's component embedding_wave[e] (-1: zero) × factor embedding_factor[e] */
+    const uint32_t *embedding_first;
+    const int32_t *embedding_component, *embedding_wave;
+    const uint32_t *embedding_factor;
     /* the kernel rows' scale sets (a stub's inputs and outputs are in the program's uir_stub) */
     const uint32_t *scaleset_first, *scaleset_scale;
     const uint32_t *instance;         /* 2 each: stub, scale set */
 
-    const uint32_t *output_first, *term_amplitude; /* the reduction: output h's terms */
-    const double *term_weight;
+    const double *weights;            /* the REDUCE rows' weights */
     long group_numerator, group_denominator;
 } uir_program;
 
@@ -101,7 +106,8 @@ typedef struct {
 
 /* A row is its word, as two 32-bit halves: w[0] the low, w[1] the high. A field is read where it is
  * used: low half op 0-4, EXT 5, SET 6, FIRST 7, LAST 8, D 9-21, T 22-31; high half L 0-12, R 13-25,
- * N 0-15, X 26-31. Index fields are 0-based; a null operand is all ones (which no row reads).
+ * N 0-15, X 26-31; a SOURCE's E (its embedding) 16-25. Index fields are 0-based; a null operand
+ * (or an absent embedding, amplitude scale) is all ones.
  * The interpreter reads one-word rows only: a wide row (EXT, a second word for indices beyond these
  * widths) is not supported, and compile(...; interpreter = true) refuses a program that has one. */
 #define UIR_OP(w) ((w)[0] & 31u)
@@ -114,17 +120,17 @@ typedef struct {
 #define UIR_R(w) (((w)[1] >> 13) & 0x1fffu)
 #define UIR_N(w) ((w)[1] & 0xffffu)                     /* a count, or a SOURCE's template */
 #define UIR_X(w) ((w)[1] >> 26)
+#define UIR_E(w) (((w)[1] >> 16) & 0x3ffu)              /* a SOURCE's embedding (bits 48-57) */
 
 /* the program's kernel stubs (the program defines it, after including uirvm.c) */
 PAC_FN int uir_stub(uint32_t stub, const uir_program *g, const uir_arena *a, const uint32_t *w, const uint32_t *scaleset);
 
-/* one point: the forms from momenta[4 legs] (the caller's (E, px, py, pz) per leg), the sources (the
- * SOURCE rows at the head), the rows (from word source_words up to END), the reduction into
- * out[outputs]. The planes and amplitudes must be zero before. Returns 0, or the first failing kernel's status. */
+/* one point: the forms from momenta[4 legs] (the caller's (E, px, py, pz) per leg), out[outputs] at
+ * zero, the rows up to END (REDUCE rows add to out), the group factor. The planes and amplitudes
+ * must be zero before. Returns 0, or the first failing kernel's status. */
 PAC_FN void uir_forms(const uir_program *g, const uir_arena *a, const double *momenta);
-PAC_FN void uir_sources(const uir_program *g, const uir_arena *a);
-PAC_FN int uir_rows(const uir_program *g, const uir_arena *a);
-PAC_FN void uir_reduce(const uir_program *g, const uir_arena *a, double *out);
+PAC_FN int uir_rows(const uir_program *g, const uir_arena *a, double *out);
+PAC_FN void uir_group(const uir_program *g, double *out);
 PAC_FN int uir_run(const uir_program *g, const uir_arena *a, const double *momenta, double *out);
 
 #ifdef __CUDACC__

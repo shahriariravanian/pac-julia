@@ -1,6 +1,6 @@
 # compile(path, l; interpreter = true): the folder of compile.jl, but runner.c runs the program on
 # the UIR interpreter (c/uirvm.c, which runner.c includes) instead of straight-line code. The
-# program is data there: encode(l)'s words (the sources, then the rows) and edge table, and the tables they index, as C
+# program is data there: encode(l)'s words (the rows, SOURCE rows among them) and edge table, and the tables they index, as C
 # arrays of one uir_program (c/uirvm.h); the kernels are reached through uir_stub, a switch over
 # the stubs (each a kernel and its input layout, the kernels' C as compile.jl's). runner.h, testing.c and the Makefile are compile.jl's, so run() has the
 # same prototype and the values must be the straight-line C's bit for bit.
@@ -35,7 +35,7 @@ input_code(i::KernelInput) = UInt32(Int(i.kind)) | UInt32(i.im) << 3 | UInt32(i.
 # run_gpu (uirvm.h) of `prog`: every point on the device, one thread each, the arena plane-major
 # (uir_arena's ld = points, i = the thread: each plane a contiguous row of points)
 function run_gpu_c(prog::Lowered)::String
-    (legs, outputs) = (prog.legs, length(prog.reduction))
+    (legs, outputs) = (prog.legs, output_count(prog))
     sizes = (forms = 4 * length(prog.forms), amplitudes = 2 * prog.amplitudes, planes = 2 * prog.planes)
     return """
     #include <stdio.h>
@@ -78,11 +78,12 @@ end
 # constant-count code); a kernel-only (UNTYPED) current may have more
 const VM_MAX_COMPONENTS = 6
 
-# what uirvm cannot run in `prog`: closure and scale rows beyond VM_MAX_COMPONENTS
+# what uirvm cannot run in `prog`: closure, scale, copy and scatter rows beyond VM_MAX_COMPONENTS
 function vm_unsupported(prog::Lowered)::Vector{String}
     out = String[]
     for (k, op) in enumerate(prog.ops)
-        n = op.op == CLOSURE ? length(prog.lists[op.t]) : op.op == SCALE_ROW ? op.n : 0
+        n = op.op == CLOSURE ? length(prog.lists[op.t]) : op.op == SCALE_ROW ? op.n :
+            op.op in (COPY, SCATTER) ? edge_layout(prog, op.d).components : 0
         n > VM_MAX_COMPONENTS && push!(out, "row $k ($(op.op)): $n components, beyond the interpreter's $VM_MAX_COMPONENTS")
     end
     return out
@@ -94,8 +95,8 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
     examples === nothing || check_examples(prog, examples)
     e = encode(prog)
     # uirvm reads one-word rows only: a wide row (EXT) is refused here
-    length(e.rows) == length(prog.sources) + length(prog.ops) + 1 ||
-        error("$(prog.process) $(prog.colour): $(length(e.rows) - length(prog.sources) - length(prog.ops) - 1) wide rows " *
+    length(e.rows) == length(prog.ops) + 1 ||
+        error("$(prog.process) $(prog.colour): $(length(e.rows) - length(prog.ops) - 1) wide rows " *
               "(an index beyond the one-word fields: 13-bit edges, 10-bit T, 6-bit factors); the UIR interpreter " *
               "reads one-word rows only")
     bad = vm_unsupported(prog)
@@ -127,23 +128,26 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         end
         carray(writer, "uint32_t", "list_first", firsts(length.(prog.lists)))
         carray(writer, "uint32_t", "list_factor", [x - 1 for list in prog.lists for x in list])
+        carray(writer, "uint32_t", "embedding_first", firsts(length.(prog.embeddings)))
+        carray(writer, "int32_t", "embedding_component", [j - 1 for list in prog.embeddings for (j, _, _) in list])
+        carray(writer, "int32_t", "embedding_wave", [w - 1 for list in prog.embeddings for (_, w, _) in list])
+        carray(writer, "uint32_t", "embedding_factor", [x - 1 for list in prog.embeddings for (_, _, x) in list])
         carray(writer, "uint32_t", "scaleset_first", firsts(length.(prog.scalesets)))
         carray(writer, "uint32_t", "scaleset_scale", [x - 1 for set in prog.scalesets for x in set])
         carray(writer, "uint32_t", "instance", [x - 1 for (s, set) in prog.instances for x in (s, set)])
-        carray(writer, "uint32_t", "output_first", firsts(length.(prog.reduction)))
-        carray(writer, "uint32_t", "term_amplitude", [k - 1 for terms in prog.reduction for (k, _) in terms])
-        carray(writer, "double", "term_weight", [lit(w) for terms in prog.reduction for (_, w) in terms]; per_line = 4)
+        carray(writer, "double", "weights", [lit(w) for w in prog.weights]; per_line = 4)
         newline(writer)
 
         crossed = prog.crossing !== nothing
         (num, den) = prog.group_factor
         emit(writer, "UIR_DATA uir_program program = {")
-        emit(writer, "UIR_VERSION, $(prog.legs), $(length(prog.forms)), $(prog.planes), $(prog.amplitudes), $(length(prog.reduction)),")
-        emit(writer, "rows, $(length(e.rows)), $(e.source_words), edges, scales, factors,")
+        emit(writer, "UIR_VERSION, $(prog.legs), $(length(prog.forms)), $(prog.planes), $(prog.amplitudes), $(output_count(prog)),")
+        emit(writer, "rows, $(length(e.rows)), edges, scales, factors,")
         emit(writer, "form_first, term_leg, term_coefficient, $(crossed ? "crossing_leg" : "NULL"), $(crossed ? "crossing_sign" : "NULL"),")
         emit(writer, "list_first, list_factor,")
+        emit(writer, "embedding_first, embedding_component, embedding_wave, embedding_factor,")
         emit(writer, "scaleset_first, scaleset_scale, instance,")
-        emit(writer, "output_first, term_amplitude, term_weight, $(num)L, $(den)L")
+        emit(writer, "weights, $(num)L, $(den)L")
         emit(writer, "};")
         newline(writer)
 

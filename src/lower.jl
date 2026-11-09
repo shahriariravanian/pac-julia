@@ -1,6 +1,7 @@
-# lower(p::Program) -> Lowered (UIR v0.7, uir.jl): the plain lowering. Every current gets its own
-# planes (no reuse), at an even plane; the rows keep the body's order, one LOp per operation; each
-# vertex row is its own fused run (first and last). The optional passes (plane reuse, the sort of
+# lower(p::Program) -> Lowered (UIR v0.8, uir.jl): the plain lowering. Every current gets its own
+# planes (no reuse), at an even plane; the sources are SOURCE rows at the head, then the body's rows
+# in order, one LOp per operation, then the reduction as REDUCE rows (output by output, each output's
+# terms in order: the sums of v0.7's reduction); each vertex row is its own fused run (first and last). The optional passes (plane reuse, the sort of
 # contribution runs, longer fused runs) come later and must leave the values unchanged bit for bit.
 # `validate` checks a Lowered (lower calls it on its result).
 
@@ -110,6 +111,14 @@ function intern!(v::Vector{T}, x::T)::Int where {T}
     return length(v)
 end
 
+# the index of `x` in `v` by value, bit for bit (-0.0 and 0.0 differ), appended if new
+function intern_value!(v::Vector{T}, x::T)::Int where {T}
+    k = findfirst(y -> isequal(y, x), v)
+    k === nothing || return k
+    push!(v, x)
+    return length(v)
+end
+
 is_one(z::Complex{Float64}) = reinterpret(UInt64, real(z)) == reinterpret(UInt64, 1.0) &&
                               reinterpret(UInt64, imag(z)) == reinterpret(UInt64, 0.0)
 
@@ -129,14 +138,14 @@ function lower(p::Program)::Lowered
     edge(c::CurrentIndex, f::FormIndex) = c == 0 ? 0 : f == own[c] ? c : intern!(edges, LEdge(c, f))
     operand(c::CurrentIndex) = c   # an operand whose momentum the row does not read: its own edge
 
-    sources = LSource[]
+    ops = LOp[]
     for (c, cur) in enumerate(p.currents)
         s = cur.source
         s === nothing && continue
         s.orientation in ("particle", "antiparticle") || error("$(cname(c)): unknown orientation $(s.orientation)")
         # its edge: the current with the source's form (its own edge, unless a row reads it with another)
-        push!(sources, LSource(edge(c, s.form), FAMILY_TYPES[s.family], s.orientation == "antiparticle", s.helicity,
-                               s.chirality, s.mass, s.factor))
+        push!(ops, source_op(edge(c, s.form), FAMILY_TYPES[s.family], s.orientation == "antiparticle", s.helicity,
+                             s.chirality, s.mass, s.factor))
     end
 
     lists = Vector{FactorIndex}[]
@@ -159,7 +168,6 @@ function lower(p::Program)::Lowered
         return intern!(instances, (k, intern!(scalesets, scaleset)))
     end
 
-    ops = LOp[]
     for op in p.body
         if op isa Vertex
             (opc, _, _, _) = VERTEX_OPS[op.type]
@@ -176,8 +184,11 @@ function lower(p::Program)::Lowered
             kinds = [i.kind for i in b.inputs]
             l = MOMENTUM_U in kinds ? edge(op.l, op.u) : operand(op.l)
             r = MOMENTUM_V in kinds ? edge(op.r, op.v) : operand(op.r)
-            opc = b.direct && is_one(p.factors[op.factor]) ? KERNEL_DIRECT : KERNEL
-            push!(ops, LOp(opc; set = set_flag(op.mode), d = operand(op.out), t = instance(b), l = l, r = r, x = op.factor))
+            # a direct binding with factor 1 stores its pairs as they are, whatever its mode (pac2json's
+            # kernel_store!): KERNEL_DIRECT with SET
+            direct = b.direct && is_one(p.factors[op.factor])
+            push!(ops, LOp(direct ? KERNEL_DIRECT : KERNEL; set = direct || set_flag(op.mode), d = operand(op.out),
+                           t = instance(b), l = l, r = r, x = op.factor))
         elseif op isa Closure
             push!(ops, LOp(CLOSURE; d = op.amplitude, t = intern!(lists, op.component_factors), l = operand(op.l),
                            r = operand(op.r), x = op.factor))
@@ -190,9 +201,14 @@ function lower(p::Program)::Lowered
         end
     end
 
+    weights = Float64[]
+    for (h, terms) in enumerate(p.reduction), (a, w) in terms
+        push!(ops, LOp(REDUCE; d = h, t = a, n = intern_value!(weights, w)))
+    end
+
     l = Lowered(UIR_VERSION, p.process, p.colour, p.legs, p.crossing, p.forms, p.scales, p.factors, p.alpha_s,
-                p.helicities, currents, planes, edges, sources, lists, stubs, scalesets, instances, ops, p.amplitudes,
-                p.reduction, p.group_factor)
+                p.helicities, currents, planes, edges, lists, Vector{EmbeddingEntry}[], stubs, scalesets, instances, ops,
+                p.amplitudes, weights, p.group_factor, false)
     validate(l)
     return l
 end
@@ -221,14 +237,13 @@ function problems(l::Lowered)::Vector{String}
         e <= nc && edge.current != e && bad("edge $e is not current $(cname(e))'s own edge")
     end
     length(unique(l.edges)) == ne || bad("an edge is listed twice")
-    for s in l.sources
-        inrange(s.edge, ne) && inrange(s.mass, length(l.scales)) && inrange(s.factor, length(l.factors)) ||
-            (bad("source on edge $(s.edge): an index out of range"); continue)
-        at = "source of $(cname(edge_current(l, s.edge)))"
-        edge_form(l, s.edge) == 0 && bad("$at: its edge has no momentum")
-        edge_layout(l, s.edge).type == s.family || bad("$at: $(s.family) into a $(edge_layout(l, s.edge).type)")
-        -2 <= s.helicity <= 2 && -1 <= s.chirality <= 1 || bad("$at: helicity $(s.helicity), chirality $(s.chirality)")
+    for (k, list) in enumerate(l.embeddings)
+        for (j, w, x) in list
+            j >= 1 && w >= 0 && inrange(x, length(l.factors)) || bad("embedding $k: entry ($j, $w, $x) out of range")
+        end
+        length(unique(first.(list))) == length(list) || bad("embedding $k writes a component twice")
     end
+    nw, nh = length(l.weights), output_count(l)
 
     components(e) = edge_layout(l, e).components
     planes(e) = (edge_plane(l, e), edge_plane(l, e) + components(e) - 1)
@@ -236,15 +251,23 @@ function problems(l::Lowered)::Vector{String}
     open = 0          # the destination edge of the open fused run (0: none)
     for (k, op) in enumerate(l.ops)
         at = "row $k ($(op.op))"
-        op.op == SOURCE && (bad("$at: a source among the rows (Lowered.sources holds them)"); continue)
         op.op == END && (bad("$at: an END row (the encoding's, not a Lowered's)"); continue)
-        # the edges each opcode names: d (not for a closure), l and r (vertex, closure; a kernel's may be 0)
-        edges_ok = (op.op == CLOSURE || inrange(op.d, ne)) &&
+        # the edges each opcode names: d (not for a closure, clear_amplitude or reduce); l and r (vertex,
+        # closure; a kernel's may be 0); l (copy, scatter); a source's l is its embedding
+        d_edge = !(op.op in (CLOSURE, CLEAR_AMPLITUDE, REDUCE))
+        edges_ok = (!d_edge || inrange(op.d, ne)) &&
                    (is_vertex(op.op) || op.op == CLOSURE ? inrange(op.l, ne) && inrange(op.r, ne) :
-                    is_kernel(op.op) ? 0 <= op.l <= ne && 0 <= op.r <= ne : op.l == 0 && op.r == 0)
+                    is_kernel(op.op) ? 0 <= op.l <= ne && 0 <= op.r <= ne :
+                    op.op in (COPY, SCATTER) ? inrange(op.l, ne) && op.r == 0 :
+                    op.op == SOURCE ? 0 <= op.l <= length(l.embeddings) && op.r == 0 : op.l == 0 && op.r == 0)
         edges_ok || (bad("$at: an edge out of range"); continue)
-        (op.op == CLEAR ? op.x == 0 : inrange(op.x, length(l.factors))) || bad("$at: factor $(op.x)")
-        (op.set && !(is_vertex(op.op) || is_kernel(op.op))) && bad("$at: SET on a row without a mode")
+        # the factor: none for clear and clear_amplitude, optional for reduce (its amplitude's scale) and
+        # an embedded source (its entries carry theirs)
+        factor_ok = op.op in (CLEAR, CLEAR_AMPLITUDE) ? op.x == 0 :
+                    op.op == REDUCE ? 0 <= op.x <= length(l.factors) :
+                    op.op == SOURCE && op.l != 0 ? op.x == 0 : inrange(op.x, length(l.factors))
+        factor_ok || bad("$at: factor $(op.x)")
+        (op.set && !(is_vertex(op.op) || is_kernel(op.op) || op.op == SCATTER)) && bad("$at: SET on a row without a mode")
         ((op.first || op.last) && !is_vertex(op.op)) && bad("$at: FIRST/LAST on a row that is not a vertex")
 
         if is_vertex(op.op)
@@ -292,7 +315,6 @@ function problems(l::Lowered)::Vector{String}
                 end
             end
             all(j -> 1 <= j <= components(op.d), stub.outputs) || bad("$at: an output beyond $(components(op.d)) components")
-            op.op == KERNEL_DIRECT && !is_one(l.factors[op.x]) && bad("$at: KERNEL_DIRECT with a factor other than 1")
         elseif op.op == CLOSURE
             inrange(op.d, l.amplitudes) || bad("$at: no amplitude $(op.d)")
             inrange(op.t, length(l.lists)) || (bad("$at: no component-factor list $(op.t)"); continue)
@@ -301,6 +323,27 @@ function problems(l::Lowered)::Vector{String}
             all(x -> inrange(x, length(l.factors)), l.lists[op.t]) || bad("$at: a component factor out of range")
         elseif op.op == SCALE_ROW || op.op == CLEAR
             0 <= op.n <= components(op.d) || bad("$at: $(op.n) components, beyond $(components(op.d))")
+        elseif op.op == SOURCE
+            (family, _, h, ch) = source_fields(op)
+            family in (SCALAR, WEYL, DIRAC, VECTOR) || bad("$at: family $family")
+            -2 <= h <= 2 && -1 <= ch <= 1 || bad("$at: helicity $h, chirality $ch")
+            inrange(op.t, length(l.scales)) || bad("$at: no mass scale $(op.t)")
+            edge_form(l, op.d) == 0 && bad("$at: its edge has no momentum")
+            if op.l == 0
+                edge_layout(l, op.d).type == family || bad("$at: $family into a $(edge_layout(l, op.d).type)")
+            else
+                n = TYPE_COMPONENTS[family]
+                all(((j, w, _),) -> j <= components(op.d) && w <= n, l.embeddings[op.l]) ||
+                    bad("$at: embedding $(op.l) beyond the current's $(components(op.d)) or the wavefunction's $n components")
+            end
+        elseif op.op == CLEAR_AMPLITUDE
+            inrange(op.d, l.amplitudes) || bad("$at: no amplitude $(op.d)")
+        elseif op.op == COPY || op.op == SCATTER
+            components(op.l) >= components(op.d) || bad("$at: copies $(components(op.d)) components from $(components(op.l))")
+        elseif op.op == REDUCE
+            inrange(op.d, nh) || bad("$at: no output $(op.d)")
+            inrange(op.t, l.amplitudes) || bad("$at: no amplitude $(op.t)")
+            inrange(op.n, nw) || bad("$at: no weight $(op.n)")
         end
     end
     open == 0 || bad("the fused run on edge $open does not end")

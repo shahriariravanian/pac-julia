@@ -92,7 +92,8 @@ function kernel_input(i::KernelInput, op::LOp, a::LArena, l::Lowered, scaleset::
     end
 end
 
-# a kernel row: the stub's inputs, the kernel, its pairs into out (KERNEL_DIRECT: as they are)
+# a kernel row: the stub's inputs, the kernel, its pairs into out (KERNEL_DIRECT: as they are, with
+# the mode; KERNEL: × factor, with the mode)
 function run_kernel!(a::LArena, l::Lowered, op::LOp)
     (s, set) = l.instances[op.t]
     stub, scaleset = l.stubs[s], l.scalesets[set]
@@ -101,15 +102,58 @@ function run_kernel!(a::LArena, l::Lowered, op::LOp)
     factor = l.factors[op.x]
     for (n, j) in enumerate(stub.outputs)
         pair = complex(values[2n-1], values[2n])
-        if op.op == KERNEL_DIRECT
-            out[j] = pair
-        else
-            store!(out, j, pair * factor, op.set ? "=" : "+=")
+        store!(out, j, op.op == KERNEL_DIRECT ? pair : pair * factor, op.set ? "=" : "+=")
+    end
+end
+
+# a source row: factor × the wavefunction at its edge's form into its current; with an embedding,
+# component j = factor_j × wavefunction component k (0: zero) for each entry, the others unchanged
+function run_source!(a::LArena, l::Lowered, op::LOp)
+    (family, anti, h, ch) = source_fields(op)
+    w = wavefunction(FAMILY_NAMES[family], anti ? "antiparticle" : "particle", edge_momentum(a, l, op.d), h, ch,
+                     real(l.scales[op.t]))
+    c = planes(a, l, op.d)
+    if op.l == 0
+        factor = l.factors[op.x]
+        for j in 1:TYPE_COMPONENTS[family]
+            c[j] = factor * w[j]
+        end
+    else
+        for (j, k, x) in l.embeddings[op.l]
+            c[j] = k == 0 ? complex(0.0, 0.0) : l.factors[x] * w[k]
         end
     end
 end
 
-function run_row!(a::LArena, l::Lowered, op::LOp)
+# copy: d[j] = s[j] × factor (value first), and +0 for a zero factor (RustiCol's certified reuse)
+function run_copy!(a::LArena, l::Lowered, op::LOp)
+    (d, src) = (planes(a, l, op.d), planes(a, l, op.l))
+    f = l.factors[op.x]
+    zero = f == 0   # (±0, ±0)
+    for j in eachindex(d)
+        d[j] = zero ? complex(0.0, 0.0) : src[j] * f
+    end
+end
+
+# scatter: s[j] × factor with RustiCol's fanout shortcuts (a real factor: ±1 copy or negate, else
+# componentwise; a purely imaginary one: (-im k, re k); else the complex product), set or added
+function run_scatter!(a::LArena, l::Lowered, op::LOp)
+    (d, src) = (planes(a, l, op.d), planes(a, l, op.l))
+    f = l.factors[op.x]
+    for j in eachindex(d)
+        v = scatter_value(src[j], f)
+        d[j] = op.set ? v : d[j] + v
+    end
+end
+
+# REDUCE: out[h] += weight × |amplitude|², the amplitude × its scale first (when it has one)
+function run_reduce!(a::LArena, l::Lowered, op::LOp, out::Vector{Float64})
+    z = a.amplitudes[op.t]
+    op.x == 0 || (z = z * l.factors[op.x])
+    out[op.d] = out[op.d] + l.weights[op.n] * fma(real(z), real(z), imag(z) * imag(z))
+end
+
+function run_row!(a::LArena, l::Lowered, op::LOp, out::Vector{Float64})
     if is_vertex(op.op)
         run_vertex!(a, l, op)
     elseif is_propagator(op.op)
@@ -122,33 +166,31 @@ function run_row!(a::LArena, l::Lowered, op::LOp)
         scale!(planes(a, l, op.d), op.n, l.factors[op.x])
     elseif op.op == CLEAR
         clear!(planes(a, l, op.d), op.n)
+    elseif op.op == SOURCE
+        run_source!(a, l, op)
+    elseif op.op == CLEAR_AMPLITUDE
+        a.amplitudes[op.d] = complex(0.0, 0.0)
+    elseif op.op == COPY
+        run_copy!(a, l, op)
+    elseif op.op == SCATTER
+        run_scatter!(a, l, op)
+    elseif op.op == REDUCE
+        run_reduce!(a, l, op, out)
     else
         error("unknown opcode $(op.op)")
     end
 end
 
-# the sources into their currents' planes (every other plane is zero)
-function fill_sources!(a::LArena, l::Lowered)
-    fill!(a.planes, complex(0.0, 0.0))
-    for s in l.sources
-        w = wavefunction(FAMILY_NAMES[s.family], s.antiparticle ? "antiparticle" : "particle", edge_momentum(a, l, s.edge),
-                         s.helicity, s.chirality, real(l.scales[s.mass]))
-        c = edge_layout(l, s.edge)
-        factor = l.factors[s.factor]
-        for j in 1:c.components
-            a.planes[c.start+j] = factor * w[j]
-        end
-    end
-end
-
 # The outputs of `l` (one per helicity configuration, group factor applied) at one point, as
-# evaluate(p::Program): momenta[leg] = (E, px, py, pz), the caller's momenta, 1-based legs.
+# evaluate(p::Program): momenta[leg] = (E, px, py, pz), the caller's momenta, 1-based legs. The
+# arena starts at zero; the outputs at zero, accumulated by the REDUCE rows, then × the group factor.
 function evaluate(l::Lowered, a::LArena, momenta)::Vector{Float64}
     fill_forms!(a, l, momenta)
-    fill_sources!(a, l)
+    fill!(a.planes, complex(0.0, 0.0))
     fill!(a.amplitudes, complex(0.0, 0.0))
+    out = zeros(output_count(l))
     for op in l.ops
-        run_row!(a, l, op)
+        run_row!(a, l, op, out)
     end
-    return [reduction([a.amplitudes[k] for (k, _) in terms], [w for (_, w) in terms], l.group_factor) for terms in l.reduction]
+    return [group(x, l.group_factor) for x in out]
 end

@@ -239,6 +239,15 @@ PAC_FN int source(double *out, int family, int orientation, const double *k, int
     return n;
 }
 
+PAC_FN void source_embedded(double *out, int family, int orientation, const double *k, int h, int ch, double mass,
+                     const int *components, const int *waves, const double *factors, int n)
+{
+    double w[8];
+    wavefunction(w, family, orientation, k, h, ch, mass);
+    for (int e = 0; e < n; e++)
+        put(out, components[e], waves[e] < 0 ? ZERO : mul(get(factors, e), get(w, waves[e])));
+}
+
 /* ==== vertex ===================================================================================== */
 
 /* l Weyl, r vector → Weyl:
@@ -413,15 +422,52 @@ PAC_FN void kernel_store(double *out, const double *values, const int *outputs, 
                   const double *factor)
 {
     cplx f = get(factor, 0);
-    int as_is = direct && f.re == 1.0 && f.im == 0.0 && !signbit(f.im);  /* exactly 1 + 0i */
     for (int n = 0; n < pairs; n++) {
         int j = outputs[n];
         cplx pair = get(values, n);
-        put(out, j, as_is ? pair : combine(get(out, j), mul(pair, f), mode));
+        put(out, j, combine(get(out, j), direct ? pair : mul(pair, f), mode));
     }
 }
 
+/* ==== copy, scatter ============================================================================== */
+
+PAC_FN void copy_row(double *out, const double *src, int n, const double *factor)
+{
+    cplx f = get(factor, 0);
+    int zero = f.re == 0.0 && f.im == 0.0;
+    for (int j = 0; j < n; j++) put(out, j, zero ? ZERO : mul(get(src, j), f));
+}
+
+PAC_FN static inline cplx scatter_value(cplx v, cplx f)
+{
+    if (f.im == 0.0) {
+        if (f.re == 1.0) return v;
+        if (f.re == -1.0) return neg(v);
+        return cx(v.re * f.re, v.im * f.re);
+    }
+    if (f.re == 0.0) return cx(-v.im * f.im, v.re * f.im);
+    return mul(v, f);
+}
+
+PAC_FN void scatter(double *out, const double *src, int n, int mode, const double *factor)
+{
+    cplx f = get(factor, 0);
+    for (int j = 0; j < n; j++) put(out, j, combine(get(out, j), scatter_value(get(src, j), f), mode));
+}
+
 /* ==== reduction ================================================================================== */
+
+PAC_FN double reduce_term(double acc, const double *amplitude, const double *scale, double weight)
+{
+    cplx a = get(amplitude, 0);
+    if (scale) a = mul(a, get(scale, 0));
+    return acc + weight * fma(a.re, a.re, a.im * a.im);
+}
+
+PAC_FN double group(double x, long numerator, long denominator)
+{
+    return numerator == denominator ? x : x * (double)numerator / (double)denominator;
+}
 
 PAC_FN double reduction(const double *amplitudes, const int *terms, const double *weights, int n, long numerator,
                  long denominator)

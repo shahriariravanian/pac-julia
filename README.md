@@ -11,9 +11,9 @@ ps = load_programs("lc")                       # all of them
 a = Arena(p)
 outputs = evaluate(p, a, momenta)              # momenta[leg] = (E, px, py, pz), the caller's legs
 compile("out", p; examples = load_examples("lc", 1))   # the folder out/, below (from lower(p))
-app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR on real registers (ComplexBi kept)
+app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR on real registers, lowered by symjit (ComplexBi kept)
 kernel_c("k0", "kernel.plane.symjit")          # the kernel as C: static int k0(double *mem)
-l = lower(p)                                   # UIR v0.7: rows on edges, the layout, the tables
+l = lower(p)                                   # UIR v0.8: rows on edges, the layout, the tables
 evaluate(l, LArena(l), momenta)                # bit for bit evaluate(p, a, momenta)
 o = optimize(l)                                # sort_runs, fuse, reuse_planes: the same values
 e = encode(o)                                  # one stream of 8-byte words (sources, then rows), the edge table
@@ -47,6 +47,12 @@ macOS. A first install takes a few minutes (about 4 on 2 cores). Rustup's defaul
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
 ```
+
+A kernel as C (`kernel_c`, the compiled folders, `kernels = :c`) is written from its MIR as symjit
+lowers it to real operations: `complexified(path)` runs `tools/sjb-complexify` (symjit's own
+`Application::complexify`) once per kernel and keeps the file in the scratch space. The tool is
+built on first use, or by `PacRunner.install_complexify()`, with cargo (about a minute);
+`ENV["SJB_COMPLEXIFY"]` names a built one instead.
 
 The Julia runner calls each symjit kernel through a shared library, built on first use into the
 scratch space (`load_programs(path; kernels = ...)`): `:auto` (the default) with symjit-utils'
@@ -93,11 +99,11 @@ and the kernels is then a device function too (`PAC_FN`), and the tables are `__
 | `src/program.jl` | the loader of `main.json` |
 | `src/evaluators/` | the Julia runners: `arena.jl` (`Arena`, the values of one point of a `Program`), `wavefunctions.jl`, `operations.jl` (the sources and the instructions, RustiCol's arithmetic in the same order), `progeval.jl` (`evaluate(::Program)`), `uireval.jl` (`evaluate(::Lowered)`, the third oracle) |
 | `src/compile.jl` | the C generator, from a `Lowered` (`compile(dir, p::Program)` lowers `p` first); `ArenaIndex`, runner.c's arena |
-| `src/sjb.jl`, `src/complexify.jl` | the reader of saved symjit applications and symjit's Complexifier |
+| `src/sjb.jl`, `src/complexified.jl` | the reader of saved symjit applications; `complexified(path)`: a kernel lowered to real MIR by symjit's own Complexifier (`tools/sjb-complexify`, built by `install_complexify()`) |
 | `src/install.jl`, `src/kernel_lib.jl` | `install`, `capture` (pac2json for pyAmpliCol artifacts) and the Julia runner's kernel libraries |
 | `src/alpha_s.jl` | `alpha_s_power`: the alpha_s power of the programs, from captures at two alpha_s |
 | `src/kernel_c.jl` | `kernel_c(name, path)`: a kernel's MIR as one C function, the native code's operations (bit for bit sjb2obj's library); the compiled folders' kernels |
-| `src/uir.jl`, `src/lower.jl` | UIR v0.7, the lowered form the back ends read (`Lowered`); `lower(p)` with its checks (`validate`) |
+| `src/uir.jl`, `src/lower.jl` | UIR v0.8, the lowered form the back ends read (`Lowered`); `lower(p)` with its checks (`validate`) |
 | `src/passes.jl` | the optional passes over a `Lowered`: `sort_runs`, `fuse`, `reuse_planes` (the liveness layout), `optimize` (all three) |
 | `src/encode.jl` | `encode(l)`: the device form (one stream of 64-bit words, the SOURCE rows first, END last; the 32-bit edge table), and `decode` |
 | `c/pacops.c`, `c/pacops.h` | the sources and instructions in C, copied next to each `runner.c` |
@@ -114,7 +120,7 @@ and the kernels is then a device function too (`PAC_FN`), and the tables are `__
 julia --project -e 'using Pkg; Pkg.test()'
 ```
 
-Without external tools this tests the loader, the `.sjb` reader, the Complexifier, the Julia runner
+Without external tools this tests the loader, the `.sjb` reader, the lowered kernels (`test/data/complexified`: symjit's, shipped so that no test needs cargo), the Julia runner
 against RustiCol's outputs, and, with a C compiler (`CC`, default `cc`), the compiled C: its kernels
 are C (`kernel_c`), so every program's folder builds and passes `make test`, and every program runs
 in Julia with kernel libraries built from that C. With symjit-utils' `sjb2obj`, the tests also build

@@ -98,6 +98,10 @@ PAC_FN int wavefunction(double *out, int family, int orientation, const double *
 /* a source current: factor × its wavefunction; returns its components */
 PAC_FN int source(double *out, int family, int orientation, const double *k, int h, int ch, double mass,
            const double *factor);
+/* an embedded source (UIR v0.8): for each of its n entries, out[components[e]] = factors[e] × the
+ * wavefunction's component waves[e], or 0 when waves[e] < 0 (factors: (re, im) pairs) */
+PAC_FN void source_embedded(double *out, int family, int orientation, const double *k, int h, int ch, double mass,
+                     const int *components, const int *waves, const double *factors, int n);
 
 /* ---- vertex: o, before the coupling and the factor ---- */
 PAC_FN void vertex_weyl_vector_a(double *out, const double *l, const double *r);   /* Weyl, vector → Weyl */
@@ -131,11 +135,21 @@ typedef int (*symjit_kernel)(double *, symjit_slice *, size_t, double *);
 int kernel_call(symjit_kernel fn, double *output, int outputs, double *input, int inputs,
                 symjit_slice *states);
 /* the kernel's output pairs into `out`: pair n × factor (mode)= out[outputs[n]] (0-based, distinct),
- * or the pair as it is with `direct` and factor exactly 1 + 0i */
+ * or with `direct` the pair as it is (no factor), with the mode */
 PAC_FN void kernel_store(double *out, const double *values, const int *outputs, int pairs, int direct,
                   int mode, const double *factor);
 
+/* ---- copy, scatter (UIR v0.8: RustiCol's certified reuse and fanout) ---- */
+/* out[j] = src[j] × factor (value first), j < n; a zero factor writes 0 */
+PAC_FN void copy_row(double *out, const double *src, int n, const double *factor);
+/* out[j] (mode)= src[j] × factor with RustiCol's fanout shortcuts (a real factor: ±1 copies or
+ * negates, else componentwise; a purely imaginary one: (-im k, re k); else the complex product) */
+PAC_FN void scatter(double *out, const double *src, int n, int mode, const double *factor);
 /* ---- reduction ---- */
+/* acc + weight × |a|², a = the amplitude × scale (value first) when scale is not NULL */
+PAC_FN double reduce_term(double acc, const double *amplitude, const double *scale, double weight);
+/* x × the group factor: x when numerator = denominator, else x × numerator ÷ denominator */
+PAC_FN double group(double x, long numerator, long denominator);
 /* group_factor × Σ_n weights[n] × |amplitudes[terms[n]]|² (terms 0-based) */
 PAC_FN double reduction(const double *amplitudes, const int *terms, const double *weights, int n,
                  long numerator, long denominator);

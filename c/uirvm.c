@@ -1,4 +1,4 @@
-/* uirvm: the interpreter of UIR v0.7 (uirvm.h). The arithmetic is pacops' (pacops.h), on the
+/* uirvm: the interpreter of UIR v0.8 (uirvm.h). The arithmetic is pacops' (pacops.h), on the
  * operands loaded into local arrays, so the values are the straight-line C's bit for bit; only the
  * storage differs. A row is its word (`w`, uirvm.h), its fields read by the UIR_ macros where used. A program's runner.c includes this file (one translation unit, as nvcc wants it)
  * and defines uir_stub, which uses uir_input and uir_output. */
@@ -223,15 +223,26 @@ PAC_FN static UIR_INLINE int run_kernel(const uir_program *g, const uir_arena *a
 }
 
 /* a source row of family `family` (pacops' number: the physical type's − 1), n components: factor ×
- * the wavefunction at its edge's form, into its edge's current */
+ * the wavefunction at its edge's form, into its edge's current; with an embedding (E), each entry's
+ * component = its factor × the wavefunction's component (or zero), the other components unchanged */
 PAC_FN static UIR_INLINE void source_row(const uir_program *g, const uir_arena *a, const uint32_t *w, int family, int n)
 {
     double q[4], v[8];
-    uint32_t t = UIR_N(w);
+    uint32_t t = UIR_N(w), e = UIR_E(w), d = edge_start(g, UIR_D(w));
+    int orientation = (t >> 3) & 1 ? ANTIPARTICLE : PARTICLE, h = (int)((t >> 4) & 7) - 2, ch = (int)((t >> 7) & 3) - 1;
+    double mass = g->scales[2 * (size_t)UIR_T(w)];
     load_form(a, edge_form(g, UIR_D(w)), q);
-    source(v, family, (t >> 3) & 1 ? ANTIPARTICLE : PARTICLE, q, (int)((t >> 4) & 7) - 2, (int)((t >> 7) & 3) - 1,
-           g->scales[2 * (size_t)UIR_T(w)], g->factors + 2 * (size_t)UIR_X(w));
-    store(a, edge_start(g, UIR_D(w)), n, v);
+    if (e == 0x3ffu) {
+        source(v, family, orientation, q, h, ch, mass, g->factors + 2 * (size_t)UIR_X(w));
+        store(a, d, n, v);
+        return;
+    }
+    wavefunction(v, family, orientation, q, h, ch, mass);
+    for (uint32_t k = g->embedding_first[e]; k < g->embedding_first[e + 1]; k++) {
+        int wave = g->embedding_wave[k];
+        store1(a, d + (uint32_t)g->embedding_component[k],
+               wave < 0 ? ZERO : mul(get(g->factors, g->embedding_factor[k]), get(v, wave)));
+    }
 }
 
 /* the template's family (bits 0-2, the physical type's number: SCALAR 1, WEYL 2, DIRAC 3, VECTOR 4) */
@@ -246,10 +257,47 @@ PAC_FN static UIR_INLINE void run_source(const uir_program *g, const uir_arena *
     }
 }
 
-PAC_FN int uir_rows(const uir_program *g, const uir_arena *a)
+/* a copy (scatter: with the mode) row of n components: the source's components × factor into the
+ * destination, as pacops' copy_row (scatter) */
+PAC_FN static UIR_INLINE void copy_row_n(const uir_program *g, const uir_arena *a, const uint32_t *w, int scatter_, int n)
+{
+    double s[2 * UIR_MAX_COMPONENTS], d[2 * UIR_MAX_COMPONENTS];
+    uint32_t dst = edge_start(g, UIR_D(w));
+    load(a, edge_start(g, UIR_L(w)), n, s);
+    if (scatter_) {
+        load(a, dst, n, d);
+        scatter(d, s, n, UIR_SET(w) ? MODE_SET : MODE_ADD, g->factors + 2 * (size_t)UIR_X(w));
+    } else {
+        copy_row(d, s, n, g->factors + 2 * (size_t)UIR_X(w));
+    }
+    store(a, dst, n, d);
+}
+
+PAC_FN static UIR_INLINE void run_copy(const uir_program *g, const uir_arena *a, const uint32_t *w, int scatter_)
+{
+    switch (edge_components(g, UIR_D(w))) {   /* 1 to 6 (compile refuses more), each a constant count */
+    case 1: copy_row_n(g, a, w, scatter_, 1); break;
+    case 2: copy_row_n(g, a, w, scatter_, 2); break;
+    case 3: copy_row_n(g, a, w, scatter_, 3); break;
+    case 4: copy_row_n(g, a, w, scatter_, 4); break;
+    case 5: copy_row_n(g, a, w, scatter_, 5); break;
+    case 6: copy_row_n(g, a, w, scatter_, 6); break;
+    default: break;   /* refused by compile (vm_unsupported) */
+    }
+}
+
+/* REDUCE: out[D] += weight N × |amplitude T (× its scale X, unless none)|², as pacops' reduce_term */
+PAC_FN static UIR_INLINE void run_reduce(const uir_program *g, const uir_arena *a, const uint32_t *w, double *out)
+{
+    uint32_t t = UIR_T(w), x = UIR_X(w), d = UIR_D(w);
+    double amp[2] = {*amplitude_re(a, t), *amplitude_im(a, t)};
+    out[d] = reduce_term(out[d], amp, x == 0x3fu ? NULL : g->factors + 2 * (size_t)x, g->weights[UIR_N(w)]);
+}
+
+PAC_FN int uir_rows(const uir_program *g, const uir_arena *a, double *out)
 {
     cplx acc[UIR_MAX_COMPONENTS];   /* the fused run's sum (registers: every index is a constant where used) */
-    for (uint32_t k = g->source_words;;) {
+    for (uint32_t k = 0;;) {
         const uint32_t *w = g->rows + 2 * (size_t)k++;
         uint32_t op = UIR_OP(w);
         if (op == UIR_END) break;
@@ -263,6 +311,15 @@ PAC_FN int uir_rows(const uir_program *g, const uir_arena *a)
             run_scale(g, a, w);
         } else if (op == UIR_CLEAR) {
             run_clear(g, a, w);
+        } else if (op == UIR_SOURCE) {
+            run_source(g, a, w);
+        } else if (op == UIR_CLEAR_AMPLITUDE) {
+            *amplitude_re(a, UIR_D(w)) = 0.0;
+            *amplitude_im(a, UIR_D(w)) = 0.0;
+        } else if (op == UIR_COPY || op == UIR_SCATTER) {
+            run_copy(g, a, w, op == UIR_SCATTER);
+        } else if (op == UIR_REDUCE) {
+            run_reduce(g, a, w, out);
         } else {
             int status = run_kernel(g, a, w);
             if (status != 0) return status;
@@ -288,44 +345,19 @@ PAC_FN void uir_forms(const uir_program *g, const uir_arena *a, const double *mo
         }
 }
 
-/* the sources: the SOURCE rows at the head of the stream (a pass of their own, so a GPU runner may
- * run them in f64 before converting the arena) */
-PAC_FN void uir_sources(const uir_program *g, const uir_arena *a)
+/* out[h] × the group factor, as pacops' group */
+PAC_FN void uir_group(const uir_program *g, double *out)
 {
-    for (uint32_t k = 0;;) {
-        const uint32_t *w = g->rows + 2 * (size_t)k++;
-        if (UIR_OP(w) != UIR_SOURCE) break;
-        run_source(g, a, w);
-    }
-}
-
-/* out[h] = group factor × Σ weight × |amplitude|² over output h's terms, as pacops' reduction */
-PAC_FN void uir_reduce(const uir_program *g, const uir_arena *a, double *out)
-{
-    for (uint32_t h = 0; h < g->outputs; h++) {
-        uint32_t first = g->output_first[h], last = g->output_first[h + 1];
-        if (first == last) {
-            out[h] = 0.0;
-            continue;
-        }
-        double acc = 0.0;
-        for (uint32_t t = first; t < last; t++) {
-            uint32_t k = g->term_amplitude[t];
-            double re = *amplitude_re(a, k), im = *amplitude_im(a, k);
-            acc = acc + g->term_weight[t] * fma(re, re, im * im);
-        }
-        out[h] = g->group_numerator == g->group_denominator
-                     ? acc
-                     : acc * (double)g->group_numerator / (double)g->group_denominator;
-    }
+    if (g->group_numerator == g->group_denominator) return;
+    for (uint32_t h = 0; h < g->outputs; h++) out[h] = group(out[h], g->group_numerator, g->group_denominator);
 }
 
 PAC_FN int uir_run(const uir_program *g, const uir_arena *a, const double *momenta, double *out)
 {
     uir_forms(g, a, momenta);
-    uir_sources(g, a);
-    int status = uir_rows(g, a);
+    for (uint32_t h = 0; h < g->outputs; h++) out[h] = 0.0;
+    int status = uir_rows(g, a, out);
     if (status != 0) return status;
-    uir_reduce(g, a, out);
+    uir_group(g, out);
     return 0;
 }

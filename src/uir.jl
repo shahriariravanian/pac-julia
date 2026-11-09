@@ -1,7 +1,14 @@
-# UIR, the Unified Intermediate Representation (v0.7): a Program lowered to a flat list of
-# fixed-size operations with every operand resolved, which the back ends read (the C generator, the
-# GPU interpreters' 8-byte encoding). `lower(p::Program)` (lower.jl) builds it. The design is section
-# 7 of the pac-julia design doc ("The lowered IR: UIR v0.7").
+# UIR, the Unified Intermediate Representation (v0.8): a program as a flat list of fixed-size rows
+# with every operand resolved, which the back ends read (the C generator, the GPU interpreters' 8-byte
+# encoding). `lower(p::Program)` (lower.jl) builds it from a pac2json program; RustiCol's recurrence
+# export maps onto it row for row. The design is section 7 of the pac-julia design doc ("The lowered
+# IR").
+#
+# v0.8 adds to v0.7: sources are rows (SOURCE, anywhere in the stream: a program of several runs has
+# each run's sources in it) and may scatter their components (an embedding); the reduction is rows
+# (REDUCE, after each run: out[h] += weight × |scale × amplitude|²); CLEAR_AMPLITUDE, COPY and SCATTER
+# (RustiCol's certified reuse and fanout); KERNEL_DIRECT stores the kernel's pairs unscaled, with
+# its mode.
 #
 # Operands are edges: an edge is a (current, momentum form) pair, and the edge table gives each
 # edge's current, whose layout entry gives its planes. So a layout change (plane reuse) touches only
@@ -17,8 +24,10 @@ const StubIndex = Int       # a kernel stub (kernel, input layout): Lowered.stub
 const ScaleSetIndex = Int   # a kernel scale set: Lowered.scalesets
 const InstanceIndex = Int   # a binding instance (stub, scale set): Lowered.instances
 const ListIndex = Int       # a closure's component-factor list: Lowered.lists
+const EmbeddingIndex = Int  # a source's embedding: Lowered.embeddings
+const WeightIndex = Int     # a reduction weight: Lowered.weights
 const PlaneOffset = Int     # a plane (one complex component of the arena), 0-based
-const UIR_VERSION = v"0.7"
+const UIR_VERSION = v"0.8"
 
 # what a current holds; the component count follows from it (SCALAR 1, WEYL 2, DIRAC 4, VECTOR 4,
 # TENSOR 6). UNTYPED: no row or source says (a current only kernels touch)
@@ -41,8 +50,12 @@ const TYPE_COMPONENTS = Dict(SCALAR => 1, WEYL => 2, DIRAC => 4, VECTOR => 4, TE
     SCALE_ROW = 9         # scale (SCALE is a KernelInput kind)
     CLEAR = 10
     KERNEL = 11
-    KERNEL_DIRECT = 12    # a direct binding whose factor is exactly 1: the pairs stored as they are
-    SOURCE = 13           # a source: in the encoding only, at the head of the stream (Lowered.sources here)
+    KERNEL_DIRECT = 12    # a direct binding: the pairs stored as they are (the factor not applied), with the mode
+    SOURCE = 13           # a source current
+    CLEAR_AMPLITUDE = 14  # an amplitude set to 0
+    COPY = 15             # a current's components × a factor into another (RustiCol's certified reuse)
+    SCATTER = 16          # a fanout scatter: as COPY, with a mode and RustiCol's factor shortcuts
+    REDUCE = 17           # out[h] += weight × |amplitude|² (the amplitude × its replay scale first)
     END = 31              # the end of the stream: in the encoding only, its last word
 end
 
@@ -65,13 +78,20 @@ end
 
 # A row. The fields are the UIR word's (D, T, L, R, N, X), with the same meaning per opcode, but
 # full integers: the widths are encode's concern.
-#   vertex      d out edge, t coupling (ScaleIndex), l, r edges, x factor
-#   kernel      d out edge, t binding instance, l, r edges (0: a null operand), x factor
-#   propagator  d the current's edge, x factor
-#   closure     d amplitude, t component-factor list, l, r edges, x factor
-#   scale       d the current's edge, n components, x factor
-#   clear       d the current's edge, n components
-# Flags: set = mode "=" (vertex, kernel); first, last = a fused run (vertex rows only).
+#   vertex           d out edge, t coupling (ScaleIndex), l, r edges, x factor
+#   kernel           d out edge, t binding instance, l, r edges (0: a null operand), x factor
+#   propagator       d the current's edge, x factor
+#   closure          d amplitude, t component-factor list, l, r edges, x factor
+#   scale            d the current's edge, n components, x factor
+#   clear            d the current's edge, n components
+#   source           d the current's edge (its form: the wavefunction's momentum), t mass (ScaleIndex: its
+#                    real part), n template (source_template), l embedding (0: none), x factor (none
+#                    with an embedding, whose entries carry their own)
+#   clear_amplitude  d amplitude
+#   copy             d, l edges (destination, source; d's components are copied), x factor
+#   scatter          d, l edges (as copy), x factor; set = mode "="
+#   reduce           d output (helicity), t amplitude, x the amplitude's scale (0: none), n weight
+# Flags: set = mode "=" (vertex, kernel, scatter); first, last = a fused run (vertex rows only).
 struct LOp
     op::Opcode
     set::Bool
@@ -88,17 +108,25 @@ end
 LOp(op::Opcode; set = false, first = false, last = false, d = 0, t = 0, l = 0, r = 0, n = 0, x = 0) =
     LOp(op, set, first, last, d, t, l, r, n, x)
 
-# A source: its own table, run before the rows: factor × the wavefunction at the edge's form, into the
-# edge's current (the edge names both, as a row's operands do; encoded as a SOURCE row)
-struct LSource
-    edge::EdgeIndex
-    family::PhysicalType   # SCALAR, WEYL, DIRAC, VECTOR
-    antiparticle::Bool
-    helicity::Helicity
-    chirality::Chirality
-    mass::ScaleIndex       # its real part is the mass
-    factor::FactorIndex
+# A source row's template (its N): family (PhysicalType's number) bits 0-2, antiparticle 3,
+# helicity + 2 bits 4-6, chirality + 1 bits 7-8
+function source_template(family::PhysicalType, antiparticle::Bool, helicity::Helicity, chirality::Chirality)::Int
+    -2 <= helicity <= 5 && -1 <= chirality <= 2 || error("source helicity $helicity, chirality $chirality")
+    return Int(family) | Int(antiparticle) << 3 | (helicity + 2) << 4 | (chirality + 1) << 7
 end
+
+# a SOURCE row's template as (family, antiparticle, helicity, chirality)
+source_fields(op::LOp) = (PhysicalType(op.n & 7), (op.n >> 3) & 1 == 1, ((op.n >> 4) & 7) - 2, ((op.n >> 7) & 3) - 1)
+
+# A source row: factor × the wavefunction of the template at its edge's form into its edge's current;
+# with an embedding, component j of the current = factor_j × wavefunction component k_j (0: zero)
+source_op(edge::EdgeIndex, family::PhysicalType, antiparticle::Bool, helicity::Helicity, chirality::Chirality,
+          mass::ScaleIndex, factor::FactorIndex; embedding::EmbeddingIndex = 0) =
+    LOp(SOURCE; d = edge, t = mass, n = source_template(family, antiparticle, helicity, chirality), l = embedding,
+        x = embedding == 0 ? factor : 0)
+
+# an embedding entry: (the current's component, the wavefunction's component or 0 for zero, factor)
+const EmbeddingEntry = Tuple{ComponentIndex,ComponentIndex,FactorIndex}
 
 # A kernel stub: a kernel with its input layout compiled in. The layout is the binding's inputs
 # with each scale replaced by its slot in the scale set (KernelInput(SCALE, slot, false)), so
@@ -123,16 +151,19 @@ struct Lowered
     currents::Vector{LCurrent}           # indexed by CurrentIndex, as Program.currents
     planes::Int                          # the arena's planes
     edges::Vector{LEdge}                 # edge c is current c with its own momentum; extra pairs follow
-    sources::Vector{LSource}
     lists::Vector{Vector{FactorIndex}}   # closure component factors
+    embeddings::Vector{Vector{EmbeddingEntry}}  # source embeddings
     stubs::Vector{LStub}
     scalesets::Vector{Vector{ScaleIndex}}
     instances::Vector{Tuple{StubIndex,ScaleSetIndex}}
     ops::Vector{LOp}
     amplitudes::Int
-    reduction::Vector{Vector{Tuple{AmplitudeIndex,Float64}}}
-    group_factor::Tuple{Int,Int}
+    weights::Vector{Float64}             # the REDUCE rows' weights
+    group_factor::Tuple{Int,Int}         # applied to every output once, after the rows
+    fixed_layout::Bool                   # the layout is the producer's (RustiCol's): no reuse_planes
 end
+
+output_count(l::Lowered) = length(l.helicities)   # the helicity outputs
 
 # an edge's current, form, layout entry and first plane
 edge_current(l::Lowered, e::EdgeIndex)::CurrentIndex = e == 0 ? 0 : l.edges[e].current
@@ -155,6 +186,19 @@ function describe(l::Lowered, op::LOp)::String
         return "CLOSURE a$(op.d - 1) += $(edge(op.l)) . $(edge(op.r)); list $(op.t) x$(op.x - 1)"
     elseif op.op == SCALE_ROW
         return "SCALE $(edge(op.d)), $(op.n) components; x$(op.x - 1)"
+    elseif op.op == SOURCE
+        (family, anti, h, ch) = source_fields(op)
+        how = op.l == 0 ? "x$(op.x - 1)" : "embedding $(op.l)"
+        return "SOURCE $(edge(op.d)) = $family$(anti ? " antiparticle" : ""), helicity $h, chirality $ch, mass s$(op.t - 1); $how"
+    elseif op.op == CLEAR_AMPLITUDE
+        return "CLEAR_AMPLITUDE a$(op.d - 1)"
+    elseif op.op == COPY
+        return "COPY $(edge(op.d)) = $(edge(op.l)); x$(op.x - 1)"
+    elseif op.op == SCATTER
+        return "SCATTER $(edge(op.d)) $mode $(edge(op.l)); x$(op.x - 1)"
+    elseif op.op == REDUCE
+        scale = op.x == 0 ? "" : " (× x$(op.x - 1))"
+        return "REDUCE out[$(op.d - 1)] += w$(op.n) × |a$(op.t - 1)$scale|²"
     else
         return "$(op.op) $(edge(op.d)), $(op.n) components"
     end
@@ -164,9 +208,11 @@ function Base.show(io::IO, ::MIME"text/plain", l::Lowered)
     count(f) = Base.count(o -> f(o.op), l.ops)
     println(io, "Lowered (UIR v$(l.version)): $(l.process), $(l.colour)")
     println(io, "  $(length(l.ops)) rows: $(count(is_vertex)) vertex, $(count(is_propagator)) propagator, ",
-            "$(count(is_kernel)) kernel, $(count(==(CLOSURE))) closure, $(count(==(SCALE_ROW))) scale, $(count(==(CLEAR))) clear")
-    println(io, "  $(length(l.currents)) currents on $(l.planes) planes, $(length(l.edges)) edges, ",
-            "$(length(l.forms)) forms, $(length(l.sources)) sources, $(l.amplitudes) amplitudes")
+            "$(count(is_kernel)) kernel, $(count(==(CLOSURE))) closure, $(count(==(SCALE_ROW))) scale, $(count(==(CLEAR))) clear, ",
+            "$(count(==(SOURCE))) source, $(count(==(CLEAR_AMPLITUDE))) clear_amplitude, $(count(==(COPY))) copy, ",
+            "$(count(==(SCATTER))) scatter, $(count(==(REDUCE))) reduce")
+    println(io, "  $(length(l.currents)) currents on $(l.planes) planes$(l.fixed_layout ? " (fixed layout)" : ""), ",
+            "$(length(l.edges)) edges, $(length(l.forms)) forms, $(l.amplitudes) amplitudes, $(output_count(l)) outputs")
     print(io, "  $(length(l.stubs)) stubs, $(length(l.scalesets)) scale sets, $(length(l.instances)) binding instances, ",
-          "$(length(l.lists)) component-factor lists")
+          "$(length(l.lists)) component-factor lists, $(length(l.embeddings)) embeddings")
 end

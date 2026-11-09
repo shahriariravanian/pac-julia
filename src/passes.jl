@@ -1,11 +1,12 @@
-# The optional passes over a Lowered (UIR v0.7). Each returns a new, validated Lowered whose values
+# The optional passes over a Lowered (UIR v0.8). Each returns a new, validated Lowered whose values
 # are the input's bit for bit; `optimize` runs all three.
 #
 #   sort_runs     each segment of consecutive vertex rows stably sorted by destination, when safe
 #                 (pacuda's sort_contribution_runs), so the rows on one destination become adjacent
 #   fuse          adjacent vertex rows on one destination joined into fused runs (FIRST ... LAST)
 #   reuse_planes  the liveness layout: a current's planes are reused once it is dead; every current
-#                 still starts at an even plane
+#                 still starts at an even plane (not for a fixed layout: an imported program keeps its
+#                 producer's, whose ranges may share planes)
 #
 # Order: sort_runs before fuse (it sorts single rows, not runs); reuse_planes may come anywhere, since
 # a run's destination is live across the run, so no other current gets its planes meanwhile.
@@ -87,23 +88,35 @@ function writes_fresh(l::Lowered, op::LOp)::Bool
         return (op.set || op.op == KERNEL_DIRECT) && sort(stub.outputs) == 1:n && !any(i -> i.kind == OUT, stub.inputs)
     elseif op.op == CLEAR
         return op.n == n
+    elseif op.op == SOURCE
+        return op.l == 0 || sort([j for (j, _, _) in l.embeddings[op.l]]) == 1:n
+    elseif op.op == COPY
+        return true
+    elseif op.op == SCATTER
+        return op.set
     end
     return false
 end
 
+# the rows whose d is not an edge (an amplitude, an output)
+no_destination(op::LOp) = op.op in (CLOSURE, CLEAR_AMPLITUDE, REDUCE)
+
+# the edges a row reads as operands (a source's l is its embedding, not an edge)
+operand_edges(op::LOp) = op.op == SOURCE || op.op == CLEAR_AMPLITUDE || op.op == REDUCE ? () : (op.l, op.r)
+
 # the currents a row reads (a destination it updates counts as read)
 function reads(l::Lowered, op::LOp)::Vector{CurrentIndex}
     cs = CurrentIndex[]
-    for e in (op.l, op.r)
+    for e in operand_edges(op)
         e == 0 || push!(cs, edge_current(l, e))
     end
-    op.op == CLOSURE || writes_fresh(l, op) || push!(cs, edge_current(l, op.d))
+    no_destination(op) || writes_fresh(l, op) || push!(cs, edge_current(l, op.d))
     return cs
 end
 
 # Each current is live from its first access to its last. A current whose first access is a fresh
-# write (writes_fresh) starts there; every other one (a source, a current that starts at zero or is
-# read before written) is live from the start, so it gets planes nobody used before: zero, as the
+# write (writes_fresh: a SOURCE, COPY or SET row that writes every component) starts there; every other
+# one (a current that starts at zero or is read before written) is live from the start, so it gets planes nobody used before: zero, as the
 # runners leave the arena. Before row k: the currents starting at k get planes (first fit, even
 # blocks); after it, those last used at k free theirs. So a row never writes planes it reads.
 # Returns the new layout and the peak of live planes (the bound no layout of this order beats).
@@ -111,15 +124,12 @@ function liveness_layout(l::Lowered)::Tuple{Vector{LCurrent},Int,Int}
     nc, nr = length(l.currents), length(l.ops)
     start = fill(-1, nc)     # the row a current becomes live (0: before the rows)
     stop = zeros(Int, nc)    # its last row
-    for s in l.sources
-        start[edge_current(l, s.edge)] = 0
-    end
     for (k, op) in enumerate(l.ops)
         for c in reads(l, op)
             start[c] == -1 && (start[c] = 0)   # read before written: its zero start counts
             stop[c] = k
         end
-        if op.op != CLOSURE
+        if !no_destination(op)
             c = edge_current(l, op.d)
             start[c] == -1 && (start[c] = writes_fresh(l, op) ? k : 0)
             stop[c] = k
@@ -178,6 +188,7 @@ function liveness_layout(l::Lowered)::Tuple{Vector{LCurrent},Int,Int}
 end
 
 function reuse_planes(l::Lowered)::Lowered
+    l.fixed_layout && return l
     (currents, planes, _) = liveness_layout(l)
     return validate(with(l; currents = currents, planes = planes))
 end

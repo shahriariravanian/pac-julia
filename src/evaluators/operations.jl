@@ -283,6 +283,26 @@ function reduction(amplitudes, weights, group_factor)::Float64
     for (a, w) in zip(amplitudes, weights)
         acc = acc + w * fma(real(a), real(a), imag(a) * imag(a))
     end
-    (n, d) = group_factor
-    return n == d ? acc : acc * Float64(n) / Float64(d)
+    return group(acc, group_factor)
+end
+
+# x × the group factor (numerator, denominator): x as it is when they are equal, else × numerator,
+# then ÷ denominator (no precomputed ratio: its rounding would differ)
+group(x::Float64, (n, d)::Tuple{Int,Int})::Float64 = n == d ? x : x * Float64(n) / Float64(d)
+
+# ---- scatter (RustiCol's fanout) ------------------------------------------------------------------
+
+# v × f as RustiCol's fanout scatters it: a real factor: v (1), -v (-1), else (re k, im k); a purely
+# imaginary one: (-im k, re k); else the complex product (value first)
+function scatter_value(v::Complex{Float64}, f::Complex{Float64})::Complex{Float64}
+    if imag(f) == 0.0
+        k = real(f)
+        k == 1.0 && return v
+        k == -1.0 && return -v
+        return complex(real(v) * k, imag(v) * k)
+    elseif real(f) == 0.0
+        k = imag(f)
+        return complex(-imag(v) * k, real(v) * k)
+    end
+    return v * f
 end
