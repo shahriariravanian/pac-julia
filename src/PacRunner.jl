@@ -23,6 +23,7 @@
 module PacRunner
 
 using JSON
+using Base64
 using Libdl
 using Scratch
 using SHA
@@ -47,6 +48,7 @@ include("kernel_lib.jl")
 include("install.jl")
 include("complexified.jl")
 include("alpha_s.jl")
+include("recurrence_export.jl")
 
 # the runner
 export Program, Arena, ArenaIndex, read_main, load_artifact, load_programs, load_examples, evaluate
@@ -58,5 +60,7 @@ export compile
 export read_sjb, SavedApplication, MIR, complexified, install_complexify, listing, kernel_c
 # pac2json, for pyAmpliCol artifacts
 export install, capture, alpha_s_power
+# RustiCol's recurrence export (pyAmpliCol 1.0.x)
+export load_recurrence_export, recurrence_references
 
 end
