@@ -8,8 +8,8 @@
 * export PYAMPLICOL=$PWD
 * git checkout feature/rusticol-capture-mode
 * python -m pip install . --config-settings pyamplicol.host-wheel=true
-* pyamplicol cards/zgg.toml	# assuming zgg.toml is copied 
-* cd artifacts/zgg/API/umami/cd # artifacts/.pyamplicol-api-build/zgg/umami/libumami.so
+* pyamplicol cards/zgg.toml	# assuming zgg.toml is copied
+* make -C artifacts/zgg/API/umami	# builds artifacts/.pyamplicol-api-build/zgg/umami/libumami.so
 * pyamplicol export-recurrence artifacts/zgg/ -o uu_zgg.json
 
 * cd PACRUNNER_DIR
@@ -41,4 +41,4 @@ julia -t 8 --project=. test/umami_harness.jl $OUT/umami_pac.json $PYAMPLICOL/art
 
 
 
-	1. 	
+	1.
