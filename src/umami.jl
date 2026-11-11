@@ -35,8 +35,13 @@ clit(x::Float64) = isfinite(x) ? repr(x) : error("not finite: $x")
 
 # umami_program.h of `lib`, whose program is `l`
 function umami_program_h(lib::UmamiLibrary, l::Lowered, provider, exported_count::Int, parameters)::String
+    what = "$(lib.process) $(lib.colour)"
+    exported_count > 0 || error("$what: the provider exports no helicities")
+    isempty(lib.helicity_export) && error("$what: no runtime helicities")
     runtime = fill(-1, exported_count)
     for (r, e) in enumerate(lib.helicity_export)
+        0 <= e < exported_count || error("$what: runtime helicity $(r - 1) is exported helicity $e, not in 0:$(exported_count - 1)")
+        runtime[e+1] == -1 || error("$what: exported helicity $e is runtime helicity $(runtime[e+1]) and $(r - 1)")
         runtime[e+1] = r - 1
     end
     (alpha_s0, power) = l.alpha_s === nothing ? (0.0, nothing) : l.alpha_s

@@ -1,7 +1,8 @@
 # The Julia runner's kernel libraries. A kernel of main.json with a library pac2json built
 # (`--sjb2obj`) is called as it is; otherwise its library is built here from its .plane.symjit and
-# kept in this package's scratch space (Scratch.jl, "kernels"), one per kernel content (sha256) and
-# way of building:
+# kept in this package's scratch space (Scratch.jl, "kernels"), one per build (build_key: the
+# generated C, or the kernel's content with the sjb2obj binary, so a changed generator or tool builds
+# anew) and way of building:
 #   :sjb2obj  symjit-utils' sjb2obj (ENV["SJB2OBJ"], or sjb2obj on the PATH), then cc -shared: the
 #             native code symjit would run (the reference the tests compare with);
 #   :c        (the default) kernel_c.jl's C, compiled by cc (ENV["CC"], default cc), bit for bit the
@@ -37,24 +38,44 @@ function kernel_c_library_source(source::String, inputs::Int, outputs::Int)::Str
     """
 end
 
+const KERNEL_CFLAGS = `-std=c99 -O2 -ffp-contract=off -fPIC`
+
+# what a cached library was built from: for :c the generated C and the compiler command (so a
+# change of kernel_c.jl, complexify.jl or the prelude builds anew), for :sjb2obj the kernel's
+# content and the sjb2obj binary (its path, size and modification time)
+function build_key(sha::String, way::Symbol; c_source = nothing, cc = nothing, sjb2obj = nothing)::String
+    parts = if way == :sjb2obj
+        st = stat(sjb2obj)
+        ["sjb2obj", sha, abspath(sjb2obj), string(st.size), string(st.mtime), KERNEL_SYMBOL]
+    else
+        ["c", c_source, cc, string(KERNEL_CFLAGS)]
+    end
+    return bytes2hex(sha256(join(parts, "\0")))
+end
+
 # the library of the kernel at `source` (its sha256 `sha`) built the way `way` (:sjb2obj or :c),
 # from the scratch space when it is there; nothing when the tool is missing
 function kernel_library(source::String, sha::String, inputs::Int, outputs::Int, way::Symbol)::Union{String,Nothing}
-    lib = joinpath(kernels_dir(), "$sha-$way.$(Libdl.dlext)")
-    isfile(lib) && return lib
     cc = find_cc()
     cc === nothing && return nothing
+    sjb2obj = c_source = nothing
+    if way == :sjb2obj
+        sjb2obj = find_sjb2obj()
+        sjb2obj === nothing && return nothing
+    else
+        c_source = kernel_c_library_source(source, inputs, outputs)
+    end
+    lib = joinpath(kernels_dir(), "$(build_key(sha, way; c_source, cc, sjb2obj))-$way.$(Libdl.dlext)")
+    isfile(lib) && return lib
     work = mktempdir(kernels_dir())
     try
         object = joinpath(work, "kernel.o")
         if way == :sjb2obj
-            sjb2obj = find_sjb2obj()
-            sjb2obj === nothing && return nothing
             run(pipeline(`$sjb2obj $source -o $object --name $KERNEL_SYMBOL`; stdout = devnull))
         else
             c = joinpath(work, "kernel.c")
-            write(c, kernel_c_library_source(source, inputs, outputs))
-            run(`$cc -std=c99 -O2 -ffp-contract=off -fPIC -c -o $object $c`)
+            write(c, c_source)
+            run(`$cc $KERNEL_CFLAGS -c -o $object $c`)
         end
         run(`$cc -shared -o $(joinpath(work, "kernel.$(Libdl.dlext)")) $object -lm`)
         mv(joinpath(work, "kernel.$(Libdl.dlext)"), lib; force = true)   # whole, or not at all

@@ -546,6 +546,32 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         other = joinpath(mktempdir(), "schema1.json")
         write(other, replace(read(files[1], String), "\"schema_version\":2" => "\"schema_version\":1"; count = 1))
         @test_throws PacRunner.ExportError load_recurrence_export(other; kernels = :none)
+        # two programs of one (process, colour flow) are refused
+        doc = PacRunner.JSON.parse(read(files[2], String))
+        push!(doc["programs"], doc["programs"][1])
+        twice = joinpath(mktempdir(), "twice.json")
+        write(twice, PacRunner.JSON.json(doc))
+        @test_throws PacRunner.ExportError load_recurrence_export(twice; kernels = :none)
+        # umami_program_h refuses helicity maps it cannot write
+        let l = load_recurrence_export(files[2]; kernels = :none)[1], n = PacRunner.output_count(l)
+            provider = Dict("particle_count" => l.legs, "helicity_count" => n, "color_count" => 1, "masses" => zeros(l.legs))
+            lib(e) = PacRunner.UmamiLibrary(l.process, l.colour, collect(0:l.legs-1), 0, 1.0, e)
+            h(e, count) = PacRunner.umami_program_h(lib(e), l, provider, count, Tuple{String,ComplexF64}[])
+            @test occursin("pac_helicity_runtime[] = {", h(collect(0:n-1), n))
+            @test_throws ErrorException h(collect(0:n-1), 0)              # no exported helicities
+            @test_throws ErrorException h(Int[], n)                       # no runtime helicities
+            @test_throws ErrorException h([0:n-2; n], n)                  # out of range
+            @test_throws ErrorException h([0:n-2; 0], n)                  # one exported helicity twice
+        end
+        # the kernel cache key follows the generated C and the sjb2obj binary
+        let k(src) = PacRunner.build_key("sha", :c; c_source = src, cc = "cc")
+            @test k("int f;") == k("int f;") && k("int f;") != k("int g;")
+            @test PacRunner.build_key("sha", :c; c_source = "x", cc = "cc") != PacRunner.build_key("sha", :c; c_source = "x", cc = "gcc")
+            tool = joinpath(mktempdir(), "sjb2obj"); write(tool, "a")
+            before = PacRunner.build_key("sha", :sjb2obj; sjb2obj = tool)
+            write(tool, "ab")
+            @test PacRunner.build_key("sha", :sjb2obj; sjb2obj = tool) != before
+        end
         if HAVE_CC
             # every entry with the kernels as C (kernel_c), plain and after optimize
             for f in files, passes in (false, true)

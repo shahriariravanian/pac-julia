@@ -314,6 +314,13 @@ representative's rows with its own process, colour, crossing, group factor and h
 function load_recurrence_export(path::AbstractString; kernels::Symbol = :c)::Vector{Lowered}
     d = read_export(path)
     libraries = export_kernels(d; kernels)
+    # a (process, colour flow) names one program: a second entry would silently replace the first
+    seen = Set{Tuple{String,String}}()
+    for p in d["programs"]
+        key = (String(p["process_key"]), String(p["colour_id"]))
+        key in seen && export_error("$(key[1]) $(key[2]): more than one program")
+        push!(seen, key)
+    end
     full = Dict{Tuple{String,String},Lowered}()
     for p in d["programs"]
         haskey(p, "program_reference") && continue
