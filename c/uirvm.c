@@ -205,14 +205,14 @@ PAC_FN static UIR_INLINE double uir_input(const uir_program *g, const uir_arena 
     }
 }
 
-/* kernel row w's output pair into component `component` of its current (KERNEL_DIRECT: as it is;
- * else × factor, with the mode); the pairs in order */
+/* kernel row w's output pair into component `component` of its current, with the row's mode
+ * (KERNEL_DIRECT: the pair as it is; else × factor); the pairs in order */
 PAC_FN static UIR_INLINE void uir_output(const uir_program *g, const uir_arena *a, const uint32_t *w, uint32_t component,
                                          cplx pair)
 {
     uint32_t j = edge_start(g, UIR_D(w)) + component;
-    store1(a, j, UIR_OP(w) == UIR_KERNEL_DIRECT ? pair
-                 : combine(load1(a, j), mul(pair, get(g->factors, UIR_X(w))), UIR_SET(w) ? MODE_SET : MODE_ADD));
+    cplx value = UIR_OP(w) == UIR_KERNEL_DIRECT ? pair : mul(pair, get(g->factors, UIR_X(w)));
+    store1(a, j, combine(load1(a, j), value, UIR_SET(w) ? MODE_SET : MODE_ADD));
 }
 
 /* a kernel row: its binding instance's stub and scale set, run by the program's uir_stub */
