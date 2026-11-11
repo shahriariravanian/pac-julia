@@ -1,8 +1,8 @@
 # UIR, the Unified Intermediate Representation (v0.8): a program as a flat list of fixed-size rows
 # with every operand resolved, which the back ends read (the C generator, the GPU interpreters' 8-byte
-# encoding). `lower(p::Program)` (lower.jl) builds it from a pac2json program; RustiCol's recurrence
-# export maps onto it row for row. The design is section 7 of the pac-julia design doc ("The lowered
-# IR").
+# encoding). `load_recurrence_export` (recurrence_export.jl) reads RustiCol's recurrence export into
+# it row for row; `lower(p::Program)` (v1/lower.jl) builds it from a pac2json program. The design is
+# section 7 of the pac-julia design doc ("The lowered IR").
 #
 # v0.8 adds to v0.7: sources are rows (SOURCE, anywhere in the stream: a program of several runs has
 # each run's sources in it) and may scatter their components (an embedding); the reduction is rows

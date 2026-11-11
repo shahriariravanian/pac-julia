@@ -9,7 +9,7 @@ using PacRunner
 same(x::Float64, y::Float64) = reinterpret(UInt64, x) == reinterpret(UInt64, y) || (isnan(x) && isnan(y))
 
 # (entries, entries bit for bit, values, values bit for bit, the differing entries' worst relative error)
-function check(path::String; kernels::Symbol = :auto, passes = false, quiet = false)
+function check(path::String; kernels::Symbol = :c, passes = false, quiet = false)
     ls = load_recurrence_export(path; kernels)
     passes && (ls = optimize.(ls))
     refs = recurrence_references(path)
@@ -46,7 +46,7 @@ end
 
 if abspath(PROGRAM_FILE) == @__FILE__
     args = copy(ARGS)
-    kernels = :auto
+    kernels = :c
     if !isempty(args) && args[1] == "--kernels"
         kernels = Symbol(args[2])
         args = args[3:end]

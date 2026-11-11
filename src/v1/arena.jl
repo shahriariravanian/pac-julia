@@ -13,7 +13,5 @@ end
 Arena(forms::Int, components::Vector{Int}, amplitudes::Int) =
     Arena(fill((0.0, 0.0, 0.0, 0.0), forms), [zeros(Complex{Float64}, n) for n in components], zeros(Complex{Float64}, amplitudes))
 
-const NO_CURRENT = Complex{Float64}[]  # a null operand (an operand the instruction does not read)
-
 current(a::Arena, i::CurrentIndex) = i == 0 ? NO_CURRENT : a.currents[i]
 form(a::Arena, i::FormIndex) = a.forms[i]

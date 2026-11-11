@@ -99,11 +99,6 @@ c_mode(op::LOp) = op.set ? "MODE_SET" : "MODE_ADD"
 # `interpreter`, runner.c runs the program on the UIR interpreter (compile_vm.jl, c/uirvm.c) instead
 # of straight-line code, with the same runner.h and values. The kernels are C in runner.c, made
 # from their .plane.symjit (kernel_c.jl), bit for bit sjb2obj's libraries: the folder needs neither.
-function compile(path, prog::Program; examples = nothing, optimize::Bool = true, interpreter::Bool = false)
-    l = lower(prog)
-    return compile(path, optimize ? PacRunner.optimize(l) : l; examples, interpreter)
-end
-
 function compile(path, prog::Lowered; examples = nothing, interpreter::Bool = false)
     interpreter && return compile_interpreter(path, prog; examples)
     validate(prog)
@@ -405,7 +400,7 @@ function compile_forms(writer, prog::Lowered, b::ArenaIndex)
     emit(writer, "void forms(double *p, const double *momenta) {")
 
     # the program's leg l: the caller's leg `leg` (1-based) times `sign`, or the caller's leg l
-    # (as evaluators/progeval.jl's fill_forms!: q = 0.0 + Σ coef × (sign × p[leg]), in term order)
+    # (as evaluators/uireval.jl's fill_forms!: q = 0.0 + Σ coef × (sign × p[leg]), in term order)
     external(l, j) = prog.crossing === nothing ? "momenta[$(4*(l-1)+j)]" :
         "($(lit(prog.crossing[l][2])) * momenta[$(4*(prog.crossing[l][1]-1)+j)])"
 

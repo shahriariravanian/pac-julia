@@ -4,8 +4,9 @@
 # way of building:
 #   :sjb2obj  symjit-utils' sjb2obj (ENV["SJB2OBJ"], or sjb2obj on the PATH), then cc -shared: the
 #             native code symjit would run (the reference the tests compare with);
-#   :c        kernel_c.jl's C, compiled by cc (ENV["CC"], default cc), bit for bit the same values;
-#   :auto     (the default) :sjb2obj when sjb2obj is found, else :c;
+#   :c        (the default) kernel_c.jl's C, compiled by cc (ENV["CC"], default cc), bit for bit the
+#             same values; needs nothing but a C compiler;
+#   :auto     :sjb2obj when sjb2obj is found, else :c;
 #   :none     no library (a call of the kernel is an error; programs without kernel rows run).
 # Every library exports KERNEL_SYMBOL with symjit's calling convention (kernel_call), whatever the
 # kernel's name in its program.

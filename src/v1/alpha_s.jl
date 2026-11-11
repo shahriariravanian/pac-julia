@@ -72,13 +72,13 @@ function measure_alpha_s_power(p::Program, q::Program; points::Int = 16)::Int
 end
 
 """
-    alpha_s_power(base, doubled; kernels = :auto, points = 16) -> Vector{Union{Int,Nothing}}
+    alpha_s_power(base, doubled; kernels = :c, points = 16) -> Vector{Union{Int,Nothing}}
 
 Per program of `base` (a pac2json folder or main.json), the power p of |M|² ∝ alpha_s^p, from
 the same programs recorded at another alpha_s (`doubled`); `nothing` for a program without
 alpha_s. The programs run on the Julia runner (`kernels` as for load_programs).
 """
-function alpha_s_power(base::AbstractString, doubled::AbstractString; kernels::Symbol = :auto, points::Int = 16)
+function alpha_s_power(base::AbstractString, doubled::AbstractString; kernels::Symbol = :c, points::Int = 16)
     ps = load_programs(base; kernels)
     qs = load_programs(doubled; kernels)
     length(ps) == length(qs) || error("alpha_s_power: $(length(ps)) programs and $(length(qs))")
@@ -86,12 +86,12 @@ function alpha_s_power(base::AbstractString, doubled::AbstractString; kernels::S
 end
 
 """
-    alpha_s_power(artifact; parameters = nothing, kernels = :auto, points = 16) -> Vector{Union{Int,Nothing}}
+    alpha_s_power(artifact; parameters = nothing, kernels = :c, points = 16) -> Vector{Union{Int,Nothing}}
 
 As `alpha_s_power(base, doubled)` for a pyAmpliCol LC artifact: captured with `parameters` and
 again with its alpha_s parameter doubled (both captures kept, as `capture` keeps them).
 """
-function alpha_s_power(artifact::AbstractString; parameters = nothing, kernels::Symbol = :auto, points::Int = 16)
+function alpha_s_power(artifact::AbstractString; parameters = nothing, kernels::Symbol = :c, points::Int = 16)
     is_artifact(artifact) || error("alpha_s_power: $artifact is not a pyAmpliCol artifact (give the folders at two alpha_s)")
     base = capture(artifact; parameters)
     main = read_main(joinpath(base, "main.json"))

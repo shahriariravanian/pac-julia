@@ -1,4 +1,4 @@
-# lower.jl and evaluators/uireval.jl on pac2json folders (default: every case in test/data): every program is
+# v1/lower.jl and evaluators/uireval.jl on pac2json folders (default: every case in test/data): every program is
 # lowered and validated; every row is read back through the edge table to the Program operation it
 # came from (operands, momenta, tables, flags); and on examples.json's points evaluate(::Lowered)
 # must equal evaluate(::Program) bit for bit, plain, after each pass (passes.jl: sort_runs, fuse,

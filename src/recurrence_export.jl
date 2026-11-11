@@ -28,7 +28,7 @@
 const EXPORT_SCHEMA = 2
 const EXPORT_SEMANTICS = "rusticol-batched-f64-v1"
 
-# RustiCol's versioned intrinsic names → the operations' names (lower.jl's VERTEX_OPS, PROPAGATOR_OPS)
+# RustiCol's versioned intrinsic names → the operations' names (validate.jl's VERTEX_OPS, PROPAGATOR_OPS)
 const EXPORT_VERTICES = Dict(
     "rusticol.recurrence-intrinsic.weyl-vector-to-weyl-a.v1" => "weyl_vector_a",
     "rusticol.recurrence-intrinsic.weyl-vector-to-weyl-b.v1" => "weyl_vector_b",
@@ -67,7 +67,7 @@ end
 # the kernels of the file, by SHA-256: each saved application decoded (and checked against its
 # SHA-256) into the scratch space, and its library for the Julia runner (`kernels`: kernel_lib.jl's
 # ways); a library's symbol is KERNEL_SYMBOL, its name in the C "k_" and the first 16 hex digits
-function export_kernels(d; kernels::Symbol = :auto)::Dict{String,KernelLibrary}
+function export_kernels(d; kernels::Symbol = :c)::Dict{String,KernelLibrary}
     kernels in KERNEL_WAYS || error("kernels = :$kernels: one of $(join(KERNEL_WAYS, ", "))")
     way = resolve_way(kernels)
     out = Dict{String,KernelLibrary}()
@@ -304,14 +304,14 @@ export_helicities(p) = [Int.(h["helicities"]) for h in p["helicity_outputs"]]
 export_group(p) = (Int(p["group_factor"]["numerator"]), Int(p["group_factor"]["denominator"]))
 
 """
-    load_recurrence_export(path; kernels = :auto) -> Vector{Lowered}
+    load_recurrence_export(path; kernels = :c) -> Vector{Lowered}
 
 The programs of a RustiCol recurrence export (`pyamplicol export-recurrence`, schema 2), one
 Lowered per entry of `programs` in the file's order; a member or alias entry is its
 representative's rows with its own process, colour, crossing, group factor and helicities.
 `kernels`: how the kernels' libraries are built for the Julia runner (kernel_lib.jl).
 """
-function load_recurrence_export(path::AbstractString; kernels::Symbol = :auto)::Vector{Lowered}
+function load_recurrence_export(path::AbstractString; kernels::Symbol = :c)::Vector{Lowered}
     d = read_export(path)
     libraries = export_kernels(d; kernels)
     full = Dict{Tuple{String,String},Lowered}()
