@@ -85,7 +85,7 @@ function writes_fresh(l::Lowered, op::LOp)::Bool
     elseif is_kernel(op.op)
         (s, _) = l.instances[op.t]
         stub = l.stubs[s]
-        return (op.set || op.op == KERNEL_DIRECT) && sort(stub.outputs) == 1:n && !any(i -> i.kind == OUT, stub.inputs)
+        return op.set && sort(stub.outputs) == 1:n && !any(i -> i.kind == OUT, stub.inputs)
     elseif op.op == CLEAR
         return op.n == n
     elseif op.op == SOURCE
