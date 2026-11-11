@@ -44,6 +44,8 @@ include("kernel_c.jl")
 include("kernel_lib.jl")
 # RustiCol's recurrence export (pyAmpliCol 1.0.x)
 include("recurrence_export.jl")
+# UMAMI libraries for MadSpace, one per program
+include("umami.jl")
 # v1: pac2json's main.json (pyAmpliCol 0.2.x)
 include("v1/types.jl")
 include("v1/program.jl")
@@ -56,7 +58,7 @@ include("v1/install.jl")
 include("v1/alpha_s.jl")
 
 # RustiCol's recurrence export
-export load_recurrence_export, recurrence_references
+export load_recurrence_export, recurrence_references, umami_libraries
 # UIR
 export Lowered, LArena, evaluate, validate, sort_runs, fuse, reuse_planes, optimize, Encoded, encode, decode
 # the C

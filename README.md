@@ -47,6 +47,23 @@ values bit for bit (146,560 values), with the kernels from sjb2obj or as C, plai
 and its GPU build (`test/test_recurrence_export.jl`, `test/test_recurrence_export_c.jl`).
 Not supported (an error): spin-2 sources, kernels that read or write amplitudes.
 
+## UMAMI libraries for MadSpace (MadGraph7)
+
+`umami_libraries(export, metadata, dir)` writes one UMAMI library (CPU) per (process, colour flow,
+leg permutation) that an artifact's UMAMI provider uses (`metadata`: the artifact's
+`API/umami/metadata.json`; `export`: its recurrence export), each the program's compiled C plus
+`c/umami_pac.c`, a thin UMAMI layer: momenta gathered with the permutation, the program run, the
+helicity drawn from the random number or a fixed helicity read, the factor, the colour index, an
+optional alpha_s rescaling by the export's power. The flavours are MadSpace's to split:
+`dir/umami_pac.json` gives, per channel, each flavour's library, for an integrand with one
+differential cross section per library (`flavor_diff_xs_indices`, `flavor_remap = 0`).
+
+`test/umami_check.py` runs them in MadSpace against the stock pyAmpliCol library, flavour by flavour:
+on eight 1.0.2 artifacts (355 flavours; pp > jjj: 325 flavours on 53 libraries) the LC pass (ME,
+colour and helicity indices) and the fixed-helicity pass are bit for bit. A plain helicity sum (no
+index in or out, which MadGraph does not ask for) agrees to rounding: RustiCol sums over helicity
+orbits there.
+
 ## Artifacts and installation (pyAmpliCol 0.2.x, pac2json)
 
 `load_artifact`, `load_programs` and `load_examples` take a pyAmpliCol LC artifact directory (its
@@ -118,6 +135,7 @@ and the kernels is then a device function too (`PAC_FN`), and the tables are `__
 | --- | --- |
 | `src/PacRunner.jl` | the module |
 | `src/recurrence_export.jl` | `load_recurrence_export`, `recurrence_references`: RustiCol's recurrence export (pyAmpliCol 1.0.x, schema 2) as `Lowered` programs |
+| `src/umami.jl`, `c/umami_pac.c`, `c/umami.h` | `umami_libraries`: one UMAMI library per program, for MadSpace |
 | `src/types.jl` | the indices and the shared types (`Form`, `KernelLibrary`, `KernelInput`) |
 | `src/uir.jl`, `src/validate.jl` | UIR v0.8, the lowered form the back ends read (`Lowered`); the vertex, propagator and source tables and `validate` |
 | `src/passes.jl` | the optional passes over a `Lowered`: `sort_runs`, `fuse`, `reuse_planes` (the liveness layout), `optimize` (all three) |
