@@ -31,6 +31,7 @@ module GpuScript include(joinpath(@__DIR__, "test_gpu.jl")) end
 module Uir08Script include(joinpath(@__DIR__, "test_uir08.jl")) end
 module ExportScript include(joinpath(@__DIR__, "test_recurrence_export.jl")) end
 module ExportCScript include(joinpath(@__DIR__, "test_recurrence_export_c.jl")) end
+module UmamiScript include(joinpath(@__DIR__, "test_umami.jl")) end
 
 const CASES = CompileScript.cases()
 const CC = CompileScript.CC
@@ -556,6 +557,13 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
                 for f in files
                     @test isempty(ExportCScript.check(f; max = 3)[2])
                 end
+                # direct kernel bindings (none in the exports yet), set and add
+                @test isempty(ExportCScript.check_direct(files[2]))
+            end
+            # a program's UMAMI library through its C API (straight-line C and interpreter): the
+            # matrix element, the alpha_s input with and without a proven power
+            for f in files
+                @test isempty(UmamiScript.check(f; quiet = true))
             end
             SJB2OBJ === nothing || for f in files
                 (n, ok) = ExportScript.check(f; kernels = :sjb2obj, quiet = true)
