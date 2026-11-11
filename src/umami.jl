@@ -40,7 +40,7 @@ function umami_program_h(lib::UmamiLibrary, l::Lowered, provider, exported_count
         runtime[e+1] = r - 1
     end
     (alpha_s0, power) = l.alpha_s === nothing ? (0.0, nothing) : l.alpha_s
-    has_alpha_s = power !== nothing && alpha_s0 > 0
+    scales = power !== nothing && alpha_s0 > 0   # values at another alpha_s: × (alpha_s / alpha_s0)^power
     masses = Float64.(provider["masses"])
     out = IOBuffer()
     println(out, "/* $(lib.process) $(lib.colour), permutation $(lib.permutation): written by PacRunner's umami_libraries */")
@@ -50,9 +50,9 @@ function umami_program_h(lib::UmamiLibrary, l::Lowered, provider, exported_count
     println(out, "#define PAC_COLOR_COUNT $(Int(provider["color_count"]))")
     println(out, "#define PAC_COLOR_INDEX $(lib.colour_index)")
     println(out, "#define PAC_FACTOR $(clit(lib.factor))")
-    println(out, "#define PAC_HAS_ALPHA_S $(Int(has_alpha_s))")
+    println(out, "#define PAC_ALPHA_S_SCALES $(Int(scales))")
     println(out, "#define PAC_ALPHA_S0 $(clit(alpha_s0))")
-    println(out, "#define PAC_ALPHA_S_POWER $(has_alpha_s ? power : 0)")
+    println(out, "#define PAC_ALPHA_S_POWER $(scales ? power : 0)")
     println(out, "static const double pac_masses[] = {", join(clit.(masses), ", "), "};")
     println(out, "static const size_t pac_permutation[] = {", join(lib.permutation, ", "), "};")
     println(out, "static const int pac_helicity_runtime[] = {", join(runtime, ", "), "};")
@@ -68,7 +68,7 @@ end
 
 # the shared library of `lib` in `dir` (compile's folder plus the UMAMI layer)
 function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provider, exported_count, parameters;
-                             cc::String = something(find_cc(), "cc"), cflags::Cmd = `-O2`, interpreter=false)::String
+                             cc::String = something(find_cc(), "cc"), cflags::Cmd = `-O2`, interpreter::Bool = false)::String
     compile(dir, l; interpreter)
     write(joinpath(dir, "umami_program.h"), umami_program_h(lib, l, provider, exported_count, parameters))
     cp(UMAMI_C, joinpath(dir, "umami_pac.c"); force = true)
@@ -80,16 +80,20 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
 end
 
 """
-    umami_libraries(export, metadata, dir; optimize_programs = true, cc, quiet = false) -> String
+    umami_libraries(export, metadata, dir; optimize_programs = true, interpreter = false, cc, cflags = `-O2`,
+                    quiet = false) -> String
 
 One UMAMI library per (process, colour flow, permutation) of the artifact's UMAMI provider
 (`metadata`: the artifact's API/umami/metadata.json), its program from the recurrence export
 `export` of the same artifact; written into `dir`, with `dir/umami_pac.json` (the libraries and
 each channel's flavours, for MadSpace). Returns the path of umami_pac.json. `optimize_programs`:
-the programs after `optimize` (the default; the same values) or as imported.
+the programs after `optimize` (the default; the same values) or as imported. `interpreter`: each
+program as the UIR interpreter's data (`compile(...; interpreter = true)`) instead of straight-line
+C; `cc` and `cflags` build the libraries.
 """
 function umami_libraries(export_path::AbstractString, metadata_path::AbstractString, dir::AbstractString;
-                         optimize_programs::Bool = true, cc::String = something(find_cc(), "cc"), quiet::Bool = false)::String
+                         optimize_programs::Bool = true, interpreter::Bool = false,
+                         cc::String = something(find_cc(), "cc"), cflags::Cmd = `-O2`, quiet::Bool = false)::String
     d = read_export(export_path)
     meta = JSON.parse(read(metadata_path, String))
     get(meta, "kind", nothing) == "pyamplicol-umami-metadata" || error("$metadata_path: not a pyAmpliCol UMAMI metadata file")
@@ -135,7 +139,8 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
         sub = joinpath(dir, "programs", lpad(k - 1, 4, '0'))
         mkpath(sub)
         l = programs[(lib.process, lib.colour)][1]
-        so = build_umami_library(sub, lib, optimize_programs ? optimize(l) : l, provider, exported_count, parameters; cc)
+        so = build_umami_library(sub, lib, optimize_programs ? optimize(l) : l, provider, exported_count, parameters;
+                                 cc, cflags, interpreter)
         quiet || println("library $(k - 1) of $(length(libraries)): $(lib.process) $(lib.colour) $(lib.permutation)")
         push!(entries, Dict("index" => k - 1, "path" => relpath(so, dir), "process" => lib.process, "colour" => lib.colour,
                             "permutation" => lib.permutation, "colour_index" => lib.colour_index, "factor" => lib.factor))

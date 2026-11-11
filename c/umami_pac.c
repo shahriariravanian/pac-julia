@@ -20,7 +20,9 @@
  * sum here agrees with it to rounding (about 2e-16).
  *   - with an alpha_s input different from the export's: each value × (alpha_s / alpha_s0)^power,
  *     the power the export proved (the programs' couplings do not depend on alpha_s; RustiCol
- *     recomputes (4 pi alpha_s)^power instead, so values at another alpha_s agree to rounding);
+ *     recomputes (4 pi alpha_s)^power instead, so values at another alpha_s agree to rounding).
+ *     The input is always accepted (MadGraph passes it whenever the model has alpha_s); a program
+ *     without a proven power accepts only the export's alpha_s (relative 1e-12) and fails otherwise;
  *   - the colour index is the program's.
  * The model parameters are those of the export: umami_set_parameter accepts a known parameter at
  * its exported value (relative 1e-12) and refuses any other value.
@@ -50,7 +52,7 @@ typedef struct {
 
 static bool const supported_inputs[UMAMI_INPUT_KEY_COUNT] = {
     [UMAMI_IN_MOMENTA] = true,
-    [UMAMI_IN_ALPHA_S] = PAC_HAS_ALPHA_S,
+    [UMAMI_IN_ALPHA_S] = true,   /* as the stock library; see umami_matrix_element */
     [UMAMI_IN_FLAVOR_INDEX] = true,
     [UMAMI_IN_RANDOM_HELICITY] = true,
     [UMAMI_IN_HELICITY_INDEX] = true,
@@ -119,6 +121,8 @@ static bool close_to(double x, double y) {
     return x == y || fabs(x - y) <= 1e-12 * fmax(fabs(x), fabs(y));
 }
 
+static bool alpha_s_warned = false;   /* the unknown-power refusal is reported once */
+
 PAC_EXPORT UmamiStatus umami_set_parameter(UmamiHandle handle, char const *name,
                                            double real, double imaginary) {
     if (handle == NULL || name == NULL) return UMAMI_ERROR;
@@ -186,8 +190,18 @@ PAC_EXPORT UmamiStatus umami_matrix_element(UmamiHandle handle, size_t count, si
             double alpha_s = ((double const *)in[UMAMI_IN_ALPHA_S])[event];
             if (!isfinite(alpha_s) || alpha_s < 0.0) return UMAMI_ERROR;
             if (alpha_s != PAC_ALPHA_S0) {
-                scale = pow(alpha_s / PAC_ALPHA_S0, PAC_ALPHA_S_POWER);
-                scaled = true;
+                if (PAC_ALPHA_S_SCALES) {
+                    scale = pow(alpha_s / PAC_ALPHA_S0, PAC_ALPHA_S_POWER);
+                    scaled = true;
+                } else if (!close_to(alpha_s, PAC_ALPHA_S0)) {
+                    if (!alpha_s_warned) {
+                        alpha_s_warned = true;
+                        fprintf(stderr, "umami (%s %s): alpha_s = %.17g, but the program was exported with "
+                                "%.17g and its alpha_s power is unknown: export it again at this alpha_s\n",
+                                RUNNER_PROCESS, RUNNER_COLOUR, alpha_s, PAC_ALPHA_S0);
+                    }
+                    return UMAMI_ERROR;
+                }
             }
         }
         int label = 0;
