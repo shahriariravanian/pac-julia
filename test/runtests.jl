@@ -5,7 +5,8 @@
 # space's cache, so that no test needs cargo; with sjb-complexify (ENV["SJB_COMPLEXIFY"], or
 # installed by PacRunner.install_complexify()) the tool's output is checked against those copies.
 #
-# Without external tools: the loader, the .sjb reader (a synthetic code buffer of every
+# Without external tools: the loader, RustiCol's recurrence export (test/data/export, pyAmpliCol 1.0.2,
+# with reference values; with a C compiler every entry and its compiled C bit for bit), the .sjb reader (a synthetic code buffer of every
 # instruction, the kernels' headers), the lowered kernels (each one runs), the Julia runner against RustiCol's outputs (programs without
 # kernel rows), and compile's refusals.
 # With a C compiler (CC, default cc): the compiled C against the Julia runner, the variants, the
@@ -33,6 +34,8 @@ module LowerScript include(joinpath(@__DIR__, "test_lower.jl")) end
 module KernelCScript include(joinpath(@__DIR__, "test_kernel_c.jl")) end
 module GpuScript include(joinpath(@__DIR__, "test_gpu.jl")) end
 module Uir08Script include(joinpath(@__DIR__, "test_uir08.jl")) end
+module ExportScript include(joinpath(@__DIR__, "test_recurrence_export.jl")) end
+module ExportCScript include(joinpath(@__DIR__, "test_recurrence_export_c.jl")) end
 
 const CASES = CompileScript.cases()
 const CC = CompileScript.CC
@@ -536,8 +539,54 @@ end
         @testset "UIR v0.8 rows on the GPU" begin
             @test isempty(Uir08Script.check(joinpath(@__DIR__, "data", "ppjjj_crossed"); gpu = GpuScript.NVCC, quiet = true))
         end
+        @testset "recurrence export on the GPU" begin
+            @test isempty(ExportCScript.check(joinpath(@__DIR__, "data", "export", "zggg_union.json"); max = 1, gpu = GpuScript.NVCC)[2])
+        end
     else
         @info "no nvcc or no GPU: the GPU build is not run"
+    end
+
+    @testset "recurrence export" begin
+        # RustiCol's export (pyamplicol export-recurrence, schema 2, pyAmpliCol 1.0.2) with reference
+        # values: p p > j j j (a process with kernel rows, a crossed group member and its
+        # representative) and one colour flow of an all-flow-union artifact (96 runs, embedded
+        # sources, scatters); every entry against RustiCol's batched values bit for bit
+        files = [joinpath(@__DIR__, "data", "export", f) for f in ("pp_3j.json", "zggg_union.json")]
+        ls = load_recurrence_export(files[1]; kernels = :none)
+        @test length(ls) == 12 && all(l -> l.fixed_layout, ls)
+        members = filter(l -> l.process == "p_p_to_j_j_j_101", ls)
+        reps = filter(l -> l.process == "p_p_to_j_j_j_16", ls)
+        @test length(members) == 4 && all(l -> l.crossing !== nothing, members)
+        @test any(m -> any(r -> r.ops === m.ops, reps), members)   # a member's rows are its representative's
+        # the Julia runner on the entries without kernel rows (no library needed)
+        refs = recurrence_references(files[1])
+        for (l, r) in zip(ls, refs)
+            any(o -> PacRunner.is_kernel(o.op), l.ops) && continue
+            for (m, want) in zip(r...)
+                @test all(same.(evaluate(l, LArena(l), m), want))
+            end
+        end
+        # another schema is refused
+        other = joinpath(mktempdir(), "schema1.json")
+        write(other, replace(read(files[1], String), "\"schema_version\":2" => "\"schema_version\":1"; count = 1))
+        @test_throws PacRunner.ExportError load_recurrence_export(other; kernels = :none)
+        if HAVE_CC
+            # every entry with the kernels as C (kernel_c), plain and after optimize
+            for f in files, passes in (false, true)
+                (n, ok) = ExportScript.check(f; kernels = :c, passes, quiet = true)
+                @test n > 0 && ok == n
+            end
+            # the compiled back ends: straight-line C and the UIR interpreter
+            if HAVE_MAKE
+                for f in files
+                    @test isempty(ExportCScript.check(f; max = 3)[2])
+                end
+            end
+            SJB2OBJ === nothing || for f in files
+                (n, ok) = ExportScript.check(f; kernels = :sjb2obj, quiet = true)
+                @test n > 0 && ok == n
+            end
+        end
     end
 
     if HAVE_CC && SJB2OBJ !== nothing

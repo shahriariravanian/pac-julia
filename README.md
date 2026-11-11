@@ -18,9 +18,31 @@ evaluate(l, LArena(l), momenta)                # bit for bit evaluate(p, a, mome
 o = optimize(l)                                # sort_runs, fuse, reuse_planes: the same values
 e = encode(o)                                  # one stream of 8-byte words (sources, then rows), the edge table
 compile("out-vm", p; interpreter = true)       # the same folder, runner.c on the UIR interpreter
+ls = load_recurrence_export("capture.json")     # pyAmpliCol 1.0.x: RustiCol's export, one Lowered per program entry
+compile("out-1.0", ls[1])                      # a Lowered compiles as lower(p)'s does
 ```
 
-## Artifacts and installation
+## pyAmpliCol 1.0.x: RustiCol's recurrence export
+
+pyAmpliCol 1.0.x writes an LC artifact's programs itself: `pyamplicol export-recurrence LC_DIR -o
+capture.json` (schema 2, on pyAmpliCol's branch `feature/rusticol-capture-mode` until it is merged;
+the format is its `docs/reference/recurrence-export.md`). `load_recurrence_export(path)` reads it
+straight into UIR (`Lowered`, one per program entry in the file's order), with no `Program` and no
+pac2json: RustiCol's storage layout is kept (`fixed_layout`), its instructions become rows one for
+one, union runs are concatenated (each run's body with its own sources, then its reduction), a
+process-group member or alias is its representative's rows with its own crossing, group factor and
+helicities, and the kernels (base64 in the file) are decoded into the scratch space and built as
+pac2json's are (`kernels = :auto`, `:sjb2obj`, `:c`, `:none`). With `--reference-points FILE`
+the export holds RustiCol's values at those points; `recurrence_references(path)` reads them.
+
+On eight pyAmpliCol 1.0.2 artifacts (gg > 3g, 4g; pp > jjj with 574 group members; tt~ + 2g; u u~ >
+tt~ + 2g; u u~ > Z + 2g, 4g; Z + 3g all-flow-union), all 856 programs at 4 points each are RustiCol's
+values bit for bit (146,560 values), with the kernels from sjb2obj or as C, plain and after
+`optimize`; sampled programs of each are bit for bit in the straight-line C, the UIR interpreter
+and its GPU build (`test/test_recurrence_export.jl`, `test/test_recurrence_export_c.jl`).
+Not supported (an error): spin-2 sources, kernels that read or write amplitudes.
+
+## Artifacts and installation (pyAmpliCol 0.2.x, pac2json)
 
 `load_artifact`, `load_programs` and `load_examples` take a pyAmpliCol LC artifact directory (its
 `artifact.json`) as they take a pac2json folder. The first time, the artifact is recorded by
@@ -101,6 +123,7 @@ and the kernels is then a device function too (`PAC_FN`), and the tables are `__
 | `src/compile.jl` | the C generator, from a `Lowered` (`compile(dir, p::Program)` lowers `p` first); `ArenaIndex`, runner.c's arena |
 | `src/sjb.jl`, `src/complexified.jl` | the reader of saved symjit applications; `complexified(path)`: a kernel lowered to real MIR by symjit's own Complexifier (`tools/sjb-complexify`, built by `install_complexify()`) |
 | `src/install.jl`, `src/kernel_lib.jl` | `install`, `capture` (pac2json for pyAmpliCol artifacts) and the Julia runner's kernel libraries |
+| `src/recurrence_export.jl` | `load_recurrence_export`, `recurrence_references`: RustiCol's recurrence export (pyAmpliCol 1.0.x) as Lowered programs |
 | `src/alpha_s.jl` | `alpha_s_power`: the alpha_s power of the programs, from captures at two alpha_s |
 | `src/kernel_c.jl` | `kernel_c(name, path)`: a kernel's MIR as one C function, the native code's operations (bit for bit sjb2obj's library); the compiled folders' kernels |
 | `src/uir.jl`, `src/lower.jl` | UIR v0.8, the lowered form the back ends read (`Lowered`); `lower(p)` with its checks (`validate`) |
