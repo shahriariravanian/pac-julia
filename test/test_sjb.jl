@@ -8,7 +8,7 @@ using PacRunner
 using PacRunner: ARITH_OPS, BIN_OPS, FUSED_OPS, UNI_OPS, Instruction, Nop, End, Uni, Bi, Mov, Load, Save, LoadConst, LoadComplex,
     SaveComplex, LoadArgs, SaveArgs, Fused, IfElse, Label, Branch, BranchIf, Call, LoadMath, LoadConstMath, ComplexBi, Reg, Loc,
     REG_GEN, REG_STATIC, REG_RET, REG_TEMP, REG_LEFT, REG_RIGHT, LOC_MEM, LOC_PARAM, LOC_STACK, SjbError, decode, is_complex,
-    mem_size, CONFIG_OPTIONS
+    mem_size, CONFIG_OPTIONS, ComplexifyError
 include(joinpath(@__DIR__, "sjb_encode.jl"))
 
 hex16(x::Float64) = string(reinterpret(UInt64, x), base = 16, pad = 16)

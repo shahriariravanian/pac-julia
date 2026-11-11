@@ -1,5 +1,5 @@
 # A symjit kernel as C: kernel_c(name, app) writes the MIR of a saved application, lowered as the
-# native generators run it (by symjit's Complexifier: `complexified`, ComplexBi kept), as one C function, `static int name(double *mem)`, so the compiled runners need no
+# native generators run it (read_sjb's `lowered`, ComplexBi kept), as one C function, `static int name(double *mem)`, so the compiled runners need no
 # library built by symjit-utils' sjb2obj (the Julia runner still calls those). The kernel is the
 # direct-arena form pac2json saves: its inputs at mem[0 .. states), its outputs (re, im of each
 # output pair) at mem[states .. states + observables), no parameters.
@@ -103,7 +103,6 @@ function kernel_c(name::String, app::SavedApplication)::String
     app.config.opt & CONFIG_OPTIONS.direct_arena != 0 || refuse("$name was not saved for a direct arena")
     mir = app.mir
     complex = is_complex(app.config)
-    complex && !is_complexified(mir) && refuse("$name's MIR is complex: read complexified(path)")
     labels = Set(i.label for i in mir.code if i isa Label)
     regs = Set{String}()
     used(r::Reg) = (s = reg_c(r); push!(regs, s); s)
@@ -197,4 +196,4 @@ function kernel_c(name::String, app::SavedApplication)::String
     return String(take!(out))
 end
 
-kernel_c(name::String, path::AbstractString) = kernel_c(name, read_sjb(complexified(path)))
+kernel_c(name::String, path::AbstractString) = kernel_c(name, read_sjb(path; lowered = true))

@@ -1,13 +1,8 @@
 # Short tests of PacRunner on the cases of test/data (`] test`, or julia --project test/runtests.jl).
 #
-# The kernels' lowered MIR is symjit's (complexified.jl): test/data/complexified holds each test kernel
-# complexified by tools/sjb-complexify, named by the input's sha256, and is copied into the scratch
-# space's cache, so that no test needs cargo; with sjb-complexify (ENV["SJB_COMPLEXIFY"], or
-# installed by PacRunner.install_complexify()) the tool's output is checked against those copies.
-#
 # Without external tools: the loader, RustiCol's recurrence export (test/data/export, pyAmpliCol 1.0.2,
 # with reference values; with a C compiler every entry and its compiled C bit for bit), the .sjb reader (a synthetic code buffer of every
-# instruction, the kernels' headers), the lowered kernels (each one runs), the Julia runner against RustiCol's outputs (programs without
+# instruction, the kernels' headers), the Complexifier (each kernel's lowering runs), the Julia runner against RustiCol's outputs (programs without
 # kernel rows), and compile's refusals.
 # With a C compiler (CC, default cc): the compiled C against the Julia runner, the variants, the
 # kernels as C (kernel_c.jl), and (with make) the compiled folders' own `make test` of every program,
@@ -27,7 +22,7 @@ using PacRunner: built, Kernel, ComplexBi, Uni, Bi, Fused, LoadMath, LoadConstMa
 
 # the scripts' functions, each in its own module (their names would clash)
 module SjbScript include(joinpath(@__DIR__, "test_sjb.jl")) end
-module MirRun include(joinpath(@__DIR__, "mir_run.jl")) end
+module ComplexifyScript include(joinpath(@__DIR__, "test_complexify.jl")) end
 module CompileScript include(joinpath(@__DIR__, "test_compile.jl")) end
 module VariantsScript include(joinpath(@__DIR__, "test_compile_variants.jl")) end
 module LowerScript include(joinpath(@__DIR__, "test_lower.jl")) end
@@ -48,13 +43,6 @@ end
 same(x::Float64, y::Float64) = reinterpret(UInt64, x) == reinterpret(UInt64, y) || (isnan(x) && isnan(y))
 has_kernel_rows(p::Program) = any(op -> op isa Kernel, p.body)
 kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "main.json")).kernels]
-
-# the test kernels' complexified copies, in the cache complexified() reads
-const COMPLEXIFIED = joinpath(@__DIR__, "data", "complexified")
-for f in readdir(COMPLEXIFIED)
-    to = joinpath(PacRunner.complexified_dir(), f)
-    isfile(to) || cp(joinpath(COMPLEXIFIED, f), to)
-end
 
 @testset "PacRunner" begin
     @testset "load" begin
@@ -86,34 +74,21 @@ end
         end
     end
 
-    @testset "complexified" begin
-        # each kernel lowered by symjit to real registers (ComplexBi kept), and the lowering runs
-        # (mir_run.jl, symjit's interpreter); its values are the kernels' C's below
+    @testset "complexify" begin
+        # each kernel lowers to real registers (symjit's ComplexBi kept), and the lowering runs
+        # (mir_run.jl, symjit's interpreter); its values are the kernels' C's below and, against
+        # symjit's own lowering, test_complexify.jl's
         rng = Xoshiro(1)
-        rand_value() = (r = rand(rng); r < 0.1 ? 0.0 : r < 0.15 ? -0.0 : r < 0.2 ? 1.0 : randn(rng) * 10.0^rand(rng, -3:3))
         for case in CASES, path in kernel_files(case)
             a = read_sjb(path)
-            l = read_sjb(path; lowered = true)
-            @test PacRunner.is_complexified(l.mir) && !PacRunner.is_complexified(a.mir)
-            @test (l.config, l.consts, l.count_states, l.count_obs, l.stack_size) == (a.config, a.consts, a.count_states, a.count_obs, a.stack_size)
-            regs = [getfield(i, f) for i in l.mir.code for f in fieldnames(typeof(i)) if getfield(i, f) isa PacRunner.Reg]
+            l = read_sjb(path; lowered = true).mir
+            regs = [getfield(i, f) for i in l.code for f in fieldnames(typeof(i)) if getfield(i, f) isa PacRunner.Reg]
             @test all(r -> r.kind != PacRunner.REG_STATIC && r.index < 64, regs)
-            mem = [rand_value() for _ in 1:max(64, mem_size(a) + 2)]
-            stack = [rand_value() for _ in 1:max(64, a.stack_size + 2)]
-            MirRun.run_mir!(l.mir, mem, stack, Float64[])
+            @test any(i -> i isa ComplexBi, l.code)
+            mem = [ComplexifyScript.rand_value(rng) for _ in 1:max(64, mem_size(a) + 2)]
+            stack = [ComplexifyScript.rand_value(rng) for _ in 1:max(64, a.stack_size + 2)]
+            ComplexifyScript.run_mir!(l, mem, stack, Float64[])
             @test any(!iszero, mem[a.count_states+1:a.count_states+a.count_obs])
-        end
-        # a complex MIR is refused by kernel_c
-        @test_throws PacRunner.KernelCError kernel_c("k", read_sjb(kernel_files(CASES[1])[1]))
-        # the tool, when there is one: the shipped copies bit for bit
-        exe = PacRunner.find_sjb_complexify()
-        if exe === nothing
-            @info "no sjb-complexify (ENV[\"SJB_COMPLEXIFY\"] or PacRunner.install_complexify()): the shipped complexified kernels are not rebuilt"
-        else
-            dir = mktempdir()
-            ins = unique(p -> basename(p), [p for case in CASES for p in kernel_files(case)])
-            run(`$exe $(collect(Iterators.flatten((p, joinpath(dir, basename(p))) for p in ins)))`)
-            @test all(p -> read(joinpath(dir, basename(p))) == read(joinpath(COMPLEXIFIED, basename(p))), ins)
         end
     end
 

@@ -1,4 +1,4 @@
-# program.jl and evaluators/progeval.jl on a pac2json folder: every program loaded with load_programs and evaluated on its
+# v1/program.jl and v1/progeval.jl on a pac2json folder: every program loaded with load_programs and evaluated on its
 # examples.json points (one Arena per program, reused from point to point), each output compared
 # bit for bit with the reference interpreter (interpreter.jl: string-keyed, the same operations),
 # and with the CPU's outputs in examples.json within TOLERANCE of the point's total (the CPU's

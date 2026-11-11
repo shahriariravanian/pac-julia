@@ -50,21 +50,6 @@ function evaluate(op::Kernel, a::Arena, p::Program)
     kernel_store!(a.currents[op.out], values, b.outputs, b.direct, op.mode, factor)
 end
 
-# the momentum forms from the caller's momenta (momenta[leg] = (E, px, py, pz), 1-based legs);
-# `a`: an Arena or an LArena, `p`: a Program or a Lowered (both have `forms` and `crossing`)
-function fill_forms!(a, p, momenta)
-    ext = p.crossing === nothing ? [Tuple(Float64.(m)) for m in momenta] :
-          [Tuple(sign .* Float64.(momenta[leg])) for (leg, sign) in p.crossing]
-    for (i, f) in enumerate(p.forms)
-        v = (0.0, 0.0, 0.0, 0.0)
-        for (t, (leg, coef)) in enumerate(f.terms)
-            term = coef .* ext[leg]
-            v = t == 1 ? 0.0 .+ term : v .+ term
-        end
-        a.forms[i] = v
-    end
-end
-
 # the currents' values before the body: zero, or factor × the source's wavefunction
 function fill_currents!(a::Arena, p::Program)
     for (i, c) in enumerate(p.currents)

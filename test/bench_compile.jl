@@ -1,4 +1,4 @@
-# Timing of the compiled C (compile.jl: straight-line, and on the UIR interpreter) against the Julia runner (evaluators/progeval.jl's evaluate), per
+# Timing of the compiled C (compile.jl: straight-line, and on the UIR interpreter) against the Julia runner (v1/progeval.jl's evaluate), per
 # phase-space point, on pac2json folders (default: every case in test/data). Each folder is
 # prepared as in test_compile.jl (the kernels' libraries built by sjb2obj in a temporary copy);
 # each program is compiled once and built with test/bench_driver.c at each of FLAGS (all with

@@ -1,5 +1,5 @@
 # The loader of main.json (pac2json's programs): every name resolved to an index (1-based), into a
-# Program (types.jl). evaluate(::Program) is evaluators/progeval.jl.
+# Program (types.jl). evaluate(::Program) is progeval.jl.
 
 # "c12" → 13 (1-based), nothing → 0 (a null operand)
 index(name::Nothing, prefix::String) = 0
@@ -61,8 +61,8 @@ end
 
 # the kernels of main.json, by name, each with its .plane.symjit (the compiled runners' kernels) and
 # a library for the Julia runner: pac2json's (--sjb2obj), else one built the way `kernels` says
-# (kernel_lib.jl: :auto, :sjb2obj, :c, :none)
-function load_kernels(main, path; kernels::Symbol = :auto)
+# (kernel_lib.jl: :c, the default, :sjb2obj, :auto, :none)
+function load_kernels(main, path; kernels::Symbol = :c)
     kernels in KERNEL_WAYS || error("kernels = :$kernels: one of $(join(KERNEL_WAYS, ", "))")
     way = resolve_way(kernels)
     out = Dict{String,KernelLibrary}()
@@ -168,12 +168,12 @@ read_main(path::AbstractString) = JSON.parse(read(path, String))
 
 # `path` (here and below): a main.json, a pac2json folder, or a pyAmpliCol LC artifact directory
 # (captured by pac2json once: install.jl's capture, with `parameters`). `kernels`: how the Julia
-# runner's kernel libraries are found or built (kernel_lib.jl: :auto, :sjb2obj, :c, :none).
+# runner's kernel libraries are found or built (kernel_lib.jl: :c, the default, :sjb2obj, :auto, :none).
 # `measure_alpha_s`: an alpha_s power the capture did not measure is measured (alpha_s.jl: for an
 # artifact, a second capture at twice its alpha_s; the programs run on the Julia runner).
 
 # program `program` (1-based) of `path`
-function load_artifact(path::AbstractString, program::Int = 1; kernels::Symbol = :auto, parameters = nothing,
+function load_artifact(path::AbstractString, program::Int = 1; kernels::Symbol = :c, parameters = nothing,
                        measure_alpha_s::Bool = false)::Program
     measure_alpha_s && return load_programs(path; kernels, parameters, measure_alpha_s)[program]
     file = main_json(path; parameters)
@@ -187,7 +187,7 @@ load_examples(path::AbstractString, program::Int = 1; parameters = nothing) =
     read_main(examples_json(path; parameters)).programs[program]
 
 # every program of `path`
-function load_programs(path::AbstractString; kernels::Symbol = :auto, parameters = nothing,
+function load_programs(path::AbstractString; kernels::Symbol = :c, parameters = nothing,
                        measure_alpha_s::Bool = false)::Vector{Program}
     file = main_json(path; parameters)
     main = read_main(file)

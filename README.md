@@ -1,25 +1,30 @@
 # PacRunner
 
-pyAmpliCol's recurrence programs (pac2json folders: `main.json`, `examples.json`, the symjit
-kernels) run in Julia, and compiled to C. The C runner is the base for the GPU runner and the
-reference it is tested against: its values are bit for bit the Julia runner's, which are RustiCol's.
+pyAmpliCol's LC recurrence programs run in Julia, compiled to C, and on the GPU, bit for bit
+RustiCol. The programs come from RustiCol's recurrence export (pyAmpliCol 1.0.x, schema 2), read
+into UIR, the lowered form every back end reads. Everything is Julia (and a C compiler for the
+compiled runners); no Rust is needed.
 
 ```julia
 using PacRunner
-p = load_artifact("lc", 1)                     # program 1 of a pyAmpliCol LC artifact (or a pac2json folder, or its main.json)
-ps = load_programs("lc")                       # all of them
-a = Arena(p)
-outputs = evaluate(p, a, momenta)              # momenta[leg] = (E, px, py, pz), the caller's legs
-compile("out", p; examples = load_examples("lc", 1))   # the folder out/, below (from lower(p))
-app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR on real registers, lowered by symjit (ComplexBi kept)
+ls = load_recurrence_export("capture.json")    # `pyamplicol export-recurrence LC_DIR -o capture.json`
+l = ls[1]                                      # a Lowered (UIR v0.8): rows on edges, the layout, the tables
+outputs = evaluate(l, LArena(l), momenta)      # momenta[leg] = (E, px, py, pz), the caller's legs
+o = optimize(l)                                # sort_runs, fuse (reuse_planes keeps RustiCol's layout)
+e = encode(o)                                  # one stream of 8-byte words, the edge table
+compile("out", l)                              # the folder out/, below
+compile("out-vm", l; interpreter = true)       # the same folder, runner.c on the UIR interpreter
+app = read_sjb("kernel.plane.symjit"; lowered = true)   # a kernel's MIR on real registers (ComplexBi kept)
 kernel_c("k0", "kernel.plane.symjit")          # the kernel as C: static int k0(double *mem)
-l = lower(p)                                   # UIR v0.8: rows on edges, the layout, the tables
-evaluate(l, LArena(l), momenta)                # bit for bit evaluate(p, a, momenta)
-o = optimize(l)                                # sort_runs, fuse, reuse_planes: the same values
-e = encode(o)                                  # one stream of 8-byte words (sources, then rows), the edge table
-compile("out-vm", p; interpreter = true)       # the same folder, runner.c on the UIR interpreter
-ls = load_recurrence_export("capture.json")     # pyAmpliCol 1.0.x: RustiCol's export, one Lowered per program entry
-compile("out-1.0", ls[1])                      # a Lowered compiles as lower(p)'s does
+```
+
+The earlier path, pac2json's `main.json` (pyAmpliCol 0.2.x), is kept in `src/v1`:
+
+```julia
+p = load_artifact("lc", 1)                     # program 1 of a pac2json folder (or an LC artifact pac2json captures)
+outputs = evaluate(p, Arena(p), momenta)
+l = lower(p)                                   # its Lowered, bit for bit evaluate(p, ...)
+compile("out", p; examples = load_examples("lc", 1))
 ```
 
 ## pyAmpliCol 1.0.x: RustiCol's recurrence export
@@ -32,7 +37,7 @@ pac2json: RustiCol's storage layout is kept (`fixed_layout`), its instructions b
 one, union runs are concatenated (each run's body with its own sources, then its reduction), a
 process-group member or alias is its representative's rows with its own crossing, group factor and
 helicities, and the kernels (base64 in the file) are decoded into the scratch space and built as
-pac2json's are (`kernels = :auto`, `:sjb2obj`, `:c`, `:none`). With `--reference-points FILE`
+pac2json's are (`kernels = :c`, the default, `:sjb2obj`, `:auto`, `:none`). With `--reference-points FILE`
 the export holds RustiCol's values at those points; `recurrence_references(path)` reads them.
 
 On eight pyAmpliCol 1.0.2 artifacts (gg > 3g, 4g; pp > jjj with 574 group members; tt~ + 2g; u u~ >
@@ -70,16 +75,11 @@ macOS. A first install takes a few minutes (about 4 on 2 cores). Rustup's defaul
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
 ```
 
-A kernel as C (`kernel_c`, the compiled folders, `kernels = :c`) is written from its MIR as symjit
-lowers it to real operations: `complexified(path)` runs `tools/sjb-complexify` (symjit's own
-`Application::complexify`) once per kernel and keeps the file in the scratch space. The tool is
-built on first use, or by `PacRunner.install_complexify()`, with cargo (about a minute);
-`ENV["SJB_COMPLEXIFY"]` names a built one instead.
-
 The Julia runner calls each symjit kernel through a shared library, built on first use into the
-scratch space (`load_programs(path; kernels = ...)`): `:auto` (the default) with symjit-utils'
-`sjb2obj` when it is found (`SJB2OBJ`, or the PATH), else from `kernel_c`'s C with `cc`; `:sjb2obj`,
-`:c`, or `:none` (no library: only programs without kernel rows run). Both give the same values bit
+scratch space (`load_recurrence_export(path; kernels = ...)`, `load_programs`): `:c` (the default)
+from `kernel_c`'s C with `cc`; `:sjb2obj` with symjit-utils' `sjb2obj` (`SJB2OBJ`, or the PATH);
+`:auto`, `:sjb2obj` when it is found, else `:c`; or `:none` (no library: only programs without
+kernel rows run). Both give the same values bit
 for bit. The compiled runners need neither: their kernels are C in `runner.c`.
 
 ## The compiled folder
@@ -117,18 +117,16 @@ and the kernels is then a device function too (`PAC_FN`), and the tables are `__
 | Path | What it is |
 | --- | --- |
 | `src/PacRunner.jl` | the module |
-| `src/types.jl` | the program (`Program`, its instructions) |
-| `src/program.jl` | the loader of `main.json` |
-| `src/evaluators/` | the Julia runners: `arena.jl` (`Arena`, the values of one point of a `Program`), `wavefunctions.jl`, `operations.jl` (the sources and the instructions, RustiCol's arithmetic in the same order), `progeval.jl` (`evaluate(::Program)`), `uireval.jl` (`evaluate(::Lowered)`, the third oracle) |
-| `src/compile.jl` | the C generator, from a `Lowered` (`compile(dir, p::Program)` lowers `p` first); `ArenaIndex`, runner.c's arena |
-| `src/sjb.jl`, `src/complexified.jl` | the reader of saved symjit applications; `complexified(path)`: a kernel lowered to real MIR by symjit's own Complexifier (`tools/sjb-complexify`, built by `install_complexify()`) |
-| `src/install.jl`, `src/kernel_lib.jl` | `install`, `capture` (pac2json for pyAmpliCol artifacts) and the Julia runner's kernel libraries |
-| `src/recurrence_export.jl` | `load_recurrence_export`, `recurrence_references`: RustiCol's recurrence export (pyAmpliCol 1.0.x) as Lowered programs |
-| `src/alpha_s.jl` | `alpha_s_power`: the alpha_s power of the programs, from captures at two alpha_s |
-| `src/kernel_c.jl` | `kernel_c(name, path)`: a kernel's MIR as one C function, the native code's operations (bit for bit sjb2obj's library); the compiled folders' kernels |
-| `src/uir.jl`, `src/lower.jl` | UIR v0.8, the lowered form the back ends read (`Lowered`); `lower(p)` with its checks (`validate`) |
+| `src/recurrence_export.jl` | `load_recurrence_export`, `recurrence_references`: RustiCol's recurrence export (pyAmpliCol 1.0.x, schema 2) as `Lowered` programs |
+| `src/types.jl` | the indices and the shared types (`Form`, `KernelLibrary`, `KernelInput`) |
+| `src/uir.jl`, `src/validate.jl` | UIR v0.8, the lowered form the back ends read (`Lowered`); the vertex, propagator and source tables and `validate` |
 | `src/passes.jl` | the optional passes over a `Lowered`: `sort_runs`, `fuse`, `reuse_planes` (the liveness layout), `optimize` (all three) |
 | `src/encode.jl` | `encode(l)`: the device form (one stream of 64-bit words, the SOURCE rows first, END last; the 32-bit edge table), and `decode` |
+| `src/evaluators/` | `wavefunctions.jl` and `operations.jl` (the sources and the instructions, RustiCol's arithmetic in the same order), `uireval.jl` (`evaluate(::Lowered)`) |
+| `src/compile.jl` | the C generator, from a `Lowered`; `ArenaIndex`, runner.c's arena |
+| `src/sjb.jl`, `src/complexify.jl` | the reader of saved symjit applications and symjit's Complexifier in Julia |
+| `src/kernel_c.jl`, `src/kernel_lib.jl` | `kernel_c(name, path)`: a kernel's MIR as one C function, the native code's operations (bit for bit sjb2obj's library); the Julia runner's kernel libraries |
+| `src/v1/` | the earlier path, pac2json's `main.json` (pyAmpliCol 0.2.x): `types.jl` (`Program`), `program.jl` (the loader), `arena.jl`, `operations.jl`, `progeval.jl` (`evaluate(::Program)`), `lower.jl` (`lower(p)`), `compile.jl` (`compile(dir, p::Program)`), `install.jl` (`install`, `capture`: pac2json, built with cargo), `alpha_s.jl` (`alpha_s_power`) |
 | `c/pacops.c`, `c/pacops.h` | the sources and instructions in C, copied next to each `runner.c` |
 | `src/compile_vm.jl`, `c/uirvm.c`, `c/uirvm.h` | `compile(dir, p; interpreter = true)`: the program as tables for the UIR interpreter, in portable C (one source for the CPU and the GPU) |
 | `CONVENTIONS.md` | the meaning of main.json's fields and instructions (pac2json's legend) |
@@ -143,7 +141,7 @@ and the kernels is then a device function too (`PAC_FN`), and the tables are `__
 julia --project -e 'using Pkg; Pkg.test()'
 ```
 
-Without external tools this tests the loader, the `.sjb` reader, the lowered kernels (`test/data/complexified`: symjit's, shipped so that no test needs cargo), the Julia runner
+Without external tools this tests the loader, the `.sjb` reader, the Complexifier, the Julia runner
 against RustiCol's outputs, and, with a C compiler (`CC`, default `cc`), the compiled C: its kernels
 are C (`kernel_c`), so every program's folder builds and passes `make test`, and every program runs
 in Julia with kernel libraries built from that C. With symjit-utils' `sjb2obj`, the tests also build
