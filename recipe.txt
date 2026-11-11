@@ -24,6 +24,13 @@ julia> umami_libraries(EXPORT_JSON, META, ENV["OUT"])
 
 python test/umami_check.py $OUT/umami_pac.json $PYAMPLICOL/artifacts/.pyamplicol-api-build/zgg/umami/libumami.so $PYAMPLICOL/artifacts/zgg/
 
+* the MadSpace-like harness (no MadSpace needed): the libraries vs the stock one through the UMAMI C API,
+  one instance per thread, batches split into jobs (count, stride, offset), flavours split per library;
+  bit for bit over batch sizes 1,3,17,64,257,1000 (-t: worker threads; --fixed adds the fixed-helicity pass)
+julia -t 8 --project=. test/umami_harness.jl $OUT/umami_pac.json $PYAMPLICOL/artifacts/.pyamplicol-api-build/zgg/umami/libumami.so $PYAMPLICOL/artifacts/zgg/ --fixed
+  options: --batches 1,3,17,64,257,1000  --rounds 2  --vec 8 (SIMD width of the job split)  --seed N
+* the libraries on the UIR interpreter instead of straight-line C: umami_libraries(EXPORT_JSON, META, ENV["OUT"]; interpreter = true)
+
 
 
  
