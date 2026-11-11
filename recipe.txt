@@ -1,0 +1,37 @@
+* venv.
+* download MadGraph7-0.3.0.tar.gz from https://github.com/MadGraphTeam/MadGraph7/releases
+* tar xzvf MadGraph7-0.3.0.tar.gz
+* cd MadGraph7-0.3.0
+* python madspace/install.py --source -y --no-cuda --no-hip --no-simd
+* git clone https://github.com/MadGraphTeam/pyamplicol
+* cd pyamplicol
+* export PYAMPLICOL=$PWD
+* git checkout feature/rusticol-capture-mode
+* python -m pip install . --config-settings pyamplicol.host-wheel=true
+* pyamplicol cards/zgg.toml	# assuming zgg.toml is copied 
+* cd artifacts/zgg/API/umami/cd # artifacts/.pyamplicol-api-build/zgg/umami/libumami.so
+* pyamplicol export-recurrence artifacts/zgg/ -o uu_zgg.json
+
+* cd PACRUNNER_DIR
+* export OUT=out
+* julia --project=.
+```
+julia> using PacRunner
+julia> EXPORT_JSON = "$(ENV["PYAMPLICOL"])/uu_zgg.json"
+julia> META = "$(ENV["PYAMPLICOL"])/artifacts/zgg/API/umami/metadata.json"
+julia> umami_libraries(EXPORT_JSON, META, ENV["OUT"])
+```
+
+python test/umami_check.py $OUT/umami_pac.json $PYAMPLICOL/artifacts/.pyamplicol-api-build/zgg/umami/libumami.so $PYAMPLICOL/artifacts/zgg/
+
+
+
+ 
+
+
+
+
+
+
+
+	1. 	

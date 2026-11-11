@@ -68,8 +68,8 @@ end
 
 # the shared library of `lib` in `dir` (compile's folder plus the UMAMI layer)
 function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provider, exported_count, parameters;
-                             cc::String = something(find_cc(), "cc"), cflags::Cmd = `-O2`)::String
-    compile(dir, l)
+                             cc::String = something(find_cc(), "cc"), cflags::Cmd = `-O2`, interpreter=false)::String
+    compile(dir, l; interpreter)
     write(joinpath(dir, "umami_program.h"), umami_program_h(lib, l, provider, exported_count, parameters))
     cp(UMAMI_C, joinpath(dir, "umami_pac.c"); force = true)
     cp(UMAMI_H, joinpath(dir, "umami.h"); force = true)
