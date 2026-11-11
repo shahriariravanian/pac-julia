@@ -2,17 +2,24 @@
 # directly through the UMAMI C API the way MadSpace's CPU runtime calls a matrix element
 # (madspace/src/cpu/runtime.cpp op_matrix_element, src/cpu/device.hpp AsyncCpuDevice::foreach):
 #
-#   - one UMAMI instance per worker thread and library (MadSpace's ThreadResource), kept across
-#     batches;
 #   - a batch of B events in column layout (input[event + B*(...)]), split into jobs aligned to the
 #     SIMD width (job_count_and_size), each job one umami_matrix_element(count, stride = B, offset)
 #     call on its worker's instance, the jobs run concurrently;
+#   - one UMAMI instance per worker thread and loaded matrix element (MadSpace's ThreadResource),
+#     kept across batches;
 #   - the LC pass of mg7's [amplicol] subprocess (subprocess_amplicol.py): inputs momenta, flavour,
 #     channel, random helicity (+ alpha_s when the stock library supports it), outputs matrix
 #     element, colour index, helicity index;
-#   - the stock library gets the channel's batch with mixed flavours (flavour input per event);
-#     PacRunner's libraries get MadSpace's flavour split: the events of each flavour gathered into
-#     a batch of their own for that flavour's library, flavour input 0, results scattered back;
+#   - the stock library: one matrix element per channel (mg7 today), the channel's batch with mixed
+#     flavours (flavour input per event);
+#   - PacRunner's libraries: MadSpace's own flavour split (phasespace/integrand.cpp, the
+#     multi-diff_xs path), with one differential cross section per flavour
+#     (flavor_diff_xs_indices[f] = f, flavor_remap[f] = 0): one matrix element loaded per flavour
+#     (its own instances, even when flavours share a library), batch_split_by_index +
+#     batch_gather give each flavour's events as a batch of their own (flavour input 0), and the
+#     flavours' matrix-element instructions run concurrently (CpuRuntime::run_concurrent: their
+#     jobs share the thread pool), the results merged back by index (batch_merge_by_index);
+#     --sequential runs the flavours one after another instead (a non-concurrent runtime);
 #   - optionally the fixed-helicity pass (helicity input, matrix element output).
 #
 # Compared bit for bit: matrix element, colour index, helicity index (with a running alpha_s that
@@ -20,7 +27,8 @@
 # rescaling moves a sampled helicity's boundary: counted, not failed).
 #
 # usage: julia -t THREADS --project test/umami_harness.jl UMAMI_PAC_JSON STOCK_LIBUMAMI_SO ARTIFACT_DIR
-#            [--batches 1,3,17,64,257,1000] [--rounds 2] [--vec 8] [--fixed] [--seed N] [--rtol 1e-13]
+#            [--batches 1,3,17,64,257,1000] [--rounds 2] [--vec 8] [--fixed] [--sequential] [--seed N]
+#            [--rtol 1e-13]
 # (umami_pac.json from umami_libraries; the stock library from `make` in ARTIFACT_DIR/API/umami, as
 # artifacts/.pyamplicol-api-build/NAME/umami/libumami.so; ARTIFACT_DIR is its param card argument)
 using JSON
@@ -75,12 +83,19 @@ function new_instance(api::Api)::Ptr{Cvoid}
     return r[]
 end
 
-# the worker threads' instances: instances[worker][api] (MadSpace's ThreadResource)
-const Instances = Vector{IdDict{Api,Ptr{Cvoid}}}
-instance!(instances::Instances, w::Int, api::Api) = get!(() -> new_instance(api), instances[w], api)
+# a loaded matrix element (MadSpace's MatrixElementApi): a library and its own instances, `id`
+# distinguishing two loads of one library (two flavours sharing a program)
+struct Me
+    api::Api
+    id::Int
+end
+
+# the worker threads' instances: instances[worker][me.id] (MadSpace's ThreadResource)
+const Instances = Vector{Dict{Int,Tuple{Api,Ptr{Cvoid}}}}
+instance!(instances::Instances, w::Int, me::Me) = get!(() -> (me.api, new_instance(me.api)), instances[w], me.id)[2]
 
 function free_all(instances::Instances)
-    for d in instances, (api, p) in d
+    for d in instances, (api, p) in values(d)
         ccall(api.free, Cint, (Ptr{Cvoid},), p)
     end
 end
@@ -110,28 +125,35 @@ function Batch(size::Int, in_keys, inputs, out_keys)
     Batch(size, Cint.(in_keys), inputs, Cint.(out_keys), outputs)
 end
 
-# the batch on `api`, as MadSpace runs one matrix-element instruction: its jobs on the worker
-# threads, each with its worker's instance; the statuses that were not UMAMI_SUCCESS
-function run!(b::Batch, api::Api, instances::Instances, vec::Int)::Vector{Cint}
-    b.size == 0 && return Cint[]
-    (njobs, size) = jobs(b.size, length(instances), vec)
-    queue = Channel{Tuple{Int,Int}}(njobs)
-    for j in 0:njobs-1
-        put!(queue, (min(size, b.size - j * size), j * size))
+# matrix-element instructions, each a batch on a loaded matrix element, run as MadSpace's
+# concurrent CPU runtime runs independent instructions: every instruction's jobs
+# (job_count_and_size of its own batch) in one pool, taken by the worker threads in order, each job
+# on its worker's instance of that matrix element. The statuses that were not UMAMI_SUCCESS, per
+# instruction.
+function run!(calls::Vector{Tuple{Batch,Me}}, instances::Instances, vec::Int)::Vector{Vector{Cint}}
+    queue = Tuple{Int,Int,Int}[]   # (call, count, offset)
+    for (k, (b, _)) in enumerate(calls)
+        (njobs, size) = jobs(b.size, length(instances), vec)
+        for j in 0:njobs-1
+            push!(queue, (k, min(size, b.size - j * size), j * size))
+        end
     end
-    close(queue)
-    bad = Cint[]
+    pool = Channel{Tuple{Int,Int,Int}}(length(queue))
+    foreach(j -> put!(pool, j), queue)
+    close(pool)
+    bad = [Cint[] for _ in calls]
     lock = ReentrantLock()
-    GC.@preserve b begin
-        in_ptrs = Ptr{Cvoid}[pointer(x) for x in b.inputs]
-        out_ptrs = Ptr{Cvoid}[pointer(x) for x in b.outputs]
+    GC.@preserve calls begin
+        in_ptrs = [Ptr{Cvoid}[pointer(x) for x in b.inputs] for (b, _) in calls]
+        out_ptrs = [Ptr{Cvoid}[pointer(x) for x in b.outputs] for (b, _) in calls]
         @sync for w in eachindex(instances)
-            Threads.@spawn for (count, offset) in queue
-                inst = instance!(instances, w, api)
-                s = ccall(api.matrix_element, Cint,
+            Threads.@spawn for (k, count, offset) in pool
+                (b, me) = calls[k]
+                inst = instance!(instances, w, me)
+                s = ccall(me.api.matrix_element, Cint,
                           (Ptr{Cvoid}, Csize_t, Csize_t, Csize_t, Csize_t, Ptr{Cint}, Ptr{Ptr{Cvoid}}, Csize_t, Ptr{Cint}, Ptr{Ptr{Cvoid}}),
-                          inst, count, b.size, offset, length(b.in_keys), b.in_keys, in_ptrs, length(b.out_keys), b.out_keys, out_ptrs)
-                s == UMAMI_SUCCESS || @lock lock push!(bad, s)
+                          inst, count, b.size, offset, length(b.in_keys), b.in_keys, in_ptrs[k], length(b.out_keys), b.out_keys, out_ptrs[k])
+                s == UMAMI_SUCCESS || @lock lock push!(bad[k], s)
             end
         end
     end
@@ -174,14 +196,16 @@ mutable struct Tally
     index_differ::Int
     worst::Float64
     failures::Vector{String}
+    jobs::Int          # PacRunner's umami_matrix_element calls (flavours × thread jobs)
+    job_events::Int    # their events
 end
-Tally() = Tally(0, 0, 0, 0, 0, 0.0, String[])
+Tally() = Tally(0, 0, 0, 0, 0, 0.0, String[], 0, 0)
 
-function check_channel!(t::Tally, c::Int, channel, stock::Api, libs::Vector{Api}, instances::Instances, rng, B::Int;
-                        vec::Int, fixed::Bool, alpha_s0, rtol::Float64, helicities::Int)
-    n = length(stock_masses[])
-    flavour_libs = Int.(channel["flavor_libraries"])
-    nf = length(flavour_libs)
+# one channel's batch of B events: `stock` the channel's stock matrix element, `flavours[f + 1]`
+# the matrix element loaded for flavour f
+function check_channel!(t::Tally, c::Int, stock::Me, flavours::Vector{Me}, instances::Instances, rng, B::Int;
+                        vec::Int, fixed::Bool, sequential::Bool, alpha_s0, rtol::Float64, helicities::Int)
+    nf = length(flavours)
     mom = momenta(rng, stock_masses[], B)
     flav = Cint.(rand(rng, 0:nf-1, B))
     chan = fill(Cint(c), B)
@@ -205,19 +229,25 @@ function check_channel!(t::Tally, c::Int, channel, stock::Api, libs::Vector{Api}
     for (name, keys, inputs, outs, tolerant) in passes
         # stock: the channel's batch, mixed flavours
         s = Batch(B, keys, inputs, outs)
-        bad = run!(s, stock, instances, vec)
+        bad = run!([(s, stock)], instances, vec)[1]
         isempty(bad) || (push!(t.failures, "$label, $name: stock status $(unique(bad))"); continue)
         t.calls += 1
-        # PacRunner: MadSpace's flavour split
+        # PacRunner: MadSpace's flavour split (batch_split_by_index, batch_gather per flavour), the
+        # flavours' instructions concurrently, then batch_merge_by_index
         p = Batch(B, keys, inputs, outs)
-        for f in 0:nf-1
-            events = findall(==(f), flav)
-            isempty(events) && continue
+        split = [(f, findall(==(f), flav)) for f in 0:nf-1]
+        filter!(x -> !isempty(x[2]), split)
+        calls = Tuple{Batch,Me}[]
+        for (f, events) in split
             sub_inputs = Vector[k == IN_FLAVOR ? zeros(Cint, length(events)) : gather(x, B, events) for (k, x) in zip(keys, inputs)]
-            sub = Batch(length(events), keys, sub_inputs, outs)
-            bad = run!(sub, libs[flavour_libs[f+1]+1], instances, vec)
-            isempty(bad) || (push!(t.failures, "$label, $name: flavour $f (library $(flavour_libs[f+1])) status $(unique(bad))"); continue)
-            t.calls += 1
+            push!(calls, (Batch(length(events), keys, sub_inputs, outs), flavours[f+1]))
+        end
+        bad = sequential ? [run!([call], instances, vec)[1] for call in calls] : run!(calls, instances, vec)
+        t.calls += length(calls)
+        t.jobs += sum(c -> jobs(c[1].size, length(instances), vec)[1], calls; init = 0)
+        t.job_events += sum(c -> c[1].size, calls; init = 0)
+        for ((f, events), (sub, _), st) in zip(split, calls, bad)
+            isempty(st) || (push!(t.failures, "$label, $name: flavour $f status $(unique(st))"); continue)
             for (o, x) in zip(p.outputs, sub.outputs), (i, e) in enumerate(events)
                 o[e] = x[i]
             end
@@ -260,7 +290,7 @@ function main(args)
     i = 4
     while i <= length(args)
         a = args[i]
-        if a in ("--fixed",)
+        if a in ("--fixed", "--sequential")
             push!(flags, a); i += 1
         else
             opts[a] = args[i+1]; i += 2
@@ -272,6 +302,7 @@ function main(args)
     seed = parse(Int, get(opts, "--seed", "20261111"))
     rtol = parse(Float64, get(opts, "--rtol", "1e-13"))
     fixed = "--fixed" in flags
+    sequential = "--sequential" in flags
 
     table = JSON.parse(read(table_path, String))
     base = dirname(abspath(table_path))
@@ -295,13 +326,22 @@ function main(args)
         a === nothing || (alpha_s0 = Float64(export_doc["programs"][a]["alpha_s"]["value"]["re"]))
     end
 
+    # the loaded matrix elements: the stock library once per channel (one Integrand per channel),
+    # PacRunner's library once per (channel, flavour) (one differential cross section per flavour)
+    ids = Ref(0)
+    me(api) = Me(api, ids[] += 1)
+    channels = table["channels"]
+    stock_mes = [me(stock) for _ in channels]
+    flavour_mes = [[me(libs[k+1]) for k in Int.(ch["flavor_libraries"])] for ch in channels]
+
     threads = Threads.nthreads()
-    instances = Instances([IdDict{Api,Ptr{Cvoid}}() for _ in 1:threads])
+    instances = Instances([Dict{Int,Tuple{Api,Ptr{Cvoid}}}() for _ in 1:threads])
     rng = Xoshiro(seed)
     t = Tally()
     elapsed = @elapsed try
-        for r in 1:rounds, B in batches, (c, channel) in enumerate(table["channels"])
-            check_channel!(t, c - 1, channel, stock, libs, instances, rng, B; vec, fixed, alpha_s0, rtol, helicities)
+        for r in 1:rounds, B in batches, c in eachindex(channels)
+            check_channel!(t, c - 1, stock_mes[c], flavour_mes[c], instances, rng, B;
+                           vec, fixed, sequential, alpha_s0, rtol, helicities)
         end
     finally
         free_all(instances)
@@ -310,9 +350,10 @@ function main(args)
     println("$(basename(base)): $(length(table["channels"])) channels, $nflav flavours, $(length(libs)) libraries; ",
             "$threads threads, SIMD width $vec, batches $(join(batches, ",")) × $rounds rounds; ",
             "alpha_s ", alpha_s0 === nothing ? "not supported by the stock library" : "at $alpha_s0 and running",
-            fixed ? "; fixed-helicity pass" : "")
+            fixed ? "; fixed-helicity pass" : "", sequential ? "; flavours sequential" : "; flavours concurrent")
     println("  $(t.batches) batches, $(t.events) events, $(t.calls) batch calls in $(round(elapsed; digits = 1)) s: ",
             t.me_differ == 0 && isempty(t.failures) ? "all bit for bit" : "$(t.me_differ) differences")
+    t.jobs > 0 && println("  PacRunner: $(t.jobs) umami_matrix_element calls, $(round(t.job_events / t.jobs; digits = 1)) events per call on average")
     alpha_s0 === nothing || println("  running alpha_s: largest relative ME difference $(t.worst), $(t.index_differ) sampled indices differ")
     for f in first(t.failures, 20)
         println("  ", f)
