@@ -308,7 +308,9 @@ function main(args)
 
     table = JSON.parse(read(table_path, String))
     base = dirname(abspath(table_path))
-    meta = JSON.parse(read(table["metadata"], String))
+    # the metadata and export paths: absolute, or relative to umami_pac.json's folder (a moved bundle)
+    path(x) = isabspath(x) ? x : joinpath(base, x)
+    meta = JSON.parse(read(path(table["metadata"]), String))
     helicities = length(meta["helicities"])
     stock = Api(abspath(stock_path), abspath(artifact))
     libs = [Api(joinpath(base, l["path"]), "") for l in table["libraries"]]
@@ -323,7 +325,7 @@ function main(args)
     alpha_s0 = nothing
     if supports(stock, IN_ALPHA_S)
         all(l -> supports(l, IN_ALPHA_S), libs) || error("the stock library takes alpha_s, a PacRunner library does not")
-        export_doc = JSON.parse(read(table["export"], String))
+        export_doc = JSON.parse(read(path(table["export"]), String))
         a = findfirst(p -> p["alpha_s"] !== nothing, export_doc["programs"])
         a === nothing || (alpha_s0 = Float64(export_doc["programs"][a]["alpha_s"]["value"]["re"]))
     end
