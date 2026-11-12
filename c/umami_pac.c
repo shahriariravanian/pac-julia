@@ -34,7 +34,10 @@
  * their momenta gathered (plane-major, the program's leg order), one GPU run computes every
  * event's runtime helicities, and the per-event code below is the CPU build's: the same bits.
  * One GPU context per library, shared by its instances; a lock makes one call at a time use it
- * (the threads block while another call runs on the GPU). */
+ * (the threads block while another call runs on the GPU).
+ * With PAC_CUDA_PER_THREAD as well (cuda_streams = :per_thread; runner.c built with nvcc
+ * --default-stream per-thread): one context per instance, on its thread's default stream, no lock:
+ * MadSpace's threads (one instance each) run on the GPU at the same time, one stream per thread. */
 #include "umami.h"
 #include "runner.h"
 #include <math.h>
@@ -65,13 +68,18 @@ typedef struct {
     double *batch_momenta;   /* [4 legs][count] */
     double *batch_values;    /* [outputs][count] */
 #endif
+#ifdef PAC_CUDA_PER_THREAD
+    pac_gpu *gpu;            /* the instance's context */
+#endif
 } Instance;
 
-#ifdef PAC_CUDA
+#if defined(PAC_CUDA) && !defined(PAC_CUDA_PER_THREAD)
 static pthread_mutex_t gpu_lock = PTHREAD_MUTEX_INITIALIZER;
 static pac_gpu *gpu = NULL;       /* the library's context, while it has instances */
 static size_t gpu_instances = 0;
+#endif
 
+#ifdef PAC_CUDA
 /* the instance's batch buffers for `count` events */
 static bool reserve_batch(Instance *instance, size_t count) {
     if (count <= instance->capacity) return true;
@@ -141,7 +149,9 @@ PAC_EXPORT UmamiStatus umami_initialize(UmamiHandle *handle, char const *param_c
     if (handle == NULL) return UMAMI_ERROR;
     Instance *instance = calloc(1, sizeof(*instance));
     if (instance == NULL) return UMAMI_ERROR;
-#ifdef PAC_CUDA
+#if defined(PAC_CUDA_PER_THREAD)
+    if (pac_gpu_create(&instance->gpu) != 0) { free(instance); return UMAMI_ERROR; }
+#elif defined(PAC_CUDA)
     pthread_mutex_lock(&gpu_lock);
     bool ok = gpu != NULL || pac_gpu_create(&gpu) == 0;
     if (ok) ++gpu_instances;
@@ -227,9 +237,13 @@ PAC_EXPORT UmamiStatus umami_matrix_element(UmamiHandle handle, size_t count, si
                 if (!isfinite(value)) return UMAMI_ERROR;
                 instance->batch_momenta[(4 * j + k) * count + e] = value;
             }
+#ifdef PAC_CUDA_PER_THREAD
+    int gpu_status = pac_gpu_run(instance->gpu, instance->batch_momenta, instance->batch_values, count);
+#else
     pthread_mutex_lock(&gpu_lock);
     int gpu_status = pac_gpu_run(gpu, instance->batch_momenta, instance->batch_values, count);
     pthread_mutex_unlock(&gpu_lock);
+#endif
     if (gpu_status != 0) return UMAMI_ERROR;
 #endif
     for (size_t event = offset; event < offset + count; ++event) {
@@ -312,12 +326,16 @@ PAC_EXPORT UmamiStatus umami_free(UmamiHandle handle) {
 #ifdef PAC_CUDA
     free(instance->batch_momenta);
     free(instance->batch_values);
+#ifdef PAC_CUDA_PER_THREAD
+    pac_gpu_destroy(instance->gpu);
+#else
     pthread_mutex_lock(&gpu_lock);
     if (--gpu_instances == 0) {
         pac_gpu_destroy(gpu);
         gpu = NULL;
     }
     pthread_mutex_unlock(&gpu_lock);
+#endif
 #endif
     free(instance->arena);
     free(instance);

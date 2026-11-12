@@ -105,7 +105,14 @@ int pac_gpu_create(pac_gpu **ctx)
     *ctx = NULL;
     pac_gpu *c = (pac_gpu *)calloc(1, sizeof(pac_gpu));
     if (c == NULL) return -1;
+#ifdef UIRGPU_STREAM_PER_THREAD
+    /* the calling thread's default stream (nvcc --default-stream per-thread): one GPU stream per CPU
+     * thread, so a context must be used by one thread (the UMAMI wrapper: one per instance) */
+    c->stream = cudaStreamPerThread;
+    cudaError_t e = cudaSuccess;
+#else
     cudaError_t e = cudaStreamCreateWithFlags(&c->stream, cudaStreamNonBlocking);
+#endif
     if (e == cudaSuccess) e = cudaMalloc((void **)&c->status, sizeof(int));
     if (e == cudaSuccess) e = cudaMallocHost((void **)&c->host_status, sizeof(int));
     if (e != cudaSuccess) {
@@ -121,12 +128,18 @@ int pac_gpu_create(pac_gpu **ctx)
 void pac_gpu_destroy(pac_gpu *c)
 {
     if (c == NULL) return;
+#ifdef UIRGPU_STREAM_PER_THREAD
+    cudaStreamSynchronize(c->stream);
+#else
     if (c->stream) cudaStreamSynchronize(c->stream);
+#endif
     uirgpu_release_device(c);
     uirgpu_release_host(c);
     cudaFree(c->status);
     cudaFreeHost(c->host_status);
+#ifndef UIRGPU_STREAM_PER_THREAD
     if (c->stream) cudaStreamDestroy(c->stream);
+#endif
     free(c);
 }
 
