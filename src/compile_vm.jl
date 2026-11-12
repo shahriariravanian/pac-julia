@@ -32,18 +32,16 @@ firsts(lengths) = cumsum([0; collect(lengths)])
 # a kernel input as uirvm's code: kind, imaginary part, n (0-based component or scale-set slot)
 input_code(i::KernelInput) = UInt32(Int(i.kind)) | UInt32(i.im) << 3 | UInt32(i.kind == FACTOR ? 0 : i.n - 1) << 4
 
-# the device bytes per point of uirgpu.c's buffers (momenta, outputs, forms, amplitudes, planes)
+const GPU_MEMORY_DEFAULT = 256 * 2^20   # device bytes per slot of the GPU pool (pac_cuda.h)
+
+# the device bytes per point of a program's arena on the GPU (uirgpu.c: momenta, outputs, forms,
+# amplitudes, planes)
 gpu_bytes_per_point(prog::Lowered) =
     8 * sum(max(n, 1) for n in (4 * prog.legs, output_count(prog), 4 * length(prog.forms), 2 * prog.amplitudes, 2 * prog.planes))
 
-# the most points of one launch within `bytes` of device memory (a multiple of 128, at least 128)
-gpu_max_points(prog::Lowered, bytes::Real) = max(128, Int(fld(fld(bytes, gpu_bytes_per_point(prog)), 128)) * 128)
-
-const GPU_MEMORY_DEFAULT = 256 * 2^20   # bytes of device buffers per program (uirgpu.c's UIRGPU_MAX_POINTS)
-
-# the GPU part of runner.c (under nvcc): the sizes uirgpu.c needs, then uirgpu.c (the context
-# of uirgpu.h: plane-major arena, ld = points). UIRGPU_MAX_POINTS (the most points of one launch)
-# defaults to GPU_MEMORY_DEFAULT's worth; nvcc -DUIRGPU_MAX_POINTS=n overrides it.
+# the GPU part of runner.c (under nvcc): the sizes uirgpu.c needs, then uirgpu.c (the program on a
+# slot of the pool, pac_cuda.h: plane-major arena, ld = points). The pool's size (UIRGPU_SLOTS,
+# UIRGPU_SLOT_BYTES) defaults to one slot per CPU of GPU_MEMORY_DEFAULT bytes; nvcc -D overrides.
 function run_gpu_c(prog::Lowered)::String
     return """
     #define UIRGPU_LEGS $(prog.legs)
@@ -51,8 +49,8 @@ function run_gpu_c(prog::Lowered)::String
     #define UIRGPU_FORMS $(length(prog.forms))
     #define UIRGPU_AMPLITUDES $(prog.amplitudes)
     #define UIRGPU_PLANES $(prog.planes)
-    #ifndef UIRGPU_MAX_POINTS
-    #define UIRGPU_MAX_POINTS $(gpu_max_points(prog, GPU_MEMORY_DEFAULT))  /* $(gpu_bytes_per_point(prog)) bytes per point */
+    #ifndef UIRGPU_SLOT_BYTES
+    #define UIRGPU_SLOT_BYTES ((size_t)$(GPU_MEMORY_DEFAULT))  /* $(gpu_bytes_per_point(prog)) bytes per point */
     #endif
     #include "uirgpu.c"
     """
@@ -92,6 +90,8 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         copy_home(writer, "c/uirvm.h")
         copy_home(writer, "c/uirgpu.c")
         copy_home(writer, "c/uirgpu.h")
+        copy_home(writer, "c/pac_cuda.cu")
+        copy_home(writer, "c/pac_cuda.h")
         emit(writer, "/* $(prog.process) $(prog.colour) on the UIR interpreter (uirvm.c), compiled by PacRunner's compile */")
         emit(writer, "#include <stdlib.h>")
         emit(writer, "#include \"uirvm.c\"")

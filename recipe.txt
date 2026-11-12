@@ -28,9 +28,12 @@ python test/umami_check.py $OUT/umami_pac.json $PYAMPLICOL/artifacts/.pyamplicol
   one instance per thread, batches split into jobs (count, stride, offset), flavours split per library;
   bit for bit over batch sizes 1,3,17,64,257,1000 (-t: worker threads; --fixed adds the fixed-helicity pass)
 julia -t 8 --project=. test/umami_harness.jl $OUT/umami_pac.json $PYAMPLICOL/artifacts/.pyamplicol-api-build/zgg/umami/libumami.so $PYAMPLICOL/artifacts/zgg/ --fixed
-  options: --batches 1,3,17,64,257,1000  --rounds 2  --vec 8 (SIMD width of the job split)  --seed N
+  options: --batches 1,3,17,64,257,1000  --rounds 2  --warmup 0 (untimed rounds first: use 1 for timing)  --vec 8 (SIMD width of the job split)  --seed N
 * the libraries on the UIR interpreter instead of straight-line C: umami_libraries(EXPORT_JSON, META, ENV["OUT"]; interpreter = true)
 * the libraries on a CUDA GPU (f64, bit for bit; still CPU providers for MadSpace; nvcc from ENV["NVCC"], the PATH or /usr/local/cuda/bin):
   umami_libraries(EXPORT_JSON, META, ENV["OUT"]; device = :cuda)
-  options: cuda_arch = "native" (or e.g. "sm_90"), gpu_memory = 256 * 2^20 (device bytes per library; larger calls run in several launches)
+  options: cuda_arch = "native" (or e.g. "sm_90");
+           gpu_slots = 0 (the GPU pool shared by all libraries of a process: slots = concurrent calls, 0 = one per CPU, 1 = one at a time),
+           gpu_memory = 256 * 2^20 (device bytes per slot, allocated when first used; larger calls run in several launches)
+  $OUT then holds libpac_cuda.so (the pool) and libcudart.so.N next to umami_pac.json: copy the folder whole
   then the same harness command on $OUT/umami_pac.json
