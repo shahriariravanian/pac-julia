@@ -27,7 +27,7 @@
 # rescaling moves a sampled helicity's boundary: counted, not failed).
 #
 # usage: julia -t THREADS --project test/umami_harness.jl UMAMI_PAC_JSON STOCK_LIBUMAMI_SO ARTIFACT_DIR
-#            [--batches 1,3,17,64,257,1000] [--rounds 2] [--vec 8] [--fixed] [--sequential] [--seed N]
+#            [--batches 1,3,17,64,257,1000] [--rounds 2] [--warmup 0] [--vec 8] [--fixed] [--sequential] [--seed N]
 #            [--rtol 1e-13]
 # (umami_pac.json from umami_libraries; the stock library from `make` in ARTIFACT_DIR/API/umami, as
 # artifacts/.pyamplicol-api-build/NAME/umami/libumami.so; ARTIFACT_DIR is its param card argument)
@@ -300,6 +300,7 @@ function main(args)
     end
     batches = parse.(Int, split(get(opts, "--batches", "1,3,17,64,257,1000"), ","))
     rounds = parse(Int, get(opts, "--rounds", "2"))
+    warmup = parse(Int, get(opts, "--warmup", "0"))   # untimed rounds first (checked as well)
     vec = parse(Int, get(opts, "--vec", "8"))
     seed = parse(Int, get(opts, "--seed", "20261111"))
     rtol = parse(Float64, get(opts, "--rtol", "1e-13"))
@@ -342,23 +343,30 @@ function main(args)
     instances = Instances([Dict{Int,Tuple{Api,Ptr{Cvoid}}}() for _ in 1:threads])
     rng = Xoshiro(seed)
     t = Tally()
+    untimed_events = 0
     elapsed = @elapsed try
-        for r in 1:rounds, B in batches, c in eachindex(channels)
-            check_channel!(t, c - 1, stock_mes[c], flavour_mes[c], instances, rng, B;
-                           vec, fixed, sequential, alpha_s0, rtol, helicities)
+        for r in 1:warmup+rounds
+            if r == warmup + 1   # the timed rounds start: every instance set up, its buffers grown
+                t.stock_time = t.pac_time = 0.0
+                untimed_events = t.events
+            end
+            for B in batches, c in eachindex(channels)
+                check_channel!(t, c - 1, stock_mes[c], flavour_mes[c], instances, rng, B;
+                               vec, fixed, sequential, alpha_s0, rtol, helicities)
+            end
         end
     finally
         free_all(instances)
     end
     nflav = sum(ch -> length(ch["flavor_libraries"]), table["channels"])
     println("$(basename(base)): $(length(table["channels"])) channels, $nflav flavours, $(length(libs)) libraries; ",
-            "$threads threads, SIMD width $vec, batches $(join(batches, ",")) × $rounds rounds; ",
+            "$threads threads, SIMD width $vec, batches $(join(batches, ",")) × $rounds rounds$(warmup > 0 ? " after $warmup warm-up" : ""); ",
             "alpha_s ", alpha_s0 === nothing ? "not supported by the stock library" : "at $alpha_s0 and running",
             fixed ? "; fixed-helicity pass" : "", sequential ? "; flavours sequential" : "; flavours concurrent")
     println("  $(t.batches) batches, $(t.events) events, $(t.calls) batch calls in $(round(elapsed; digits = 1)) s: ",
             t.me_differ == 0 && isempty(t.failures) ? "all bit for bit" : "$(t.me_differ) differences")
     t.jobs > 0 && println("  PacRunner: $(t.jobs) umami_matrix_element calls, $(round(t.job_events / t.jobs; digits = 1)) events per call on average")
-    println("  time in the matrix elements: stock $(round(t.stock_time; digits = 3)) s, PacRunner $(round(t.pac_time; digits = 3)) s (the first calls include their setup)")
+    println("  time in the matrix elements: stock $(round(t.stock_time; digits = 3)) s, PacRunner $(round(t.pac_time; digits = 3)) s over $(t.events - untimed_events) events", warmup > 0 ? " (timed rounds only)" : " (the first calls include their setup)")
     alpha_s0 === nothing || println("  running alpha_s: largest relative ME difference $(t.worst), $(t.index_differ) sampled indices differ")
     for f in first(t.failures, 20)
         println("  ", f)
