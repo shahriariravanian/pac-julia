@@ -26,7 +26,15 @@
  *   - the colour index is the program's.
  * The model parameters are those of the export: umami_set_parameter accepts a known parameter at
  * its exported value (relative 1e-12) and refuses any other value.
- * The flavour input must be 0; the channel input is not read (the library is one program). */
+ * The flavour input must be 0; the channel input is not read (the library is one program).
+ *
+ * With PAC_CUDA (umami_libraries(...; device = :cuda)) the program runs on the GPU (uirgpu.h: the
+ * UIR interpreter, one thread per point) and the library still identifies as a CPU provider:
+ * MadSpace passes host memory and calls from its CPU threads. Per call, the events are checked and
+ * their momenta gathered (plane-major, the program's leg order), one GPU run computes every
+ * event's runtime helicities, and the per-event code below is the CPU build's: the same bits.
+ * One GPU context per library, shared by its instances; a lock makes one call at a time use it
+ * (the threads block while another call runs on the GPU). */
 #include "umami.h"
 #include "runner.h"
 #include <math.h>
@@ -34,6 +42,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef PAC_CUDA
+#include <pthread.h>
+#include "uirgpu.h"
+#endif
 
 typedef struct {
     const char *name;
@@ -45,10 +57,35 @@ typedef struct {
 #define PAC_EXPORT __attribute__((visibility("default")))
 
 typedef struct {
-    double *arena;    /* run()'s scratch, RUNNER_ARENA_SIZE */
+    double *arena;    /* run()'s scratch, RUNNER_ARENA_SIZE (CPU) */
     double momenta[4 * PAC_PARTICLES];
     double values[RUNNER_OUTPUTS];
+#ifdef PAC_CUDA
+    size_t capacity;  /* events the batch buffers hold */
+    double *batch_momenta;   /* [4 legs][count] */
+    double *batch_values;    /* [outputs][count] */
+#endif
 } Instance;
+
+#ifdef PAC_CUDA
+static pthread_mutex_t gpu_lock = PTHREAD_MUTEX_INITIALIZER;
+static pac_gpu *gpu = NULL;       /* the library's context, while it has instances */
+static size_t gpu_instances = 0;
+
+/* the instance's batch buffers for `count` events */
+static bool reserve_batch(Instance *instance, size_t count) {
+    if (count <= instance->capacity) return true;
+    size_t n = count > 2 * instance->capacity ? count : 2 * instance->capacity;
+    double *m = realloc(instance->batch_momenta, (4 * (size_t)PAC_PARTICLES * n + 1) * sizeof(double));
+    if (m == NULL) return false;
+    instance->batch_momenta = m;
+    double *v = realloc(instance->batch_values, ((size_t)RUNNER_OUTPUTS * n + 1) * sizeof(double));
+    if (v == NULL) return false;
+    instance->batch_values = v;
+    instance->capacity = n;
+    return true;
+}
+#endif
 
 static bool const supported_inputs[UMAMI_INPUT_KEY_COUNT] = {
     [UMAMI_IN_MOMENTA] = true,
@@ -104,8 +141,16 @@ PAC_EXPORT UmamiStatus umami_initialize(UmamiHandle *handle, char const *param_c
     if (handle == NULL) return UMAMI_ERROR;
     Instance *instance = calloc(1, sizeof(*instance));
     if (instance == NULL) return UMAMI_ERROR;
+#ifdef PAC_CUDA
+    pthread_mutex_lock(&gpu_lock);
+    bool ok = gpu != NULL || pac_gpu_create(&gpu) == 0;
+    if (ok) ++gpu_instances;
+    pthread_mutex_unlock(&gpu_lock);
+    if (!ok) { free(instance); return UMAMI_ERROR; }
+#else
     instance->arena = calloc(RUNNER_ARENA_SIZE, sizeof(double));
     if (instance->arena == NULL) { free(instance); return UMAMI_ERROR; }
+#endif
     *handle = instance;
     return UMAMI_SUCCESS;
 }
@@ -172,18 +217,35 @@ PAC_EXPORT UmamiStatus umami_matrix_element(UmamiHandle handle, size_t count, si
     Instance *instance = handle;
     double const *momenta = in[UMAMI_IN_MOMENTA];
     size_t const n = PAC_PARTICLES;
+#ifdef PAC_CUDA
+    /* the events' momenta, plane-major, then one GPU run for all of them */
+    if (!reserve_batch(instance, count)) return UMAMI_ERROR;
+    for (size_t e = 0; e < count; ++e)
+        for (size_t j = 0; j < n; ++j)
+            for (size_t k = 0; k < 4; ++k) {
+                double value = momenta[offset + e + stride * (n * k + pac_permutation[j])];
+                if (!isfinite(value)) return UMAMI_ERROR;
+                instance->batch_momenta[(4 * j + k) * count + e] = value;
+            }
+    pthread_mutex_lock(&gpu_lock);
+    int gpu_status = pac_gpu_run(gpu, instance->batch_momenta, instance->batch_values, count);
+    pthread_mutex_unlock(&gpu_lock);
+    if (gpu_status != 0) return UMAMI_ERROR;
+#endif
     for (size_t event = offset; event < offset + count; ++event) {
         if (in[UMAMI_IN_FLAVOR_INDEX] && ((int const *)in[UMAMI_IN_FLAVOR_INDEX])[event] != 0)
             return UMAMI_ERROR;
         double random = in[UMAMI_IN_RANDOM_HELICITY] ?
             ((double const *)in[UMAMI_IN_RANDOM_HELICITY])[event] : 0.5;
         if (!isfinite(random) || random < 0.0 || random >= 1.0) return UMAMI_ERROR;
+#ifndef PAC_CUDA
         for (size_t j = 0; j < n; ++j)
             for (size_t k = 0; k < 4; ++k) {
                 double value = momenta[event + stride * (n * k + pac_permutation[j])];
                 if (!isfinite(value)) return UMAMI_ERROR;
                 instance->momenta[4 * j + k] = value;
             }
+#endif
         double scale = 1.0;
         bool scaled = false;
         if (in[UMAMI_IN_ALPHA_S]) {
@@ -207,7 +269,11 @@ PAC_EXPORT UmamiStatus umami_matrix_element(UmamiHandle handle, size_t count, si
         int label = 0;
         double total = 0.0;
         double *values = instance->values;
+#ifdef PAC_CUDA
+        for (size_t h = 0; h < RUNNER_OUTPUTS; ++h) values[h] = instance->batch_values[h * count + (event - offset)];
+#else
         if (run(values, instance->arena, instance->momenta) != 0) return UMAMI_ERROR;
+#endif
         if (scaled)
             for (size_t h = 0; h < RUNNER_OUTPUTS; ++h) values[h] *= scale;
         if (in[UMAMI_IN_HELICITY_INDEX]) {
@@ -243,6 +309,16 @@ PAC_EXPORT UmamiStatus umami_matrix_element(UmamiHandle handle, size_t count, si
 PAC_EXPORT UmamiStatus umami_free(UmamiHandle handle) {
     if (handle == NULL) return UMAMI_SUCCESS;
     Instance *instance = handle;
+#ifdef PAC_CUDA
+    free(instance->batch_momenta);
+    free(instance->batch_values);
+    pthread_mutex_lock(&gpu_lock);
+    if (--gpu_instances == 0) {
+        pac_gpu_destroy(gpu);
+        gpu = NULL;
+    }
+    pthread_mutex_unlock(&gpu_lock);
+#endif
     free(instance->arena);
     free(instance);
     return UMAMI_SUCCESS;

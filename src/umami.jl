@@ -6,10 +6,17 @@
 # index, the masses and the exported model parameters are constants of the library.
 #
 # The flavour splitting is MadSpace's: dir/umami_pac.json lists the libraries and, per channel, the
-# library of each flavour (`flavor_libraries`) and the channel's libraries (`libraries`), so that an
-# integrand of the channel has one differential cross section per library of the channel and
-#   flavor_diff_xs_indices[f] = position of flavor_libraries[f] in libraries,
-#   flavor_remap[f] = 0 (each library sees flavour 0).
+# library of each flavour (`flavor_libraries`) and the channel's libraries (`libraries`). An
+# integrand per channel loads flavour f's library as a matrix element of its own, with one
+# differential cross section per flavour:
+#   flavor_diff_xs_indices[f] = f,
+#   flavor_remap[f] = 0 (each library sees flavour 0),
+# flavor_per_subproc_remap and flavor_subproc_indices as for the stock provider (the event output's
+# flavour and subprocess ids). MadSpace splits each batch by flavour itself; a library never sees
+# another flavour's events.
+#
+# device = :cuda: the program runs on a CUDA GPU (the UIR interpreter, c/uirgpu.c, built by nvcc);
+# the library still identifies as a CPU provider (host pointers, MadSpace's CPU threads).
 #
 # The programs come from RustiCol's recurrence export (load_recurrence_export) of the same artifact,
 # with the same model parameters: a library refuses other values (umami_set_parameter).
@@ -71,22 +78,47 @@ function umami_program_h(lib::UmamiLibrary, l::Lowered, provider, exported_count
     return String(take!(out))
 end
 
-# the shared library of `lib` in `dir` (compile's folder plus the UMAMI layer)
+const UMAMI_DEVICES = (:cpu, :cuda)
+
+find_nvcc() = (c = get(ENV, "NVCC", something(Sys.which("nvcc"), "/usr/local/cuda/bin/nvcc"));
+               Sys.which(c) !== nothing || isfile(c) ? c : nothing)
+
+# the shared library of `lib` in `dir` (compile's folder plus the UMAMI layer). device = :cuda: the
+# interpreter's runner.c built by nvcc for `cuda_arch` (--fmad=false: the CPU's bits), linked with
+# the static CUDA runtime; every symbol but the UMAMI functions hidden (one library per program
+# in a process: their runtimes and contexts must not interpose). `gpu_memory`: the bytes of device
+# buffers the library may hold (a larger call runs as several launches)
 function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provider, exported_count, parameters;
-                             cc::String = something(find_cc(), "cc"), cflags::Cmd = `-O2`, interpreter::Bool = false)::String
-    compile(dir, l; interpreter)
+                             cc::String = something(find_cc(), "cc"), cflags::Cmd = `-O2`, interpreter::Bool = false,
+                             device::Symbol = :cpu, nvcc::Union{String,Nothing} = find_nvcc(),
+                             cuda_arch::String = "native", nvflags::Cmd = `-O3`,
+                             gpu_memory::Real = GPU_MEMORY_DEFAULT)::String
+    device in UMAMI_DEVICES || error("device $device: one of $UMAMI_DEVICES")
+    cuda = device == :cuda
+    cuda && nvcc === nothing && error("device = :cuda needs nvcc (ENV[\"NVCC\"], the PATH or /usr/local/cuda/bin)")
+    compile(dir, l; interpreter = interpreter || cuda)
     write(joinpath(dir, "umami_program.h"), umami_program_h(lib, l, provider, exported_count, parameters))
     cp(UMAMI_C, joinpath(dir, "umami_pac.c"); force = true)
     cp(UMAMI_H, joinpath(dir, "umami.h"); force = true)
     so = joinpath(dir, "libumami_pac.$(Libdl.dlext)")
-    sources = [joinpath(dir, f) for f in ("umami_pac.c", "runner.c", "pacops.c")]
-    run(`$cc $cflags -std=c99 -ffp-contract=off -fPIC -fvisibility=hidden -shared -o $so $sources -lm`)
+    if cuda
+        file(f) = joinpath(dir, f)
+        run(`$nvcc $nvflags -arch=$cuda_arch --fmad=false -Xcompiler -fPIC,-fvisibility=hidden
+             -DUIRGPU_MAX_POINTS=$(gpu_max_points(l, gpu_memory)) -x cu -c -o $(file("runner_gpu.o")) $(file("runner.c"))`)
+        run(`$cc $cflags -std=c99 -ffp-contract=off -fPIC -fvisibility=hidden -DPAC_CUDA -c
+             -o $(file("umami_pac.o")) $(file("umami_pac.c"))`)
+        run(`$nvcc -shared -arch=$cuda_arch -cudart static -Xlinker --exclude-libs,ALL
+             -o $so $(file("umami_pac.o")) $(file("runner_gpu.o")) -lm -lpthread`)
+    else
+        sources = [joinpath(dir, f) for f in ("umami_pac.c", "runner.c", "pacops.c")]
+        run(`$cc $cflags -std=c99 -ffp-contract=off -fPIC -fvisibility=hidden -shared -o $so $sources -lm`)
+    end
     return so
 end
 
 """
     umami_libraries(export, metadata, dir; optimize_programs = true, interpreter = false, cc, cflags = `-O2`,
-                    quiet = false) -> String
+                    device = :cpu, cuda_arch = "native", nvcc, gpu_memory = 256 MiB, quiet = false) -> String
 
 One UMAMI library per (process, colour flow, permutation) of the artifact's UMAMI provider
 (`metadata`: the artifact's API/umami/metadata.json), its program from the recurrence export
@@ -94,11 +126,17 @@ One UMAMI library per (process, colour flow, permutation) of the artifact's UMAM
 each channel's flavours, for MadSpace). Returns the path of umami_pac.json. `optimize_programs`:
 the programs after `optimize` (the default; the same values) or as imported. `interpreter`: each
 program as the UIR interpreter's data (`compile(...; interpreter = true)`) instead of straight-line
-C; `cc` and `cflags` build the libraries.
+C; `cc` and `cflags` build the libraries. `device = :cuda`: each program runs on a CUDA GPU (the
+interpreter, built by `nvcc` for `cuda_arch`, default "native": this machine's GPU), the libraries
+still CPU providers for MadSpace; `gpu_memory` bounds each library's device buffers (bytes; a
+larger call runs as several launches: MadSpace keeps every library of a run loaded). The libraries
+are built in parallel.
 """
 function umami_libraries(export_path::AbstractString, metadata_path::AbstractString, dir::AbstractString;
                          optimize_programs::Bool = true, interpreter::Bool = false,
-                         cc::String = something(find_cc(), "cc"), cflags::Cmd = `-O2`, quiet::Bool = false)::String
+                         cc::String = something(find_cc(), "cc"), cflags::Cmd = `-O2`,
+                         device::Symbol = :cpu, cuda_arch::String = "native", nvcc = find_nvcc(),
+                         gpu_memory::Real = GPU_MEMORY_DEFAULT, quiet::Bool = false)::String
     d = read_export(export_path)
     meta = JSON.parse(read(metadata_path, String))
     get(meta, "kind", nothing) == "pyamplicol-umami-metadata" || error("$metadata_path: not a pyAmpliCol UMAMI metadata file")
@@ -139,19 +177,24 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
     end
 
     mkpath(dir)
-    entries = []
-    for (k, lib) in enumerate(libraries)
+    # the libraries' folders and programs first (Julia work), then their builds (compilers) in parallel
+    jobs = map(enumerate(libraries)) do (k, lib)
         sub = joinpath(dir, "programs", lpad(k - 1, 4, '0'))
         mkpath(sub)
         l = programs[(lib.process, lib.colour)][1]
-        so = build_umami_library(sub, lib, optimize_programs ? optimize(l) : l, provider, exported_count, parameters;
-                                 cc, cflags, interpreter)
-        quiet || println("library $(k - 1) of $(length(libraries)): $(lib.process) $(lib.colour) $(lib.permutation)")
-        push!(entries, Dict("index" => k - 1, "path" => relpath(so, dir), "process" => lib.process, "colour" => lib.colour,
-                            "permutation" => lib.permutation, "colour_index" => lib.colour_index, "factor" => lib.factor))
+        (k, lib, sub, optimize_programs ? optimize(l) : l)
     end
+    sos = asyncmap(jobs; ntasks = Sys.CPU_THREADS) do (k, lib, sub, l)
+        so = build_umami_library(sub, lib, l, provider, exported_count, parameters;
+                                 cc, cflags, interpreter, device, cuda_arch, nvcc, gpu_memory)
+        quiet || println("library $(k - 1) of $(length(libraries)): $(lib.process) $(lib.colour) $(lib.permutation)")
+        so
+    end
+    entries = [Dict("index" => k - 1, "path" => relpath(so, dir), "process" => lib.process, "colour" => lib.colour,
+                    "permutation" => lib.permutation, "colour_index" => lib.colour_index, "factor" => lib.factor)
+               for ((k, lib, _, _), so) in zip(jobs, sos)]
     table = Dict(
-        "kind" => "pacrunner-umami-libraries", "schema_version" => 1,
+        "kind" => "pacrunner-umami-libraries", "schema_version" => 1, "device" => String(device),
         "artifact_id" => d["artifact_id"], "export" => abspath(export_path), "metadata" => abspath(metadata_path),
         "particle_count" => provider["particle_count"], "libraries" => entries,
         "channels" => [Dict("flavor_libraries" => [k - 1 for k in fl], "libraries" => sort(unique(fl)) .- 1) for fl in channels],

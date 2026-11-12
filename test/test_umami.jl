@@ -1,6 +1,6 @@
 # The UMAMI library of one program (build_umami_library, without an artifact's metadata: the program's
-# own leg order and helicities, factor 1), straight-line C and on the interpreter, called through its
-# C API: the matrix element is the sum of RustiCol's reference values, in order, bit for bit; the
+# own leg order and helicities, factor 1), straight-line C and on the interpreter, or (cuda = true)
+# on the GPU, called through its C API: the matrix element is the sum of RustiCol's reference values, in order, bit for bit; the
 # alpha_s input is always supported: at the exported alpha_s the values are unchanged, elsewhere
 # scaled by (alpha_s / alpha_s0)^power, and a program without a proven power accepts only the
 # exported alpha_s (relative 1e-12) and refuses another one.
@@ -21,11 +21,11 @@ struct Library
     instance::Ptr{Cvoid}   # umami_initialize's
 end
 
-function open_library(l, dir::String; interpreter::Bool)::Library
+function open_library(l, dir::String; interpreter::Bool, device::Symbol = :cpu)::Library
     n = output_count(l)
     lib = UmamiLibrary(l.process, l.colour, collect(0:l.legs-1), 0, 1.0, collect(0:n-1))
     provider = Dict("particle_count" => l.legs, "helicity_count" => n, "color_count" => 1, "masses" => zeros(l.legs))
-    so = build_umami_library(dir, lib, l, provider, n, Tuple{String,ComplexF64}[]; interpreter)
+    so = build_umami_library(dir, lib, l, provider, n, Tuple{String,ComplexF64}[]; interpreter, device)
     h = dlopen(so)
     instance = Ref{Ptr{Cvoid}}(C_NULL)
     ccall(dlsym(h, :umami_initialize), Cint, (Ptr{Ptr{Cvoid}}, Cstring), instance, C_NULL) == UMAMI_SUCCESS ||
@@ -66,7 +66,7 @@ end
 same(x::Float64, y::Float64) = reinterpret(UInt64, x) == reinterpret(UInt64, y)
 
 # the failures for the first program of `path` that has an alpha_s power
-function check(path::String; quiet::Bool = false)
+function check(path::String; quiet::Bool = false, cuda::Bool = false)
     ls = load_recurrence_export(path; kernels = :none)
     refs = recurrence_references(path)
     k = findfirst(k -> refs[k] !== nothing && ls[k].alpha_s !== nothing && ls[k].alpha_s[2] !== nothing && ls[k].alpha_s[1] > 0, eachindex(ls))
@@ -74,9 +74,10 @@ function check(path::String; quiet::Bool = false)
     (l, (points, want)) = (ls[k], refs[k])
     (a0, power) = l.alpha_s
     bad = String[]
-    for interpreter in (false, true), known in (true, false)
-        what = "$(interpreter ? "interpreter" : "straight-line C"), alpha_s power $(known ? power : "unknown")"
-        lib = open_library(known ? l : with(l; alpha_s = (a0, nothing)), mktempdir(); interpreter)
+    builds = cuda ? [(true, :cuda)] : [(false, :cpu), (true, :cpu)]   # (interpreter, device)
+    for (interpreter, device) in builds, known in (true, false)
+        what = "$(device == :cuda ? "CUDA" : interpreter ? "interpreter" : "straight-line C"), alpha_s power $(known ? power : "unknown")"
+        lib = open_library(known ? l : with(l; alpha_s = (a0, nothing)), mktempdir(); interpreter, device)
         try
             alpha_s_supported(lib) || push!(bad, "$what: alpha_s not a supported input")
             for (point, values) in zip(points, want)

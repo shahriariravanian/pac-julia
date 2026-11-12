@@ -410,9 +410,9 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         plain = compile(mktempdir(), p; optimize = false)
         @test CompileScript.arena_size(plain) == ArenaIndex(lower(p)).size > CompileScript.arena_size(dir) ==
               ArenaIndex(optimize(lower(p))).size
-        # on the UIR interpreter: its source next to pacops, the same runner.h
+        # on the UIR interpreter: its source (and the GPU context's) next to pacops, the same runner.h
         vm = compile(mktempdir(), p; interpreter = true)
-        @test files(vm) == ["Makefile", "pacops.c", "pacops.h", "runner.c", "runner.h", "uirvm.c", "uirvm.h"]
+        @test files(vm) == ["Makefile", "pacops.c", "pacops.h", "runner.c", "runner.h", "uirgpu.c", "uirgpu.h", "uirvm.c", "uirvm.h"]
         @test read(joinpath(vm, "runner.h"), String) == read(joinpath(compile(mktempdir(), p), "runner.h"), String)
     end
 
@@ -517,6 +517,13 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         end
         @testset "recurrence export on the GPU" begin
             @test isempty(ExportCScript.check(joinpath(@__DIR__, "data", "export", "zggg_union.json"); max = 1, gpu = GpuScript.NVCC)[2])
+        end
+        @testset "UMAMI library on the GPU" begin
+            withenv("NVCC" => GpuScript.NVCC) do
+                for f in ("pp_3j.json", "zggg_union.json")
+                    @test isempty(UmamiScript.check(joinpath(@__DIR__, "data", "export", f); quiet = true, cuda = true))
+                end
+            end
         end
     else
         @info "no nvcc or no GPU: the GPU build is not run"

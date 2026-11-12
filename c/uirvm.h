@@ -125,19 +125,19 @@ typedef struct {
 /* the program's kernel stubs (the program defines it, after including uirvm.c) */
 PAC_FN int uir_stub(uint32_t stub, const uir_program *g, const uir_arena *a, const uint32_t *w, const uint32_t *scaleset);
 
-/* one point: the forms from momenta[4 legs] (the caller's (E, px, py, pz) per leg), out[outputs] at
- * zero, the rows up to END (REDUCE rows add to out), the group factor. The planes and amplitudes
- * must be zero before. Returns 0, or the first failing kernel's status. */
+/* one point: the forms from its momenta (the caller's (E, px, py, pz) per leg), its outputs at
+ * zero, the rows up to END (REDUCE rows add to the outputs), the group factor. The planes and
+ * amplitudes must be zero before. Momenta and outputs are strided as the arena: component j of
+ * leg l at momenta[(4 l + j) ld], output h at out[h ld] (the caller passes the point's first
+ * element; ld = 1: the point's values in order). Returns 0, or the first failing kernel's status. */
 PAC_FN void uir_forms(const uir_program *g, const uir_arena *a, const double *momenta);
 PAC_FN int uir_rows(const uir_program *g, const uir_arena *a, double *out);
-PAC_FN void uir_group(const uir_program *g, double *out);
+PAC_FN void uir_group(const uir_program *g, const uir_arena *a, double *out);
 PAC_FN int uir_run(const uir_program *g, const uir_arena *a, const double *momenta, double *out);
 
 #ifdef __CUDACC__
-/* the program on `points` points (the program defines it, runner.c under nvcc): momenta[point][4 legs],
- * out[point][outputs], both on the host; returns 0, a kernel's failing status, or -1 (a CUDA error,
- * printed to stderr) */
-int run_gpu(double *out, const double *momenta, size_t points);
+/* the program on the GPU (uirgpu.c, which runner.c includes under nvcc) */
+#include "uirgpu.h"
 #endif
 
 #ifdef __cplusplus

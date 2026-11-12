@@ -30,3 +30,7 @@ python test/umami_check.py $OUT/umami_pac.json $PYAMPLICOL/artifacts/.pyamplicol
 julia -t 8 --project=. test/umami_harness.jl $OUT/umami_pac.json $PYAMPLICOL/artifacts/.pyamplicol-api-build/zgg/umami/libumami.so $PYAMPLICOL/artifacts/zgg/ --fixed
   options: --batches 1,3,17,64,257,1000  --rounds 2  --vec 8 (SIMD width of the job split)  --seed N
 * the libraries on the UIR interpreter instead of straight-line C: umami_libraries(EXPORT_JSON, META, ENV["OUT"]; interpreter = true)
+* the libraries on a CUDA GPU (f64, bit for bit; still CPU providers for MadSpace; nvcc from ENV["NVCC"], the PATH or /usr/local/cuda/bin):
+  umami_libraries(EXPORT_JSON, META, ENV["OUT"]; device = :cuda)
+  options: cuda_arch = "native" (or e.g. "sm_90"), gpu_memory = 256 * 2^20 (device bytes per library; larger calls run in several launches)
+  then the same harness command on $OUT/umami_pac.json

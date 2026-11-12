@@ -286,10 +286,12 @@ PAC_FN static UIR_INLINE void run_copy(const uir_program *g, const uir_arena *a,
     }
 }
 
-/* REDUCE: out[D] += weight N × |amplitude T (× its scale X, unless none)|², as pacops' reduce_term */
+/* REDUCE: output D += weight N × |amplitude T (× its scale X, unless none)|², as pacops' reduce_term
+ * (output h of the point at out[h ld], as momenta and the arena) */
 PAC_FN static UIR_INLINE void run_reduce(const uir_program *g, const uir_arena *a, const uint32_t *w, double *out)
 {
-    uint32_t t = UIR_T(w), x = UIR_X(w), d = UIR_D(w);
+    uint32_t t = UIR_T(w), x = UIR_X(w);
+    size_t d = UIR_D(w) * a->ld;
     double amp[2] = {*amplitude_re(a, t), *amplitude_im(a, t)};
     out[d] = reduce_term(out[d], amp, x == 0x3fu ? NULL : g->factors + 2 * (size_t)x, g->weights[UIR_N(w)]);
 }
@@ -337,27 +339,28 @@ PAC_FN void uir_forms(const uir_program *g, const uir_arena *a, const double *mo
             double v = 0.0;
             for (uint32_t t = g->form_first[f]; t < g->form_first[f + 1]; t++) {
                 uint32_t leg = g->term_leg[t];
-                double x = g->crossing_leg ? g->crossing_sign[leg] * momenta[4 * g->crossing_leg[leg] + j]
-                                           : momenta[4 * leg + j];
+                double x = g->crossing_leg ? g->crossing_sign[leg] * momenta[(4 * (size_t)g->crossing_leg[leg] + j) * a->ld]
+                                           : momenta[(4 * (size_t)leg + j) * a->ld];
                 v = v + g->term_coefficient[t] * x;
             }
             a->forms[(4 * (size_t)f + j) * a->ld + a->i] = v;
         }
 }
 
-/* out[h] × the group factor, as pacops' group */
-PAC_FN void uir_group(const uir_program *g, double *out)
+/* output h × the group factor, as pacops' group */
+PAC_FN void uir_group(const uir_program *g, const uir_arena *a, double *out)
 {
     if (g->group_numerator == g->group_denominator) return;
-    for (uint32_t h = 0; h < g->outputs; h++) out[h] = group(out[h], g->group_numerator, g->group_denominator);
+    for (uint32_t h = 0; h < g->outputs; h++)
+        out[h * a->ld] = group(out[h * a->ld], g->group_numerator, g->group_denominator);
 }
 
 PAC_FN int uir_run(const uir_program *g, const uir_arena *a, const double *momenta, double *out)
 {
     uir_forms(g, a, momenta);
-    for (uint32_t h = 0; h < g->outputs; h++) out[h] = 0.0;
+    for (uint32_t h = 0; h < g->outputs; h++) out[h * a->ld] = 0.0;
     int status = uir_rows(g, a, out);
     if (status != 0) return status;
-    uir_group(g, out);
+    uir_group(g, a, out);
     return 0;
 }

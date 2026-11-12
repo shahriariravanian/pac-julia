@@ -198,8 +198,10 @@ mutable struct Tally
     failures::Vector{String}
     jobs::Int          # PacRunner's umami_matrix_element calls (flavours × thread jobs)
     job_events::Int    # their events
+    stock_time::Float64   # seconds in the stock library's instructions
+    pac_time::Float64     # seconds in PacRunner's (the gather and merge not included)
 end
-Tally() = Tally(0, 0, 0, 0, 0, 0.0, String[], 0, 0)
+Tally() = Tally(0, 0, 0, 0, 0, 0.0, String[], 0, 0, 0.0, 0.0)
 
 # one channel's batch of B events: `stock` the channel's stock matrix element, `flavours[f + 1]`
 # the matrix element loaded for flavour f
@@ -229,7 +231,7 @@ function check_channel!(t::Tally, c::Int, stock::Me, flavours::Vector{Me}, insta
     for (name, keys, inputs, outs, tolerant) in passes
         # stock: the channel's batch, mixed flavours
         s = Batch(B, keys, inputs, outs)
-        bad = run!([(s, stock)], instances, vec)[1]
+        t.stock_time += @elapsed (bad = run!([(s, stock)], instances, vec)[1])
         isempty(bad) || (push!(t.failures, "$label, $name: stock status $(unique(bad))"); continue)
         t.calls += 1
         # PacRunner: MadSpace's flavour split (batch_split_by_index, batch_gather per flavour), the
@@ -242,7 +244,7 @@ function check_channel!(t::Tally, c::Int, stock::Me, flavours::Vector{Me}, insta
             sub_inputs = Vector[k == IN_FLAVOR ? zeros(Cint, length(events)) : gather(x, B, events) for (k, x) in zip(keys, inputs)]
             push!(calls, (Batch(length(events), keys, sub_inputs, outs), flavours[f+1]))
         end
-        bad = sequential ? [run!([call], instances, vec)[1] for call in calls] : run!(calls, instances, vec)
+        t.pac_time += @elapsed (bad = sequential ? [run!([call], instances, vec)[1] for call in calls] : run!(calls, instances, vec))
         t.calls += length(calls)
         t.jobs += sum(c -> jobs(c[1].size, length(instances), vec)[1], calls; init = 0)
         t.job_events += sum(c -> c[1].size, calls; init = 0)
@@ -354,6 +356,7 @@ function main(args)
     println("  $(t.batches) batches, $(t.events) events, $(t.calls) batch calls in $(round(elapsed; digits = 1)) s: ",
             t.me_differ == 0 && isempty(t.failures) ? "all bit for bit" : "$(t.me_differ) differences")
     t.jobs > 0 && println("  PacRunner: $(t.jobs) umami_matrix_element calls, $(round(t.job_events / t.jobs; digits = 1)) events per call on average")
+    println("  time in the matrix elements: stock $(round(t.stock_time; digits = 3)) s, PacRunner $(round(t.pac_time; digits = 3)) s (the first calls include their setup)")
     alpha_s0 === nothing || println("  running alpha_s: largest relative ME difference $(t.worst), $(t.index_differ) sampled indices differ")
     for f in first(t.failures, 20)
         println("  ", f)
