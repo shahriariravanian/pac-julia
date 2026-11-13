@@ -158,13 +158,23 @@ function used_kernels(prog::Lowered)::Vector{KernelLibrary}
 end
 
 # the C of the kernels (kernel_c.jl), the helpers first: `static int <name>(double *mem)` each
-function emit_kernels(writer, kernels::Vector{KernelLibrary})
+# mixed: each kernel also in mixed precision (kernel_c_mixed), the one compiled under PAC_MIXED
+function emit_kernels(writer, kernels::Vector{KernelLibrary}; mixed::Bool = false)
     isempty(kernels) && return
     lines(text) = foreach(l -> emit(writer, l), split(chomp(text), '\n'))
     lines(KERNEL_PRELUDE)
     for ker in kernels
         isfile(ker.source) || error("kernel $(ker.name): no .plane.symjit at $(ker.source)")
-        lines(kernel_c(ker.name, ker.source))
+        if mixed
+            app = read_sjb(ker.source; lowered = true)
+            emit(writer, "#ifdef PAC_MIXED")
+            lines(kernel_c_mixed(ker.name, app))
+            emit(writer, "#else")
+            lines(kernel_c(ker.name, app))
+            emit(writer, "#endif")
+        else
+            lines(kernel_c(ker.name, ker.source))
+        end
         newline(writer)
     end
 end

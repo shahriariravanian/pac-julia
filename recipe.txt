@@ -35,9 +35,9 @@ julia -t 8 --project=. test/umami_harness.jl $OUT/umami_pac.json $PYAMPLICOL/art
   options: cuda_arch = "native" (or e.g. "sm_90");
            gpu_slots = 0 (the GPU pool shared by all libraries of a process: slots = concurrent calls, 0 = one per CPU, 1 = one at a time),
            gpu_memory = 256 * 2^20 (device bytes per slot, allocated when first used; larger calls run in several launches)
-           precision = :f64 (RustiCol's values bit for bit) or :mixed (currents and their arithmetic in f32;
-           momentum forms, propagator denominators, wavefunctions, kernels, vertex sums, amplitudes in f64;
-           ~1e-7 relative on the matrix element); nvflags = `-O3` (e.g. `-O3 -DPAC_ACC32 -DPAC_AMP32`: the
-           vertex sums and the amplitudes in f32 too)
+           precision = :f64 (RustiCol's values bit for bit) or :mixed (currents, their arithmetic and the
+           vertex sums in f32; momentum forms, propagator denominators, wavefunctions and amplitudes in f64;
+           kernels f32 but their denominators' backward slices; ~1e-7 relative on the matrix element);
+           nvflags = `-O3` (e.g. `-O3 -DPAC_ACC64`: the vertex sums in f64; `-DPAC_AMP32`: the amplitudes in f32)
   $OUT then holds libpac_cuda.so (the pool) and libcudart.so.N next to umami_pac.json: copy the folder whole
   then the same harness command on $OUT/umami_pac.json (precision = :mixed: add --tolerant --rtol 1e-4)

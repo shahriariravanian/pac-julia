@@ -14,7 +14,7 @@
  * every plane is a contiguous row of points (coalesced on a GPU). The forms are double, the
  * amplitudes pac_amp and the planes pac_real (pacops.h): all double, but under PAC_MIXED (nvcc only)
  * the planes and the current rows' arithmetic are float, with the rows' factors from the program's
- * rounded tables (rscales, rfactors), and the vertex runs' sum double (float with PAC_ACC32).
+ * rounded tables (rscales, rfactors), and the vertex runs' sum float too (double with PAC_ACC64).
  *
  * The program supplies its kernel stubs: uir_stub(stub, g, a, w, scaleset) runs kernel row w through
  * stub `stub` (a kernel and its input layout): its inputs gathered (uir_input), the kernel, its

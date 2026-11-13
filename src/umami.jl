@@ -117,8 +117,9 @@ end
 # runtime, libcudart.so.N, shared through rpath); every symbol but the UMAMI functions hidden. The
 # pool the library asks for (the first library of a process decides): `gpu_slots` slots (0: one
 # per CPU) of `gpu_memory` device bytes each (a call needing more runs as several launches).
-# precision = :mixed (device = :cuda only): pacops.h's PAC_MIXED (f32 currents and their
-# arithmetic; f64 momentum forms, denominators, wavefunctions, kernels, vertex sums and amplitudes),
+# precision = :mixed (device = :cuda only): pacops.h's PAC_MIXED (f32 currents, their arithmetic
+# and the vertex sums; f64 momentum forms, denominators, wavefunctions and amplitudes; the kernels
+# f32 but the backward slices of their denominators, kernel_c_mixed),
 # not the CPU's bits, so nvcc may contract multiply-adds unless fmad = false.
 function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provider, exported_count, parameters;
                              cc::String = something(find_cc(), "cc"), cflags::Cmd = `-O2`, interpreter::Bool = false,
@@ -174,9 +175,11 @@ still CPU providers for MadSpace. The GPU memory and streams are a process-wide 
 so every MadSpace thread can run at once; 1: one call at a time) of `gpu_memory` device bytes
 each, allocated when first used (a call needing more runs as several launches). A call borrows any
 free slot and waits while all are busy. `precision` (device = :cuda): `:f64`, RustiCol's values
-bit for bit, or `:mixed`: the currents and their arithmetic in f32, the momentum forms, propagator
-denominators, wavefunctions, kernels, vertex sums and amplitudes in f64 (about 1e-7 relative on the
-matrix element, ~1e-6 at worst). The libraries are built in parallel.
+bit for bit, or `:mixed`: the currents, their arithmetic and the vertex sums in f32, the momentum
+forms, propagator denominators, wavefunctions and amplitudes in f64, the kernels in f32 but the
+backward slices of their denominators (about 1e-7 relative on the matrix element, ~1e-5 at worst);
+`nvflags` adds nvcc flags (`-DPAC_ACC64`: the vertex sums in f64; `-DPAC_AMP32`: the amplitudes in
+f32); `fmad = false`: no contracted multiply-adds. The libraries are built in parallel.
 """
 function umami_libraries(export_path::AbstractString, metadata_path::AbstractString, dir::AbstractString;
                          optimize_programs::Bool = true, interpreter::Bool = false,

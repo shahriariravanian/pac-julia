@@ -12,9 +12,9 @@
 #error "PAC_MIXED is the GPU's (nvcc): the CPU runner's arena is double"
 #endif
 
-/* the vertex runs' sum (acc): double, unless PAC_MIXED with PAC_ACC32 (then pac_real); in the
+/* the vertex runs' sum (acc): pac_real (float under PAC_MIXED, unless PAC_ACC64: double); in the
  * double build cplx, so the same bits */
-#if defined(PAC_MIXED) && defined(PAC_ACC32)
+#if defined(PAC_MIXED) && !defined(PAC_ACC64)
 typedef rcplx acc_cplx;
 #define ACC_OF(z) (z)
 #define ACC_ADD(a, b) radd(a, b)

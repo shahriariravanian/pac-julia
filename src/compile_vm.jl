@@ -149,7 +149,7 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
 
         # the kernels (kernel_c.jl), and one case per stub: its inputs gathered into the kernel's mem
         # (constant codes), the kernel, its output pairs stored (constant components)
-        emit_kernels(writer, kernels)
+        emit_kernels(writer, kernels; mixed = true)
         emit(writer, "PAC_FN int uir_stub(uint32_t stub, const uir_program *g, const uir_arena *a, const uint32_t *w, const uint32_t *scaleset) {")
         emit(writer, "switch (stub) {")
         for (s, stub) in enumerate(prog.stubs)

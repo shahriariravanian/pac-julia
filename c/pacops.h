@@ -63,7 +63,7 @@ PAC_FN static inline cplx mul_i(cplx a) { return cx(-a.im, a.re); }             
  * numerator, scale, closure products, copy, scatter); pac_amp: an amplitude. Both are double, unless
  * the translation unit defines PAC_MIXED (the GPU's mixed precision): pac_real is then float and
  * pac_amp double (float with PAC_AMP32). The momentum forms, the propagator denominators
- * (reciprocal_norm), the wavefunctions, the kernels and the reduction stay double; the factors the
+ * (reciprocal_norm), the wavefunctions and the reduction stay double (the kernels: mixed, kernel_c.jl); the factors the
  * current rows take are pac_real (the program's rounded copy). rcplx is cplx over pac_real: in the
  * double build the same operations on the same type, so the same bits. */
 #ifdef PAC_MIXED
