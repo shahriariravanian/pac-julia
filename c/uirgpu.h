@@ -1,5 +1,5 @@
 /* uirgpu: one program (runner.c under nvcc) on a CUDA GPU, one thread per point, on a slot of the
- * process-wide pool (pac_cuda.h): a call borrows a free slot, carves the program's arena out of the
+ * process-wide pool (pool.h): a call borrows a free slot, carves the program's arena out of the
  * slot's device block, runs on the slot's stream, and gives the slot back. The arena, momenta and
  * outputs are plane-major (ld = the launch's points: coalesced); a call larger than the slot's
  * budget runs as several launches (every point is computed alone: the same values).

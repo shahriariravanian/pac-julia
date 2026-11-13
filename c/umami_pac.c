@@ -33,7 +33,7 @@
  * MadSpace passes host memory and calls from its CPU threads. Per call, the events are checked and
  * their momenta gathered (plane-major, the program's leg order), one GPU run computes every
  * event's runtime helicities, and the per-event code below is the CPU build's: the same bits.
- * The GPU memory and streams are the process-wide slot pool's (libpac_cuda.so, pac_cuda.h): a call
+ * The GPU memory and streams are the process-wide slot pool's (libpacpool.so, pool.h): a call
  * borrows a free slot, so MadSpace's threads run on the GPU at the same time (up to the pool's
  * slots; by default one per CPU), whatever the number of libraries. */
 #include "umami.h"

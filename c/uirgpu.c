@@ -1,19 +1,19 @@
-/* uirgpu.c: uirgpu.h on the slot pool (pac_cuda.h). Included by runner.c under nvcc after the
+/* uirgpu.c: uirgpu.h on the slot pool (pool.h). Included by runner.c under nvcc after the
  * program's tables and uir_stub, with its sizes defined:
  *   UIRGPU_LEGS, UIRGPU_OUTPUTS, UIRGPU_FORMS, UIRGPU_AMPLITUDES, UIRGPU_PLANES
  * (legs; helicity outputs; momentum forms; amplitudes; planes = complex components), and the pool
  * the program asks for (the first program library of the process decides):
  *   UIRGPU_SLOTS (0: the online CPUs), UIRGPU_SLOT_BYTES (device bytes per slot).
- * Without PAC_CUDA_EXTERNAL_POOL the pool itself (pac_cuda.cu) is compiled in: a standalone
- * runner (tests); the UMAMI libraries link the process-wide libpac_cuda.so instead. */
+ * Without PACPOOL_EXTERNAL the pool itself (pool.cu) is compiled in: a standalone
+ * runner (tests); the UMAMI libraries link the process-wide libpacpool.so instead. */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "uirgpu.h"
-#include "pac_cuda.h"
-#ifndef PAC_CUDA_EXTERNAL_POOL
-#include "pac_cuda.cu"
+#include "pool.h"
+#ifndef PACPOOL_EXTERNAL
+#include "pool.cu"
 #endif
 
 #ifndef UIRGPU_SLOTS
@@ -73,10 +73,10 @@ __global__ static void uirgpu_points(const double *momenta, double *out, double 
 int pac_gpu_run(const double *momenta, double *out, size_t points)
 {
     if (points == 0) return 0;
-    pac_cuda_configure(UIRGPU_SLOTS, UIRGPU_SLOT_BYTES, PAC_CUDA_ABI);   /* the first library decides */
+    pacpool_configure(UIRGPU_SLOTS, UIRGPU_SLOT_BYTES, PACPOOL_ABI);   /* the first library decides */
     const size_t d = sizeof(double), rows_m = 4 * (size_t)UIRGPU_LEGS, rows_o = UIRGPU_OUTPUTS;
     /* the most points of one launch within the slot's budget */
-    size_t budget = pac_cuda_slot_bytes(), per_point = 0;
+    size_t budget = pacpool_slot_bytes(), per_point = 0;
     for (int r = 0; r < UIRGPU_REGIONS; r++) per_point += uirgpu_per_point[r];
     size_t slack = UIRGPU_REGIONS * UIRGPU_ALIGN;
     size_t most = budget > slack ? (budget - slack) / per_point : 0;
@@ -87,10 +87,10 @@ int pac_gpu_run(const double *momenta, double *out, size_t points)
     }
     size_t chunk = points < most ? points : most;
     int status = 0;
-    pac_cuda_slot *s = pac_cuda_acquire();
+    pacpool_slot *s = pacpool_acquire();
     if (s == NULL) return -1;
     cudaStream_t stream = (cudaStream_t)s->stream;
-    if (pac_cuda_reserve(s, uirgpu_arena_bytes(chunk), (rows_m + rows_o) * points * d) != 0) {
+    if (pacpool_reserve(s, uirgpu_arena_bytes(chunk), (rows_m + rows_o) * points * d) != 0) {
         status = -1;
         goto done;
     }
@@ -127,7 +127,7 @@ int pac_gpu_run(const double *momenta, double *out, size_t points)
         if (status == 0) memcpy(out, host_out, rows_o * points * d);
     }
 done:
-    pac_cuda_release(s);
+    pacpool_release(s);
     return status;
 }
 

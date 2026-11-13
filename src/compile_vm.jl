@@ -32,7 +32,7 @@ firsts(lengths) = cumsum([0; collect(lengths)])
 # a kernel input as uirvm's code: kind, imaginary part, n (0-based component or scale-set slot)
 input_code(i::KernelInput) = UInt32(Int(i.kind)) | UInt32(i.im) << 3 | UInt32(i.kind == FACTOR ? 0 : i.n - 1) << 4
 
-const GPU_MEMORY_DEFAULT = 256 * 2^20   # device bytes per slot of the GPU pool (pac_cuda.h)
+const GPU_MEMORY_DEFAULT = 256 * 2^20   # device bytes per slot of the GPU pool (pool.h)
 
 # the device bytes per point of a program's arena on the GPU (uirgpu.c: momenta, outputs, forms,
 # amplitudes, planes; precision = :mixed: planes in f32)
@@ -41,7 +41,7 @@ gpu_bytes_per_point(prog::Lowered; precision::Symbol = :f64) =
     (precision == :mixed ? 4 : 8) * max(2 * prog.planes, 1)
 
 # the GPU part of runner.c (under nvcc): the sizes uirgpu.c needs, then uirgpu.c (the program on a
-# slot of the pool, pac_cuda.h: plane-major arena, ld = points). The pool's size (UIRGPU_SLOTS,
+# slot of the pool, pool.h: plane-major arena, ld = points). The pool's size (UIRGPU_SLOTS,
 # UIRGPU_SLOT_BYTES) defaults to one slot per CPU of GPU_MEMORY_DEFAULT bytes; nvcc -D overrides.
 function run_gpu_c(prog::Lowered)::String
     return """
@@ -91,8 +91,8 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         copy_home(writer, "c/uirvm.h")
         copy_home(writer, "c/uirgpu.c")
         copy_home(writer, "c/uirgpu.h")
-        copy_home(writer, "c/pac_cuda.cu")
-        copy_home(writer, "c/pac_cuda.h")
+        copy_home(writer, "c/pool.cu")
+        copy_home(writer, "c/pool.h")
         emit(writer, "/* $(prog.process) $(prog.colour) on the UIR interpreter (uirvm.c), compiled by PacRunner's compile */")
         emit(writer, "#include <stdlib.h>")
         emit(writer, "#include \"uirvm.c\"")

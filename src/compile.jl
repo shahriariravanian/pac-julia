@@ -285,7 +285,7 @@ function testing_c(prog::Lowered, examples)::String
 end
 
 function makefile(prog::Lowered, testing::Bool; interpreter::Bool = false)::String
-    vm = interpreter ? " uirvm.c uirvm.h uirgpu.c uirgpu.h pac_cuda.cu pac_cuda.h" : ""
+    vm = interpreter ? " uirvm.c uirvm.h uirgpu.c uirgpu.h pool.cu pool.h" : ""
     return """
     # $(prog.process) $(prog.colour), compiled by PacRunner's compile.
     #   make         runner.o and pacops.o$(testing ? ", and testing" : "")

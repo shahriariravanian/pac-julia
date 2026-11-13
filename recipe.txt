@@ -39,5 +39,5 @@ julia -t 8 --project=. test/umami_harness.jl $OUT/umami_pac.json $PYAMPLICOL/art
            vertex sums in f32; momentum forms, propagator denominators, wavefunctions and amplitudes in f64;
            kernels f32 but their denominators' backward slices; ~1e-7 relative on the matrix element);
            nvflags = `-O3` (e.g. `-O3 -DPAC_ACC64`: the vertex sums in f64; `-DPAC_AMP32`: the amplitudes in f32)
-  $OUT then holds libpac_cuda.so (the pool) and libcudart.so.N next to umami_pac.json: copy the folder whole
+  $OUT then holds libpacpool.so (the pool) and libcudart.so.N next to umami_pac.json: copy the folder whole
   then the same harness command on $OUT/umami_pac.json (precision = :mixed: add --tolerant --rtol 1e-4)

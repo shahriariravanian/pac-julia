@@ -84,8 +84,8 @@ const UMAMI_PRECISIONS = (:f64, :mixed)   # device = :cuda: :mixed is pacops.h's
 find_nvcc() = (c = get(ENV, "NVCC", something(Sys.which("nvcc"), "/usr/local/cuda/bin/nvcc"));
                Sys.which(c) !== nothing || isfile(c) ? c : nothing)
 
-const PAC_CUDA_CU = joinpath(dirname(@__DIR__), "c", "pac_cuda.cu")
-const PAC_CUDA_H = joinpath(dirname(@__DIR__), "c", "pac_cuda.h")
+const POOL_CU = joinpath(dirname(@__DIR__), "c", "pool.cu")
+const POOL_H = joinpath(dirname(@__DIR__), "c", "pool.h")
 
 # the CUDA runtime library's file next to nvcc (libcudart.so.N, its soname)
 function find_cudart(nvcc::String)::String
@@ -98,22 +98,22 @@ function find_cudart(nvcc::String)::String
     error("no libcudart.so.N next to $nvcc")
 end
 
-# the process-wide GPU pool (pac_cuda.cu) in `dir`: libpac_cuda.so, with a copy of the CUDA runtime
+# the process-wide GPU pool (pool.cu) in `dir`: libpacpool.so, with a copy of the CUDA runtime
 # it and the program libraries share (libcudart.so.N, found through rpath \$ORIGIN)
 function build_cuda_runtime(dir::String; nvcc::String = something(find_nvcc(), "nvcc"), cuda_arch::String = "native")::String
-    so = joinpath(dir, "libpac_cuda.$(Libdl.dlext)")
+    so = joinpath(dir, "libpacpool.$(Libdl.dlext)")
     cudart = find_cudart(nvcc)
     m = match(r"^(libcudart\.so\.\d+)", basename(cudart))
     cp(cudart, joinpath(dir, m === nothing ? basename(cudart) : m.captures[1]); force = true)
-    cp(PAC_CUDA_H, joinpath(dir, "pac_cuda.h"); force = true)
-    run(`$nvcc -O3 -arch=$cuda_arch -shared -Xcompiler -fPIC -cudart shared -Xlinker -soname=libpac_cuda.$(Libdl.dlext)
-         -Xlinker -rpath -Xlinker \$ORIGIN -I$dir -o $so $PAC_CUDA_CU`)
+    cp(POOL_H, joinpath(dir, "pool.h"); force = true)
+    run(`$nvcc -O3 -arch=$cuda_arch -shared -Xcompiler -fPIC -cudart shared -Xlinker -soname=libpacpool.$(Libdl.dlext)
+         -Xlinker -rpath -Xlinker \$ORIGIN -I$dir -o $so $POOL_CU`)
     return so
 end
 
 # the shared library of `lib` in `dir` (compile's folder plus the UMAMI layer). device = :cuda: the
 # interpreter's runner.c built by nvcc for `cuda_arch` (--fmad=false: the CPU's bits), on the
-# process-wide GPU slot pool of libpac_cuda.so in `runtime_dir` (built there if missing; one CUDA
+# process-wide GPU slot pool of libpacpool.so in `runtime_dir` (built there if missing; one CUDA
 # runtime, libcudart.so.N, shared through rpath); every symbol but the UMAMI functions hidden. The
 # pool the library asks for (the first library of a process decides): `gpu_slots` slots (0: one
 # per CPU) of `gpu_memory` device bytes each (a call needing more runs as several launches).
@@ -140,16 +140,16 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
     cp(UMAMI_H, joinpath(dir, "umami.h"); force = true)
     so = joinpath(dir, "libumami_pac.$(Libdl.dlext)")
     if cuda
-        isfile(joinpath(runtime_dir, "libpac_cuda.$(Libdl.dlext)")) || build_cuda_runtime(runtime_dir; nvcc, cuda_arch)
+        isfile(joinpath(runtime_dir, "libpacpool.$(Libdl.dlext)")) || build_cuda_runtime(runtime_dir; nvcc, cuda_arch)
         file(f) = joinpath(dir, f)
         rpath = "\$ORIGIN/" * relpath(abspath(runtime_dir), abspath(dir))
         mixed = precision == :mixed ? ["-DPAC_MIXED"] : String[]
-        run(`$nvcc $nvflags -arch=$cuda_arch --fmad=$fmad $mixed -Xcompiler -fPIC,-fvisibility=hidden -DPAC_CUDA_EXTERNAL_POOL
+        run(`$nvcc $nvflags -arch=$cuda_arch --fmad=$fmad $mixed -Xcompiler -fPIC,-fvisibility=hidden -DPACPOOL_EXTERNAL
              -DUIRGPU_SLOTS=$gpu_slots -DUIRGPU_SLOT_BYTES=$(Int(gpu_memory)) -x cu -c -o $(file("runner_gpu.o")) $(file("runner.c"))`)
         run(`$cc $cflags -std=c99 -ffp-contract=off -fPIC -fvisibility=hidden -DPAC_CUDA -c
              -o $(file("umami_pac.o")) $(file("umami_pac.c"))`)
         run(`$nvcc -shared -arch=$cuda_arch -cudart shared -o $so $(file("umami_pac.o")) $(file("runner_gpu.o"))
-             -L$runtime_dir -lpac_cuda -Xlinker -rpath -Xlinker $rpath -lm`)
+             -L$runtime_dir -lpacpool -Xlinker -rpath -Xlinker $rpath -lm`)
     else
         sources = [joinpath(dir, f) for f in ("umami_pac.c", "runner.c", "pacops.c")]
         run(`$cc $cflags -std=c99 -ffp-contract=off -fPIC -fvisibility=hidden -shared -o $so $sources -lm`)
@@ -171,7 +171,7 @@ program as the UIR interpreter's data (`compile(...; interpreter = true)`) inste
 C; `cc` and `cflags` build the libraries. `device = :cuda`: each program runs on a CUDA GPU (the
 interpreter, built by `nvcc` for `cuda_arch`, default "native": this machine's GPU), the libraries
 still CPU providers for MadSpace. The GPU memory and streams are a process-wide pool
-(`dir/libpac_cuda.so`, with a copy of the CUDA runtime): `gpu_slots` slots (default 0: one per CPU,
+(`dir/libpacpool.so`, with a copy of the CUDA runtime): `gpu_slots` slots (default 0: one per CPU,
 so every MadSpace thread can run at once; 1: one call at a time) of `gpu_memory` device bytes
 each, allocated when first used (a call needing more runs as several launches). A call borrows any
 free slot and waits while all are busy. `precision` (device = :cuda): `:f64`, RustiCol's values
