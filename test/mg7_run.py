@@ -3,10 +3,10 @@ changing MadGraph7: the AmplicolSubprocess class is replaced, in this process on
 loads the libraries of umami_libraries (one per program, flavour 0) and lets MadSpace split each
 batch by flavour (one DifferentialCrossSection per library of the UMAMI channel).
 
-  python mg7_run.py prepare OUTPUT [--device cpu|cuda] [--julia JULIA]
+  python mg7_run.py prepare OUTPUT [--device cpu|cuda] [--precision f64|mixed|...] [--julia JULIA]
       the recurrence export of every SubProcesses/*/lc artifact and, per UMAMI provider, the
-      libraries in OUTPUT/lib/pacrunner/<name>_<provider>/umami_pac.json
-  python mg7_run.py run OUTPUT [generate_events arguments, default -f]
+      libraries in OUTPUT/lib/pacrunner[-cuda]/<name>_<provider>/umami_pac.json
+  python mg7_run.py run OUTPUT [--device cpu|cuda|cuda-<precision>] [generate_events arguments, default -f]
       bin/generate_events with the replaced subprocess class (stock libraries still built: the
       full-colour pass keeps the stock ratio library)
 
@@ -38,10 +38,11 @@ def provider_metadata(lc):
     return [(p.get("id", p.get("provider")), os.path.join(root, p["metadata"])) for p in index["providers"]]
 
 
-def table_dir(output, me_path):
-    """lib/libamplicol_<name>_<provider>.so -> lib/pacrunner/<name>_<provider>"""
+def table_dir(output, me_path, device="cpu"):
+    """lib/libamplicol_<name>_<provider>.so -> lib/pacrunner/<name>_<provider> (cpu) or
+    lib/pacrunner-<device>/<name>_<provider>"""
     stem = re.fullmatch(r"libamplicol_(.*)\.so", os.path.basename(me_path)).group(1)
-    return os.path.join(output, "lib", "pacrunner", stem)
+    return os.path.join(output, "lib", "pacrunner" if device == "cpu" else f"pacrunner-{device}", stem)
 
 
 def card_parameters(output, references):
@@ -59,7 +60,7 @@ def card_parameters(output, references):
     return parameters
 
 
-def prepare(output, device="cpu", julia="julia"):
+def prepare(output, device="cpu", julia="julia", precision="f64"):
     output = os.path.abspath(output)
     entries = json.load(open(os.path.join(output, "SubProcesses", "subprocesses.json")))
     entries = entries.get("subprocesses", entries) if isinstance(entries, dict) else entries
@@ -71,7 +72,7 @@ def prepare(output, device="cpu", julia="julia"):
         lc = os.path.join(output, entry["artifact"])
         jobs.setdefault(entry["me_path"], (lc, entry["parameters"]))
     for me_path, (lc, references) in sorted(jobs.items()):
-        dir_ = table_dir(output, me_path)
+        dir_ = table_dir(output, me_path, device if precision == "f64" else f"{device}-{precision}")
         os.makedirs(dir_, exist_ok=True)
         # resolved with the values mg7 gives umami_set_parameter (amplicol_parameters): the param
         # card's, which differ from the model defaults in the last digits
@@ -86,12 +87,13 @@ def prepare(output, device="cpu", julia="julia"):
         match = [m for pid, m in providers if pid is None or stem.endswith("_" + str(pid))]
         if len(match) != 1:
             raise RuntimeError(f"{me_path}: no single provider metadata among {providers}")
-        script = ("using PacRunner; umami_libraries(ARGS[1], ARGS[2], ARGS[3]; device = Symbol(ARGS[4])); "
-                  "println(ARGS[3])")
-        subprocess.check_call([julia, f"--project={PAC_JULIA}", "-e", script, export, match[0], dir_, device])
+        script = ("using PacRunner; umami_libraries(ARGS[1], ARGS[2], ARGS[3]; device = Symbol(ARGS[4]), "
+                  "precision = Symbol(ARGS[5])); println(ARGS[3])")
+        subprocess.check_call([julia, f"--project={PAC_JULIA}", "-e", script, export, match[0], dir_, device,
+                               precision])
 
 
-def install(output):
+def install(output, device="cpu"):
     """Replace AmplicolSubprocess (in madgraph_process, which instantiates it) by PacSubprocess."""
     import madspace as ms
     import madgraph.mg7.madgraph_process as mp
@@ -101,7 +103,7 @@ def install(output):
     class PacSubprocess(AmplicolSubprocess):
         def load_matrix_elements(self, api_path_formats, member_metas):
             super().load_matrix_elements(api_path_formats, member_metas)  # checks, stock lib, ratio lib
-            dir_ = table_dir(output, self.meta["me_path"])
+            dir_ = table_dir(output, self.meta["me_path"], device)
             table = json.load(open(os.path.join(dir_, "umami_pac.json")))
             channel = table["channels"][self.channel_index]
             libs = channel["libraries"]
@@ -154,12 +156,12 @@ def install(output):
     mp.AmplicolSubprocess = PacSubprocess
 
 
-def run(output, args):
+def run(output, args, device="cpu"):
     output = os.path.abspath(output)
     sys.path.append(mg5_dir(output))
     from madgraph.mg7 import bootstrap
     bootstrap.ensure_madspace(interactive=False)  # MadGraph7's madspace first on sys.path
-    install(output)
+    install(output, device)
     from madgraph.mg7.launch import main
     os.chdir(output)
     sys.argv = [os.path.join(output, "bin", "generate_events")] + (args or ["-f"])
@@ -170,8 +172,11 @@ if __name__ == "__main__":
     command, output, *rest = sys.argv[1:]
     if command == "prepare":
         opts = dict(zip(rest[::2], rest[1::2]))
-        prepare(output, opts.get("--device", "cpu"), opts.get("--julia", "julia"))
+        prepare(output, opts.get("--device", "cpu"), opts.get("--julia", "julia"), opts.get("--precision", "f64"))
     elif command == "run":
-        run(output, rest)
+        device = "cpu"
+        if rest[:1] == ["--device"]:
+            device, rest = rest[1], rest[2:]
+        run(output, rest, device)
     else:
         sys.exit(__doc__)
