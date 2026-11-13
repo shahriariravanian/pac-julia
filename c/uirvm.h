@@ -11,7 +11,10 @@
  * planes[(2k) ld + i], planes[(2k + 1) ld + i]; component j of momentum form f at forms[(4f + j) ld + i];
  * amplitude a at amplitudes[(2a) ld + i], [(2a + 1) ld + i]. With ld = 1, i = 0 this is the
  * straight-line runner's layout of one point (doubles in order); with ld = points, i = the point,
- * every plane is a contiguous row of points (coalesced on a GPU).
+ * every plane is a contiguous row of points (coalesced on a GPU). The forms are double, the
+ * amplitudes pac_amp and the planes pac_real (pacops.h): all double, but under PAC_MIXED (nvcc only)
+ * the planes and the current rows' arithmetic are float, with the rows' factors from the program's
+ * rounded tables (rscales, rfactors), and the vertex runs' sum double (float with PAC_ACC32).
  *
  * The program supplies its kernel stubs: uir_stub(stub, g, a, w, scaleset) runs kernel row w through
  * stub `stub` (a kernel and its input layout): its inputs gathered (uir_input), the kernel, its
@@ -29,6 +32,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "pacops.h"   /* pac_real, pac_amp */
 
 /* a function of the host and, under nvcc, of the device (as pacops.h's) */
 #ifndef PAC_FN
@@ -97,10 +101,17 @@ typedef struct {
 
     const double *weights;            /* the REDUCE rows' weights */
     long group_numerator, group_denominator;
+
+    /* the scales and factors as pac_real (pacops.h; the same tables in the double build): the
+       current rows' (vertex couplings, propagator, closure, scale, copy, scatter factors) */
+    const pac_real *rscales, *rfactors;
 } uir_program;
 
+/* the arena's numbers (pacops.h): forms double, amplitudes pac_amp, planes pac_real */
 typedef struct {
-    double *forms, *amplitudes, *planes;
+    double *forms;
+    pac_amp *amplitudes;
+    pac_real *planes;
     size_t ld, i;
 } uir_arena;
 

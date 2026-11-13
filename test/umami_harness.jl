@@ -28,7 +28,10 @@
 #
 # usage: julia -t THREADS --project test/umami_harness.jl UMAMI_PAC_JSON STOCK_LIBUMAMI_SO ARTIFACT_DIR
 #            [--batches 1,3,17,64,257,1000] [--rounds 2] [--warmup 0] [--vec 8] [--fixed] [--sequential] [--seed N]
-#            [--rtol 1e-13]
+#            [--rtol 1e-13] [--tolerant]
+# --tolerant (a library not bit for bit, e.g. precision = :mixed): every pass compares the matrix
+# element within --rtol and counts the differing sampled indices (reported: the relative ME errors'
+# median, 99th percentile and largest)
 # (umami_pac.json from umami_libraries; the stock library from `make` in ARTIFACT_DIR/API/umami, as
 # artifacts/.pyamplicol-api-build/NAME/umami/libumami.so; ARTIFACT_DIR is its param card argument)
 using JSON
@@ -195,18 +198,20 @@ mutable struct Tally
     me_differ::Int
     index_differ::Int
     worst::Float64
+    rels::Vector{Float64}   # --tolerant: every event's relative ME difference
     failures::Vector{String}
     jobs::Int          # PacRunner's umami_matrix_element calls (flavours × thread jobs)
     job_events::Int    # their events
     stock_time::Float64   # seconds in the stock library's instructions
     pac_time::Float64     # seconds in PacRunner's (the gather and merge not included)
 end
-Tally() = Tally(0, 0, 0, 0, 0, 0.0, String[], 0, 0, 0.0, 0.0)
+Tally() = Tally(0, 0, 0, 0, 0, 0.0, Float64[], String[], 0, 0, 0.0, 0.0)
 
 # one channel's batch of B events: `stock` the channel's stock matrix element, `flavours[f + 1]`
 # the matrix element loaded for flavour f
 function check_channel!(t::Tally, c::Int, stock::Me, flavours::Vector{Me}, instances::Instances, rng, B::Int;
-                        vec::Int, fixed::Bool, sequential::Bool, alpha_s0, rtol::Float64, helicities::Int)
+                        vec::Int, fixed::Bool, sequential::Bool, alpha_s0, rtol::Float64, helicities::Int,
+                        all_tolerant::Bool = false)
     nf = length(flavours)
     mom = momenta(rng, stock_masses[], B)
     flav = Cint.(rand(rng, 0:nf-1, B))
@@ -229,6 +234,7 @@ function check_channel!(t::Tally, c::Int, stock::Me, flavours::Vector{Me}, insta
     end
 
     for (name, keys, inputs, outs, tolerant) in passes
+        tolerant |= all_tolerant
         # stock: the channel's batch, mixed flavours
         s = Batch(B, keys, inputs, outs)
         t.stock_time += @elapsed (bad = run!([(s, stock)], instances, vec)[1])
@@ -258,6 +264,7 @@ function check_channel!(t::Tally, c::Int, stock::Me, flavours::Vector{Me}, insta
         for (k, x, y) in zip(outs, s.outputs, p.outputs)
             if k == OUT_ME
                 for e in 1:B
+                    all_tolerant && push!(t.rels, same(x[e], y[e]) ? 0.0 : abs(x[e] - y[e]) / abs(x[e]))
                     same(x[e], y[e]) && continue
                     rel = abs(x[e] - y[e]) / abs(x[e])
                     t.worst = max(t.worst, rel)
@@ -292,7 +299,7 @@ function main(args)
     i = 4
     while i <= length(args)
         a = args[i]
-        if a in ("--fixed", "--sequential")
+        if a in ("--fixed", "--sequential", "--tolerant")
             push!(flags, a); i += 1
         else
             opts[a] = args[i+1]; i += 2
@@ -306,6 +313,7 @@ function main(args)
     rtol = parse(Float64, get(opts, "--rtol", "1e-13"))
     fixed = "--fixed" in flags
     sequential = "--sequential" in flags
+    all_tolerant = "--tolerant" in flags
 
     table = JSON.parse(read(table_path, String))
     base = dirname(abspath(table_path))
@@ -352,7 +360,7 @@ function main(args)
             end
             for B in batches, c in eachindex(channels)
                 check_channel!(t, c - 1, stock_mes[c], flavour_mes[c], instances, rng, B;
-                               vec, fixed, sequential, alpha_s0, rtol, helicities)
+                               vec, fixed, sequential, alpha_s0, rtol, helicities, all_tolerant)
             end
         end
     finally
@@ -364,10 +372,16 @@ function main(args)
             "alpha_s ", alpha_s0 === nothing ? "not supported by the stock library" : "at $alpha_s0 and running",
             fixed ? "; fixed-helicity pass" : "", sequential ? "; flavours sequential" : "; flavours concurrent")
     println("  $(t.batches) batches, $(t.events) events, $(t.calls) batch calls in $(round(elapsed; digits = 1)) s: ",
-            t.me_differ == 0 && isempty(t.failures) ? "all bit for bit" : "$(t.me_differ) differences")
+            t.me_differ == 0 && isempty(t.failures) ? (all_tolerant ? "all within rtol $rtol" : "all bit for bit") :
+            "$(t.me_differ) differences")
+    if all_tolerant && !isempty(t.rels)
+        r = sort(t.rels)
+        println("  relative ME difference: median $(r[cld(end, 2)]), 99% $(r[ceil(Int, 0.99 * end)]), largest $(r[end]); ",
+                "$(count(iszero, r)) of $(length(r)) equal; $(t.index_differ) sampled indices differ")
+    end
     t.jobs > 0 && println("  PacRunner: $(t.jobs) umami_matrix_element calls, $(round(t.job_events / t.jobs; digits = 1)) events per call on average")
     println("  time in the matrix elements: stock $(round(t.stock_time; digits = 3)) s, PacRunner $(round(t.pac_time; digits = 3)) s over $(t.events - untimed_events) events", warmup > 0 ? " (timed rounds only)" : " (the first calls include their setup)")
-    alpha_s0 === nothing || println("  running alpha_s: largest relative ME difference $(t.worst), $(t.index_differ) sampled indices differ")
+    alpha_s0 === nothing || all_tolerant || println("  running alpha_s: largest relative ME difference $(t.worst), $(t.index_differ) sampled indices differ")
     for f in first(t.failures, 20)
         println("  ", f)
     end

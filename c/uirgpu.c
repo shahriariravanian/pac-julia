@@ -23,7 +23,8 @@
 #define UIRGPU_SLOT_BYTES ((size_t)256 << 20)
 #endif
 
-/* doubles per point of each region (at least 1: no empty regions) */
+/* numbers per point of each region (at least 1: no empty regions); momenta, outputs and forms are
+ * double, amplitudes pac_amp, planes pac_real (pacops.h: float under PAC_MIXED) */
 #define UIRGPU_MAX1(x) ((x) > 0 ? (x) : 1)
 #define UIRGPU_N_MOMENTA UIRGPU_MAX1(4 * UIRGPU_LEGS)
 #define UIRGPU_N_OUT UIRGPU_MAX1(UIRGPU_OUTPUTS)
@@ -33,8 +34,10 @@
 #define UIRGPU_REGIONS 5
 #define UIRGPU_ALIGN ((size_t)256)
 
+/* bytes per point of each region */
 static const size_t uirgpu_per_point[UIRGPU_REGIONS] = {
-    UIRGPU_N_MOMENTA, UIRGPU_N_OUT, UIRGPU_N_FORMS, UIRGPU_N_AMPLITUDES, UIRGPU_N_PLANES};
+    UIRGPU_N_MOMENTA * sizeof(double), UIRGPU_N_OUT * sizeof(double), UIRGPU_N_FORMS * sizeof(double),
+    UIRGPU_N_AMPLITUDES * sizeof(pac_amp), UIRGPU_N_PLANES * sizeof(pac_real)};
 
 static size_t uirgpu_aligned(size_t bytes) { return (bytes + UIRGPU_ALIGN - 1) / UIRGPU_ALIGN * UIRGPU_ALIGN; }
 
@@ -42,7 +45,7 @@ static size_t uirgpu_aligned(size_t bytes) { return (bytes + UIRGPU_ALIGN - 1) /
 static size_t uirgpu_arena_bytes(size_t points)
 {
     size_t total = 0;
-    for (int r = 0; r < UIRGPU_REGIONS; r++) total += uirgpu_aligned(uirgpu_per_point[r] * points * sizeof(double));
+    for (int r = 0; r < UIRGPU_REGIONS; r++) total += uirgpu_aligned(uirgpu_per_point[r] * points);
     return total;
 }
 
@@ -57,8 +60,8 @@ static size_t uirgpu_arena_bytes(size_t points)
         }                                                                                          \
     } while (0)
 
-__global__ static void uirgpu_points(const double *momenta, double *out, double *forms, double *amplitudes,
-                                     double *planes, size_t points, int *status)
+__global__ static void uirgpu_points(const double *momenta, double *out, double *forms, pac_amp *amplitudes,
+                                     pac_real *planes, size_t points, int *status)
 {
     size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= points) return;
@@ -74,7 +77,7 @@ int pac_gpu_run(const double *momenta, double *out, size_t points)
     const size_t d = sizeof(double), rows_m = 4 * (size_t)UIRGPU_LEGS, rows_o = UIRGPU_OUTPUTS;
     /* the most points of one launch within the slot's budget */
     size_t budget = pac_cuda_slot_bytes(), per_point = 0;
-    for (int r = 0; r < UIRGPU_REGIONS; r++) per_point += uirgpu_per_point[r] * d;
+    for (int r = 0; r < UIRGPU_REGIONS; r++) per_point += uirgpu_per_point[r];
     size_t slack = UIRGPU_REGIONS * UIRGPU_ALIGN;
     size_t most = budget > slack ? (budget - slack) / per_point : 0;
     if (most == 0) {
@@ -93,11 +96,11 @@ int pac_gpu_run(const double *momenta, double *out, size_t points)
     }
     {
         /* the arena's regions, for launches of up to `chunk` points */
-        double *region[UIRGPU_REGIONS];
+        void *region[UIRGPU_REGIONS];
         char *p = (char *)s->device;
         for (int r = 0; r < UIRGPU_REGIONS; r++) {
-            region[r] = (double *)p;
-            p += uirgpu_aligned(uirgpu_per_point[r] * chunk * d);
+            region[r] = p;
+            p += uirgpu_aligned(uirgpu_per_point[r] * chunk);
         }
         double *host_momenta = (double *)s->host, *host_out = host_momenta + rows_m * points;
         memcpy(host_momenta, momenta, rows_m * points * d);
@@ -108,10 +111,11 @@ int pac_gpu_run(const double *momenta, double *out, size_t points)
                 UIRGPU_CHECK(cudaMemcpy2DAsync(region[0], q * d, host_momenta + first, points * d, q * d, rows_m,
                                                cudaMemcpyHostToDevice, stream));
             /* the arena at zero (uir_run writes the forms and the outputs) */
-            UIRGPU_CHECK(cudaMemsetAsync(region[3], 0, UIRGPU_N_AMPLITUDES * q * d, stream));
-            UIRGPU_CHECK(cudaMemsetAsync(region[4], 0, UIRGPU_N_PLANES * q * d, stream));
+            UIRGPU_CHECK(cudaMemsetAsync(region[3], 0, uirgpu_per_point[3] * q, stream));
+            UIRGPU_CHECK(cudaMemsetAsync(region[4], 0, uirgpu_per_point[4] * q, stream));
             uirgpu_points<<<(unsigned)((q + 127) / 128), 128, 0, stream>>>(
-                region[0], region[1], region[2], region[3], region[4], q, s->status);
+                (const double *)region[0], (double *)region[1], (double *)region[2], (pac_amp *)region[3],
+                (pac_real *)region[4], q, s->status);
             UIRGPU_CHECK(cudaGetLastError());
             if (rows_o > 0)
                 UIRGPU_CHECK(cudaMemcpy2DAsync(host_out + first, points * d, region[1], q * d, q * d, rows_o,

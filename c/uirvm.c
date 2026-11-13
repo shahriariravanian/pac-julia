@@ -8,6 +8,24 @@
 
 #define UIR_MAX_COMPONENTS 6
 
+#if defined(PAC_MIXED) && !defined(__CUDACC__)
+#error "PAC_MIXED is the GPU's (nvcc): the CPU runner's arena is double"
+#endif
+
+/* the vertex runs' sum (acc): double, unless PAC_MIXED with PAC_ACC32 (then pac_real); in the
+ * double build cplx, so the same bits */
+#if defined(PAC_MIXED) && defined(PAC_ACC32)
+typedef rcplx acc_cplx;
+#define ACC_OF(z) (z)
+#define ACC_ADD(a, b) radd(a, b)
+#define ACC_STORE(z) (z)
+#else
+typedef cplx acc_cplx;
+#define ACC_OF(z) dof(z)
+#define ACC_ADD(a, b) add(a, b)
+#define ACC_STORE(z) rof(z)
+#endif
+
 /* inlined at every call: with the component counts constant there, the operand loops unroll and the
  * operand arrays become registers (no local memory on a GPU) */
 #if defined(__CUDACC__)
@@ -25,11 +43,11 @@ PAC_FN static inline int edge_components(const uir_program *g, uint32_t e) { ret
 
 /* ---- the arena ------------------------------------------------------------------------------- */
 
-PAC_FN static inline double *plane_re(const uir_arena *a, uint32_t k) { return a->planes + (2 * (size_t)k) * a->ld + a->i; }
-PAC_FN static inline double *plane_im(const uir_arena *a, uint32_t k) { return a->planes + (2 * (size_t)k + 1) * a->ld + a->i; }
+PAC_FN static inline pac_real *plane_re(const uir_arena *a, uint32_t k) { return a->planes + (2 * (size_t)k) * a->ld + a->i; }
+PAC_FN static inline pac_real *plane_im(const uir_arena *a, uint32_t k) { return a->planes + (2 * (size_t)k + 1) * a->ld + a->i; }
 
 /* n components from plane `start` into v (re, im each), and back */
-PAC_FN static UIR_INLINE void load(const uir_arena *a, uint32_t start, int n, double *v)
+PAC_FN static UIR_INLINE void load(const uir_arena *a, uint32_t start, int n, pac_real *v)
 {
     for (int j = 0; j < n; j++) {
         v[2 * j] = *plane_re(a, start + j);
@@ -37,7 +55,7 @@ PAC_FN static UIR_INLINE void load(const uir_arena *a, uint32_t start, int n, do
     }
 }
 
-PAC_FN static UIR_INLINE void store(const uir_arena *a, uint32_t start, int n, const double *v)
+PAC_FN static UIR_INLINE void store(const uir_arena *a, uint32_t start, int n, const pac_real *v)
 {
     for (int j = 0; j < n; j++) {
         *plane_re(a, start + j) = v[2 * j];
@@ -45,8 +63,11 @@ PAC_FN static UIR_INLINE void store(const uir_arena *a, uint32_t start, int n, c
     }
 }
 
-PAC_FN static UIR_INLINE cplx load1(const uir_arena *a, uint32_t k) { return cx(*plane_re(a, k), *plane_im(a, k)); }
-PAC_FN static UIR_INLINE void store1(const uir_arena *a, uint32_t k, cplx z) { *plane_re(a, k) = z.re; *plane_im(a, k) = z.im; }
+PAC_FN static UIR_INLINE rcplx load1(const uir_arena *a, uint32_t k) { return rx(*plane_re(a, k), *plane_im(a, k)); }
+PAC_FN static UIR_INLINE void store1(const uir_arena *a, uint32_t k, rcplx z) { *plane_re(a, k) = z.re; *plane_im(a, k) = z.im; }
+/* a component as double, and a double into a component (rounded to pac_real): the kernels' and sources' */
+PAC_FN static UIR_INLINE cplx load1d(const uir_arena *a, uint32_t k) { return dof(load1(a, k)); }
+PAC_FN static UIR_INLINE void store1d(const uir_arena *a, uint32_t k, cplx z) { store1(a, k, rof(z)); }
 
 /* momentum form f into q[4] */
 PAC_FN static UIR_INLINE void load_form(const uir_arena *a, uint32_t f, double *q)
@@ -54,18 +75,24 @@ PAC_FN static UIR_INLINE void load_form(const uir_arena *a, uint32_t f, double *
     for (int j = 0; j < 4; j++) q[j] = a->forms[(4 * (size_t)f + j) * a->ld + a->i];
 }
 
-PAC_FN static inline double *amplitude_re(const uir_arena *a, uint32_t k) { return a->amplitudes + (2 * (size_t)k) * a->ld + a->i; }
-PAC_FN static inline double *amplitude_im(const uir_arena *a, uint32_t k) { return a->amplitudes + (2 * (size_t)k + 1) * a->ld + a->i; }
+/* momentum form f as pac_real (the three-vector vertex's) */
+PAC_FN static UIR_INLINE void load_form_r(const uir_arena *a, uint32_t f, pac_real *q)
+{
+    for (int j = 0; j < 4; j++) q[j] = (pac_real)a->forms[(4 * (size_t)f + j) * a->ld + a->i];
+}
+
+PAC_FN static inline pac_amp *amplitude_re(const uir_arena *a, uint32_t k) { return a->amplitudes + (2 * (size_t)k) * a->ld + a->i; }
+PAC_FN static inline pac_amp *amplitude_im(const uir_arena *a, uint32_t k) { return a->amplitudes + (2 * (size_t)k + 1) * a->ld + a->i; }
 
 /* ---- the rows -------------------------------------------------------------------------------- */
 
 /* A vertex row of opcode `op`: l has nl components, r nr, the vertex writes n (the opcode's shape,
  * which validate checks); its values × (coupling × factor) into the run's sum `acc`, stored at LAST.
  * Called with constant op, nl, nr, n (run_vertex), so every loop has a constant bound. */
-PAC_FN static UIR_INLINE void vertex_row(const uir_program *g, const uir_arena *a, const uint32_t *w, cplx *acc,
+PAC_FN static UIR_INLINE void vertex_row(const uir_program *g, const uir_arena *a, const uint32_t *w, acc_cplx *acc,
                                          uint32_t op, int nl, int nr, int n)
 {
-    double l[2 * UIR_MAX_COMPONENTS], r[2 * UIR_MAX_COMPONENTS], v[2 * UIR_MAX_COMPONENTS];
+    pac_real l[2 * UIR_MAX_COMPONENTS], r[2 * UIR_MAX_COMPONENTS], v[2 * UIR_MAX_COMPONENTS];
     load(a, edge_start(g, UIR_L(w)), nl, l);
     load(a, edge_start(g, UIR_R(w)), nr, r);
     switch (op) {
@@ -74,26 +101,26 @@ PAC_FN static UIR_INLINE void vertex_row(const uir_program *g, const uir_arena *
     case UIR_V_TENSOR_VECTOR: vertex_tensor_vector(v, l, r); break;
     case UIR_V_VECTOR_WEDGE: vertex_vector_wedge(v, l, r); break;
     default: {
-        double u[4], q[4];
-        load_form(a, edge_form(g, UIR_L(w)), u);
-        load_form(a, edge_form(g, UIR_R(w)), q);
+        pac_real u[4], q[4];
+        load_form_r(a, edge_form(g, UIR_L(w)), u);
+        load_form_r(a, edge_form(g, UIR_R(w)), q);
         vertex_three_vector(v, l, r, u, q);
     }
     }
     uint32_t d = edge_start(g, UIR_D(w));
-    cplx s = mul(get(g->scales, UIR_T(w)), get(g->factors, UIR_X(w)));
+    rcplx s = rmul(rget(g->rscales, UIR_T(w)), rget(g->rfactors, UIR_X(w)));
     uint32_t first = UIR_FIRST(w), set = UIR_SET(w);
     for (int j = 0; j < n; j++) {
-        cplx c = mul(get(v, j), s);
-        if (!first) acc[j] = add(acc[j], c);
+        acc_cplx c = ACC_OF(rmul(rget(v, j), s));
+        if (!first) acc[j] = ACC_ADD(acc[j], c);
         else if (set) acc[j] = c;
-        else acc[j] = add(load1(a, d + j), c);
+        else acc[j] = ACC_ADD(ACC_OF(load1(a, d + j)), c);
     }
     if (UIR_LAST(w))
-        for (int j = 0; j < n; j++) store1(a, d + j, acc[j]);
+        for (int j = 0; j < n; j++) store1(a, d + j, ACC_STORE(acc[j]));
 }
 
-PAC_FN static UIR_INLINE void run_vertex(const uir_program *g, const uir_arena *a, const uint32_t *w, cplx *acc)
+PAC_FN static UIR_INLINE void run_vertex(const uir_program *g, const uir_arena *a, const uint32_t *w, acc_cplx *acc)
 {
     switch (UIR_OP(w)) {
     case UIR_V_WEYL_VECTOR_A: vertex_row(g, a, w, acc, UIR_V_WEYL_VECTOR_A, 2, 4, 2); break;
@@ -107,11 +134,12 @@ PAC_FN static UIR_INLINE void run_vertex(const uir_program *g, const uir_arena *
 /* a propagator row of type `type` on a current of n components: the current's new values */
 PAC_FN static UIR_INLINE void propagator_row(const uir_program *g, const uir_arena *a, const uint32_t *w, int type, int n)
 {
-    double c[8], q[4], v[8];
+    pac_real c[8], v[8];
+    double q[4];
     uint32_t d = edge_start(g, UIR_D(w));
     load(a, d, n, c);
     load_form(a, edge_form(g, UIR_D(w)), q);
-    propagator(v, type, c, q, g->factors + 2 * (size_t)UIR_X(w));
+    propagator(v, type, c, q, g->rfactors + 2 * (size_t)UIR_X(w));
     store(a, d, n, v);
 }
 
@@ -127,18 +155,19 @@ PAC_FN static UIR_INLINE void run_propagator(const uir_program *g, const uir_are
 /* a closure row of n components: amplitude += Σ l[j] r[j] × component factor j × factor */
 PAC_FN static UIR_INLINE void closure_row(const uir_program *g, const uir_arena *a, const uint32_t *w, uint32_t first, int n)
 {
-    double l[2 * UIR_MAX_COMPONENTS], r[2 * UIR_MAX_COMPONENTS], cf[2 * UIR_MAX_COMPONENTS], amp[2];
+    pac_real l[2 * UIR_MAX_COMPONENTS], r[2 * UIR_MAX_COMPONENTS], cf[2 * UIR_MAX_COMPONENTS];
+    pac_amp amp[2];
     for (int j = 0; j < n; j++) {
         uint32_t f = g->list_factor[first + j];
-        cf[2 * j] = g->factors[2 * (size_t)f];
-        cf[2 * j + 1] = g->factors[2 * (size_t)f + 1];
+        cf[2 * j] = g->rfactors[2 * (size_t)f];
+        cf[2 * j + 1] = g->rfactors[2 * (size_t)f + 1];
     }
     load(a, edge_start(g, UIR_L(w)), n, l);
     load(a, edge_start(g, UIR_R(w)), n, r);
     uint32_t d = UIR_D(w);
     amp[0] = *amplitude_re(a, d);
     amp[1] = *amplitude_im(a, d);
-    closure(amp, l, r, cf, n, g->factors + 2 * (size_t)UIR_X(w));
+    closure(amp, l, r, cf, n, g->rfactors + 2 * (size_t)UIR_X(w));
     *amplitude_re(a, d) = amp[0];
     *amplitude_im(a, d) = amp[1];
 }
@@ -161,10 +190,10 @@ PAC_FN static UIR_INLINE void run_closure(const uir_program *g, const uir_arena 
 /* a scale row of n components: c[j] = factor × c[j] */
 PAC_FN static UIR_INLINE void scale_row(const uir_program *g, const uir_arena *a, const uint32_t *w, int n)
 {
-    double c[2 * UIR_MAX_COMPONENTS];
+    pac_real c[2 * UIR_MAX_COMPONENTS];
     uint32_t d = edge_start(g, UIR_D(w));
     load(a, d, n, c);
-    scale(c, n, g->factors + 2 * (size_t)UIR_X(w));
+    scale(c, n, g->rfactors + 2 * (size_t)UIR_X(w));
     store(a, d, n, c);
 }
 
@@ -185,7 +214,7 @@ PAC_FN static UIR_INLINE void run_scale(const uir_program *g, const uir_arena *a
 PAC_FN static UIR_INLINE void run_clear(const uir_program *g, const uir_arena *a, const uint32_t *w)
 {
     uint32_t d = edge_start(g, UIR_D(w)), n = UIR_N(w);
-    for (uint32_t j = 0; j < n; j++) store1(a, d + j, ZERO);
+    for (uint32_t j = 0; j < n; j++) store1(a, d + j, RZERO);
 }
 
 /* kernel row w's input of code `code` (kind bits 0-2, imaginary part 3, n from 4; uirvm.h) */
@@ -195,9 +224,9 @@ PAC_FN static UIR_INLINE double uir_input(const uir_program *g, const uir_arena 
     uint32_t kind = code & 7, im = (code >> 3) & 1, n = code >> 4;
     double q[4];
     switch (kind) {
-    case UIR_IN_L: return im ? *plane_im(a, edge_start(g, UIR_L(w)) + n) : *plane_re(a, edge_start(g, UIR_L(w)) + n);
-    case UIR_IN_R: return im ? *plane_im(a, edge_start(g, UIR_R(w)) + n) : *plane_re(a, edge_start(g, UIR_R(w)) + n);
-    case UIR_OUT: return im ? *plane_im(a, edge_start(g, UIR_D(w)) + n) : *plane_re(a, edge_start(g, UIR_D(w)) + n);
+    case UIR_IN_L: return (double)(im ? *plane_im(a, edge_start(g, UIR_L(w)) + n) : *plane_re(a, edge_start(g, UIR_L(w)) + n));
+    case UIR_IN_R: return (double)(im ? *plane_im(a, edge_start(g, UIR_R(w)) + n) : *plane_re(a, edge_start(g, UIR_R(w)) + n));
+    case UIR_OUT: return (double)(im ? *plane_im(a, edge_start(g, UIR_D(w)) + n) : *plane_re(a, edge_start(g, UIR_D(w)) + n));
     case UIR_MOMENTUM_U: load_form(a, edge_form(g, UIR_L(w)), q); return q[n];
     case UIR_MOMENTUM_V: load_form(a, edge_form(g, UIR_R(w)), q); return q[n];
     case UIR_IN_SCALE: return g->scales[2 * (size_t)scaleset[n]];
@@ -206,13 +235,13 @@ PAC_FN static UIR_INLINE double uir_input(const uir_program *g, const uir_arena 
 }
 
 /* kernel row w's output pair into component `component` of its current, with the row's mode
- * (KERNEL_DIRECT: the pair as it is; else × factor); the pairs in order */
+ * (KERNEL_DIRECT: the pair as it is; else × factor); the pairs in order (in double, as the kernel) */
 PAC_FN static UIR_INLINE void uir_output(const uir_program *g, const uir_arena *a, const uint32_t *w, uint32_t component,
                                          cplx pair)
 {
     uint32_t j = edge_start(g, UIR_D(w)) + component;
     cplx value = UIR_OP(w) == UIR_KERNEL_DIRECT ? pair : mul(pair, get(g->factors, UIR_X(w)));
-    store1(a, j, combine(load1(a, j), value, UIR_SET(w) ? MODE_SET : MODE_ADD));
+    store1d(a, j, combine(load1d(a, j), value, UIR_SET(w) ? MODE_SET : MODE_ADD));
 }
 
 /* a kernel row: its binding instance's stub and scale set, run by the program's uir_stub */
@@ -234,14 +263,14 @@ PAC_FN static UIR_INLINE void source_row(const uir_program *g, const uir_arena *
     load_form(a, edge_form(g, UIR_D(w)), q);
     if (e == 0x3ffu) {
         source(v, family, orientation, q, h, ch, mass, g->factors + 2 * (size_t)UIR_X(w));
-        store(a, d, n, v);
+        for (int j = 0; j < n; j++) store1d(a, d + j, get(v, j));
         return;
     }
     wavefunction(v, family, orientation, q, h, ch, mass);
     for (uint32_t k = g->embedding_first[e]; k < g->embedding_first[e + 1]; k++) {
         int wave = g->embedding_wave[k];
-        store1(a, d + (uint32_t)g->embedding_component[k],
-               wave < 0 ? ZERO : mul(get(g->factors, g->embedding_factor[k]), get(v, wave)));
+        store1d(a, d + (uint32_t)g->embedding_component[k],
+                wave < 0 ? ZERO : mul(get(g->factors, g->embedding_factor[k]), get(v, wave)));
     }
 }
 
@@ -261,14 +290,14 @@ PAC_FN static UIR_INLINE void run_source(const uir_program *g, const uir_arena *
  * destination, as pacops' copy_row (scatter) */
 PAC_FN static UIR_INLINE void copy_row_n(const uir_program *g, const uir_arena *a, const uint32_t *w, int scatter_, int n)
 {
-    double s[2 * UIR_MAX_COMPONENTS], d[2 * UIR_MAX_COMPONENTS];
+    pac_real s[2 * UIR_MAX_COMPONENTS], d[2 * UIR_MAX_COMPONENTS];
     uint32_t dst = edge_start(g, UIR_D(w));
     load(a, edge_start(g, UIR_L(w)), n, s);
     if (scatter_) {
         load(a, dst, n, d);
-        scatter(d, s, n, UIR_SET(w) ? MODE_SET : MODE_ADD, g->factors + 2 * (size_t)UIR_X(w));
+        scatter(d, s, n, UIR_SET(w) ? MODE_SET : MODE_ADD, g->rfactors + 2 * (size_t)UIR_X(w));
     } else {
-        copy_row(d, s, n, g->factors + 2 * (size_t)UIR_X(w));
+        copy_row(d, s, n, g->rfactors + 2 * (size_t)UIR_X(w));
     }
     store(a, dst, n, d);
 }
@@ -292,13 +321,13 @@ PAC_FN static UIR_INLINE void run_reduce(const uir_program *g, const uir_arena *
 {
     uint32_t t = UIR_T(w), x = UIR_X(w);
     size_t d = UIR_D(w) * a->ld;
-    double amp[2] = {*amplitude_re(a, t), *amplitude_im(a, t)};
+    pac_amp amp[2] = {*amplitude_re(a, t), *amplitude_im(a, t)};
     out[d] = reduce_term(out[d], amp, x == 0x3fu ? NULL : g->factors + 2 * (size_t)x, g->weights[UIR_N(w)]);
 }
 
 PAC_FN int uir_rows(const uir_program *g, const uir_arena *a, double *out)
 {
-    cplx acc[UIR_MAX_COMPONENTS];   /* the fused run's sum (registers: every index is a constant where used) */
+    acc_cplx acc[UIR_MAX_COMPONENTS];   /* the fused run's sum (registers: every index is a constant where used) */
     for (uint32_t k = 0;;) {
         const uint32_t *w = g->rows + 2 * (size_t)k++;
         uint32_t op = UIR_OP(w);

@@ -35,9 +35,10 @@ input_code(i::KernelInput) = UInt32(Int(i.kind)) | UInt32(i.im) << 3 | UInt32(i.
 const GPU_MEMORY_DEFAULT = 256 * 2^20   # device bytes per slot of the GPU pool (pac_cuda.h)
 
 # the device bytes per point of a program's arena on the GPU (uirgpu.c: momenta, outputs, forms,
-# amplitudes, planes)
-gpu_bytes_per_point(prog::Lowered) =
-    8 * sum(max(n, 1) for n in (4 * prog.legs, output_count(prog), 4 * length(prog.forms), 2 * prog.amplitudes, 2 * prog.planes))
+# amplitudes, planes; precision = :mixed: planes in f32)
+gpu_bytes_per_point(prog::Lowered; precision::Symbol = :f64) =
+    8 * sum(max(n, 1) for n in (4 * prog.legs, output_count(prog), 4 * length(prog.forms), 2 * prog.amplitudes)) +
+    (precision == :mixed ? 4 : 8) * max(2 * prog.planes, 1)
 
 # the GPU part of runner.c (under nvcc): the sizes uirgpu.c needs, then uirgpu.c (the program on a
 # slot of the pool, pac_cuda.h: plane-major arena, ld = points). The pool's size (UIRGPU_SLOTS,
@@ -50,7 +51,7 @@ function run_gpu_c(prog::Lowered)::String
     #define UIRGPU_AMPLITUDES $(prog.amplitudes)
     #define UIRGPU_PLANES $(prog.planes)
     #ifndef UIRGPU_SLOT_BYTES
-    #define UIRGPU_SLOT_BYTES ((size_t)$(GPU_MEMORY_DEFAULT))  /* $(gpu_bytes_per_point(prog)) bytes per point */
+    #define UIRGPU_SLOT_BYTES ((size_t)$(GPU_MEMORY_DEFAULT))  /* $(gpu_bytes_per_point(prog)) bytes per point ($(gpu_bytes_per_point(prog; precision = :mixed)) mixed) */
     #endif
     #include "uirgpu.c"
     """
@@ -122,6 +123,14 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         carray(writer, "uint32_t", "scaleset_scale", [x - 1 for set in prog.scalesets for x in set])
         carray(writer, "uint32_t", "instance", [x - 1 for (s, set) in prog.instances for x in (s, set)])
         carray(writer, "double", "weights", [lit(w) for w in prog.weights]; per_line = 4)
+        # the scales and factors as pac_real: rounded copies under PAC_MIXED (pacops.h), else the same tables
+        emit(writer, "#ifdef PAC_MIXED")
+        carray(writer, "pac_real", "scales_r", cdoubles(prog.scales); per_line = 4)
+        carray(writer, "pac_real", "factors_r", cdoubles(prog.factors); per_line = 4)
+        emit(writer, "#else")
+        emit(writer, "#define scales_r scales")
+        emit(writer, "#define factors_r factors")
+        emit(writer, "#endif")
         newline(writer)
 
         crossed = prog.crossing !== nothing
@@ -133,7 +142,8 @@ function compile_interpreter(path, prog::Lowered; examples = nothing)
         emit(writer, "list_first, list_factor,")
         emit(writer, "embedding_first, embedding_component, embedding_wave, embedding_factor,")
         emit(writer, "scaleset_first, scaleset_scale, instance,")
-        emit(writer, "weights, $(num)L, $(den)L")
+        emit(writer, "weights, $(num)L, $(den)L,")
+        emit(writer, "scales_r, factors_r")
         emit(writer, "};")
         newline(writer)
 

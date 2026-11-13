@@ -16,8 +16,9 @@ have_gpu() = Sys.which(NVCC) !== nothing || isfile(NVCC) ?
              (try success(pipeline(`nvidia-smi -L`; stdout = devnull, stderr = devnull)) catch; false end) : false
 
 # the outputs of the GPU build of the compiled folder `dir` on `points`
-function run_gpu_folder(dir::String, p::Program, points)::Vector{Vector{Float64}}
-    run(pipeline(`make -s -C $dir gpu NVCC=$NVCC`; stderr = devnull))
+function run_gpu_folder(dir::String, p::Program, points; nvflags::String = "")::Vector{Vector{Float64}}
+    isempty(nvflags) || rm(joinpath(dir, "runner_gpu.o"); force = true)
+    run(pipeline(`make -s -C $dir gpu NVCC=$NVCC $(isempty(nvflags) ? String[] : ["NVFLAGS=-O3 -arch=native $nvflags"])`; stderr = devnull))
     exe = joinpath(dir, "gpu_driver")
     run(`$NVCC -O3 -arch=native -o $exe $GPU_DRIVER $(joinpath(dir, "runner_gpu.o"))`)
     text = read(pipeline(`$exe $(p.legs) $(length(p.reduction))`; stdin = IOBuffer(points_text(points))), String)
@@ -41,6 +42,38 @@ function test_folder(source::String; repeats::Int = 64, quiet = false)::Int
     quiet || println(basename(normpath(source)), ": $(length(ps)) programs, $(repeats) × examples.json's points each; ",
                      differ == 0 ? "the GPU's outputs are the CPU's bit for bit" : "$differ points differ")
     return differ
+end
+
+# the folder `source` on a GPU build with `nvflags` (e.g. "-DPAC_MIXED", pacops.h): per point, the
+# relative error of the sum of its outputs (the helicity sum) against the CPU's (f64), and the
+# largest error of one output relative to that sum (helicities that vanish exactly are ~1e-36 in f64
+# but the f32 rounding residue in mixed)
+function errors_folder(source::String; nvflags::String = "-DPAC_MIXED", repeats::Int = 1)
+    ps = load_programs(joinpath(source, "main.json"))
+    ex = read_main(joinpath(source, "examples.json")).programs
+    errs, each = Float64[], Float64[]
+    for (n, p) in enumerate(ps)
+        dir = compile(mktempdir(), p; interpreter = true)
+        pts = ex[n].points
+        gpu = run_gpu_folder(dir, p, repeat(pts, repeats); nvflags)
+        cpu = GpuCompile.run_compiled(dir, p, pts)
+        for k in eachindex(gpu)
+            x, y = cpu[mod1(k, length(pts))], gpu[k]
+            t = sum(abs, x)
+            push!(errs, t == 0 ? Float64(sum(abs, y) != 0) : abs(sum(x) - sum(y)) / t)
+            push!(each, t == 0 ? Float64(sum(abs, y) != 0) : maximum(abs.(x .- y)) / t)
+        end
+    end
+    return (errs, each)
+end
+
+if abspath(PROGRAM_FILE) == (@__FILE__) && get(ENV, "NVFLAGS_ERRORS", "") != ""
+    for d in (isempty(ARGS) ? cases() : ARGS)
+        (e, o) = sort.(errors_folder(d; nvflags = ENV["NVFLAGS_ERRORS"]))
+        println(basename(normpath(d)), " ($(ENV["NVFLAGS_ERRORS"])): $(length(e)) points; sum: median ", e[cld(end, 2)],
+                ", max ", e[end], "; one output: max ", o[end], "; NaN ", count(isnan, e))
+    end
+    exit(0)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

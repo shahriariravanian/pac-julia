@@ -58,6 +58,49 @@ PAC_FN static inline cplx mul_i(cplx a) { return cx(-a.im, a.re); }             
 
 #define ZERO (cx(0.0, 0.0))
 
+/* ---- the currents' numbers ----
+ * pac_real: a current's components and the arithmetic of the current rows (vertex, propagator
+ * numerator, scale, closure products, copy, scatter); pac_amp: an amplitude. Both are double, unless
+ * the translation unit defines PAC_MIXED (the GPU's mixed precision): pac_real is then float and
+ * pac_amp double (float with PAC_AMP32). The momentum forms, the propagator denominators
+ * (reciprocal_norm), the wavefunctions, the kernels and the reduction stay double; the factors the
+ * current rows take are pac_real (the program's rounded copy). rcplx is cplx over pac_real: in the
+ * double build the same operations on the same type, so the same bits. */
+#ifdef PAC_MIXED
+typedef float pac_real;
+#ifdef PAC_AMP32
+typedef float pac_amp;
+#else
+typedef double pac_amp;
+#endif
+#else
+typedef double pac_real;
+typedef double pac_amp;
+#endif
+
+typedef struct { pac_real re, im; } rcplx;
+
+PAC_FN static inline rcplx rx(pac_real re, pac_real im) { rcplx z = {re, im}; return z; }
+PAC_FN static inline rcplx rget(const pac_real *p, int j) { return rx(p[2 * j], p[2 * j + 1]); }
+PAC_FN static inline void rput(pac_real *p, int j, rcplx z) { p[2 * j] = z.re; p[2 * j + 1] = z.im; }
+PAC_FN static inline rcplx radd(rcplx a, rcplx b) { return rx(a.re + b.re, a.im + b.im); }
+PAC_FN static inline rcplx rsub(rcplx a, rcplx b) { return rx(a.re - b.re, a.im - b.im); }
+PAC_FN static inline rcplx rneg(rcplx a) { return rx(-a.re, -a.im); }
+PAC_FN static inline rcplx rmul(rcplx a, rcplx b) { return rx(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re); }
+PAC_FN static inline rcplx rmulr(rcplx a, pac_real x) { return rx(a.re * x, a.im * x); }
+PAC_FN static inline rcplx rmul_i(rcplx a) { return rx(-a.im, a.re); }
+PAC_FN static inline rcplx rcombine(rcplx old, rcplx value, int mode) { return mode == MODE_ADD ? radd(old, value) : value; }
+PAC_FN static inline void rput2(pac_real *out, rcplx a, rcplx b) { rput(out, 0, a); rput(out, 1, b); }
+PAC_FN static inline void rput4(pac_real *out, rcplx a, rcplx b, rcplx c, rcplx d)
+{
+    rput(out, 0, a); rput(out, 1, b); rput(out, 2, c); rput(out, 3, d);
+}
+/* to and from double (no-ops in the double build) */
+PAC_FN static inline rcplx rof(cplx z) { return rx((pac_real)z.re, (pac_real)z.im); }
+PAC_FN static inline cplx dof(rcplx z) { return cx((double)z.re, (double)z.im); }
+
+#define RZERO (rx(0, 0))
+
 /* Julia's max and min: NaN propagates, and max(-0.0, 0.0) = 0.0, min(-0.0, 0.0) = -0.0 */
 PAC_FN static inline double jmax(double x, double y)
 {
@@ -104,28 +147,32 @@ PAC_FN void source_embedded(double *out, int family, int orientation, const doub
                      const int *components, const int *waves, const double *factors, int n);
 
 /* ---- vertex: o, before the coupling and the factor ---- */
-PAC_FN void vertex_weyl_vector_a(double *out, const double *l, const double *r);   /* Weyl, vector → Weyl */
-PAC_FN void vertex_weyl_vector_b(double *out, const double *l, const double *r);   /* Weyl, vector → Weyl */
-PAC_FN void vertex_tensor_vector(double *out, const double *l, const double *r);   /* tensor, vector → vector */
-PAC_FN void vertex_vector_wedge(double *out, const double *l, const double *r);    /* vector, vector → tensor */
-PAC_FN void vertex_three_vector(double *out, const double *l, const double *r, const double *u,
-                         const double *v);                                  /* vector, vector → vector */
-/* the vertex instruction: out[j] (mode)= o[j] × (coupling × factor); u, v unused but by three_vector */
+PAC_FN void vertex_weyl_vector_a(pac_real *out, const pac_real *l, const pac_real *r);   /* Weyl, vector → Weyl */
+PAC_FN void vertex_weyl_vector_b(pac_real *out, const pac_real *l, const pac_real *r);   /* Weyl, vector → Weyl */
+PAC_FN void vertex_tensor_vector(pac_real *out, const pac_real *l, const pac_real *r);   /* tensor, vector → vector */
+PAC_FN void vertex_vector_wedge(pac_real *out, const pac_real *l, const pac_real *r);    /* vector, vector → tensor */
+PAC_FN void vertex_three_vector(pac_real *out, const pac_real *l, const pac_real *r, const pac_real *u,
+                         const pac_real *v);                                  /* vector, vector → vector */
+/* the vertex instruction: out[j] (mode)= o[j] × (coupling × factor); u, v unused but by three_vector
+ * (the straight-line runner's: the double build only) */
+#ifndef PAC_MIXED
 PAC_FN void vertex(double *out, int type, int mode, const double *l, const double *r, const double *u,
             const double *v, const double *coupling, const double *factor);
+#endif
 
-/* ---- propagator: out = o × factor / (k·k) ---- */
-PAC_FN void propagator_weyl_a(double *out, const double *c, const double *k, const double *factor);
-PAC_FN void propagator_weyl_b(double *out, const double *c, const double *k, const double *factor);
-PAC_FN void propagator_vector(double *out, const double *c, const double *k, const double *factor);
-PAC_FN void propagator(double *out, int type, const double *c, const double *k, const double *factor);
+/* ---- propagator: out = o × factor / (k·k) (1 / (k·k) in double, then rounded to pac_real) ---- */
+PAC_FN void propagator_weyl_a(pac_real *out, const pac_real *c, const double *k, const pac_real *factor);
+PAC_FN void propagator_weyl_b(pac_real *out, const pac_real *c, const double *k, const pac_real *factor);
+PAC_FN void propagator_vector(pac_real *out, const pac_real *c, const double *k, const pac_real *factor);
+PAC_FN void propagator(pac_real *out, int type, const pac_real *c, const double *k, const pac_real *factor);
 
 /* ---- scale, clear, closure (in place) ---- */
-PAC_FN void scale(double *c, int components, const double *factor);   /* c[j] = factor × c[j], j < components */
-PAC_FN void clear(double *c, int components);                         /* c[j] = 0, j < components */
-/* amplitude += Σ_j (l[j] × r[j]) × (component_factors[j] × factor), j < components, in turn */
-PAC_FN void closure(double *amplitude, const double *l, const double *r, const double *component_factors,
-             int components, const double *factor);
+PAC_FN void scale(pac_real *c, int components, const pac_real *factor);   /* c[j] = factor × c[j], j < components */
+PAC_FN void clear(pac_real *c, int components);                         /* c[j] = 0, j < components */
+/* amplitude += Σ_j (l[j] × r[j]) × (component_factors[j] × factor), j < components, in turn (the
+ * products in pac_real, the sum in pac_amp) */
+PAC_FN void closure(pac_amp *amplitude, const pac_real *l, const pac_real *r, const pac_real *component_factors,
+             int components, const pac_real *factor);
 
 /* ---- kernel ---- */
 typedef struct { double *ptr; size_t len; } symjit_slice;
@@ -141,13 +188,13 @@ PAC_FN void kernel_store(double *out, const double *values, const int *outputs, 
 
 /* ---- copy, scatter (UIR v0.8: RustiCol's certified reuse and fanout) ---- */
 /* out[j] = src[j] × factor (value first), j < n; a zero factor writes 0 */
-PAC_FN void copy_row(double *out, const double *src, int n, const double *factor);
+PAC_FN void copy_row(pac_real *out, const pac_real *src, int n, const pac_real *factor);
 /* out[j] (mode)= src[j] × factor with RustiCol's fanout shortcuts (a real factor: ±1 copies or
  * negates, else componentwise; a purely imaginary one: (-im k, re k); else the complex product) */
-PAC_FN void scatter(double *out, const double *src, int n, int mode, const double *factor);
+PAC_FN void scatter(pac_real *out, const pac_real *src, int n, int mode, const pac_real *factor);
 /* ---- reduction ---- */
 /* acc + weight × |a|², a = the amplitude × scale (value first) when scale is not NULL */
-PAC_FN double reduce_term(double acc, const double *amplitude, const double *scale, double weight);
+PAC_FN double reduce_term(double acc, const pac_amp *amplitude, const double *scale, double weight);
 /* x × the group factor: x when numerator = denominator, else x × numerator ÷ denominator */
 PAC_FN double group(double x, long numerator, long denominator);
 /* group_factor × Σ_n weights[n] × |amplitudes[terms[n]]|² (terms 0-based) */

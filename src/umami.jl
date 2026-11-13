@@ -79,6 +79,7 @@ function umami_program_h(lib::UmamiLibrary, l::Lowered, provider, exported_count
 end
 
 const UMAMI_DEVICES = (:cpu, :cuda)
+const UMAMI_PRECISIONS = (:f64, :mixed)   # device = :cuda: :mixed is pacops.h's PAC_MIXED
 
 find_nvcc() = (c = get(ENV, "NVCC", something(Sys.which("nvcc"), "/usr/local/cuda/bin/nvcc"));
                Sys.which(c) !== nothing || isfile(c) ? c : nothing)
@@ -116,14 +117,21 @@ end
 # runtime, libcudart.so.N, shared through rpath); every symbol but the UMAMI functions hidden. The
 # pool the library asks for (the first library of a process decides): `gpu_slots` slots (0: one
 # per CPU) of `gpu_memory` device bytes each (a call needing more runs as several launches).
+# precision = :mixed (device = :cuda only): pacops.h's PAC_MIXED (f32 currents and their
+# arithmetic; f64 momentum forms, denominators, wavefunctions, kernels, vertex sums and amplitudes),
+# not the CPU's bits, so nvcc may contract multiply-adds unless fmad = false.
 function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provider, exported_count, parameters;
                              cc::String = something(find_cc(), "cc"), cflags::Cmd = `-O2`, interpreter::Bool = false,
                              device::Symbol = :cpu, nvcc::Union{String,Nothing} = find_nvcc(),
                              cuda_arch::String = "native", nvflags::Cmd = `-O3`,
                              gpu_memory::Real = GPU_MEMORY_DEFAULT, gpu_slots::Integer = 0,
+                             precision::Symbol = :f64, fmad::Bool = precision == :mixed,
                              runtime_dir::String = dir)::String
     device in UMAMI_DEVICES || error("device $device: one of $UMAMI_DEVICES")
+    precision in UMAMI_PRECISIONS || error("precision $precision: one of $UMAMI_PRECISIONS")
     cuda = device == :cuda
+    precision == :f64 || cuda || error("precision = $precision needs device = :cuda")
+    fmad && precision == :f64 && error("fmad = true is not the CPU's bits: precision = :mixed only")
     cuda && nvcc === nothing && error("device = :cuda needs nvcc (ENV[\"NVCC\"], the PATH or /usr/local/cuda/bin)")
     compile(dir, l; interpreter = interpreter || cuda)
     write(joinpath(dir, "umami_program.h"), umami_program_h(lib, l, provider, exported_count, parameters))
@@ -134,7 +142,8 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
         isfile(joinpath(runtime_dir, "libpac_cuda.$(Libdl.dlext)")) || build_cuda_runtime(runtime_dir; nvcc, cuda_arch)
         file(f) = joinpath(dir, f)
         rpath = "\$ORIGIN/" * relpath(abspath(runtime_dir), abspath(dir))
-        run(`$nvcc $nvflags -arch=$cuda_arch --fmad=false -Xcompiler -fPIC,-fvisibility=hidden -DPAC_CUDA_EXTERNAL_POOL
+        mixed = precision == :mixed ? ["-DPAC_MIXED"] : String[]
+        run(`$nvcc $nvflags -arch=$cuda_arch --fmad=$fmad $mixed -Xcompiler -fPIC,-fvisibility=hidden -DPAC_CUDA_EXTERNAL_POOL
              -DUIRGPU_SLOTS=$gpu_slots -DUIRGPU_SLOT_BYTES=$(Int(gpu_memory)) -x cu -c -o $(file("runner_gpu.o")) $(file("runner.c"))`)
         run(`$cc $cflags -std=c99 -ffp-contract=off -fPIC -fvisibility=hidden -DPAC_CUDA -c
              -o $(file("umami_pac.o")) $(file("umami_pac.c"))`)
@@ -150,7 +159,7 @@ end
 """
     umami_libraries(export, metadata, dir; optimize_programs = true, interpreter = false, cc, cflags = `-O2`,
                     device = :cpu, cuda_arch = "native", nvcc, gpu_slots = 0, gpu_memory = 256 MiB,
-                    quiet = false) -> String
+                    precision = :f64, fmad = (precision == :mixed), nvflags = `-O3`, quiet = false) -> String
 
 One UMAMI library per (process, colour flow, permutation) of the artifact's UMAMI provider
 (`metadata`: the artifact's API/umami/metadata.json), its program from the recurrence export
@@ -164,14 +173,20 @@ still CPU providers for MadSpace. The GPU memory and streams are a process-wide 
 (`dir/libpac_cuda.so`, with a copy of the CUDA runtime): `gpu_slots` slots (default 0: one per CPU,
 so every MadSpace thread can run at once; 1: one call at a time) of `gpu_memory` device bytes
 each, allocated when first used (a call needing more runs as several launches). A call borrows any
-free slot and waits while all are busy. The libraries are built in parallel.
+free slot and waits while all are busy. `precision` (device = :cuda): `:f64`, RustiCol's values
+bit for bit, or `:mixed`: the currents and their arithmetic in f32, the momentum forms, propagator
+denominators, wavefunctions, kernels, vertex sums and amplitudes in f64 (about 1e-7 relative on the
+matrix element, ~1e-6 at worst). The libraries are built in parallel.
 """
 function umami_libraries(export_path::AbstractString, metadata_path::AbstractString, dir::AbstractString;
                          optimize_programs::Bool = true, interpreter::Bool = false,
                          cc::String = something(find_cc(), "cc"), cflags::Cmd = `-O2`,
                          device::Symbol = :cpu, cuda_arch::String = "native", nvcc = find_nvcc(),
                          gpu_slots::Integer = 0, gpu_memory::Real = GPU_MEMORY_DEFAULT,
+                         precision::Symbol = :f64, fmad::Bool = precision == :mixed, nvflags::Cmd = `-O3`,
                          quiet::Bool = false)::String
+    precision in UMAMI_PRECISIONS || error("precision $precision: one of $UMAMI_PRECISIONS")
+    precision == :f64 || device == :cuda || error("precision = $precision needs device = :cuda")
     d = read_export(export_path)
     meta = JSON.parse(read(metadata_path, String))
     get(meta, "kind", nothing) == "pyamplicol-umami-metadata" || error("$metadata_path: not a pyAmpliCol UMAMI metadata file")
@@ -222,7 +237,8 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
     end
     sos = asyncmap(jobs; ntasks = Sys.CPU_THREADS) do (k, lib, sub, l)
         so = build_umami_library(sub, lib, l, provider, exported_count, parameters;
-                                 cc, cflags, interpreter, device, cuda_arch, nvcc, gpu_memory, gpu_slots, runtime_dir = abspath(dir))
+                                 cc, cflags, interpreter, device, cuda_arch, nvcc, nvflags, gpu_memory, gpu_slots, precision, fmad,
+                                 runtime_dir = abspath(dir))
         quiet || println("library $(k - 1) of $(length(libraries)): $(lib.process) $(lib.colour) $(lib.permutation)")
         so
     end
@@ -230,7 +246,7 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
                     "permutation" => lib.permutation, "colour_index" => lib.colour_index, "factor" => lib.factor)
                for ((k, lib, _, _), so) in zip(jobs, sos)]
     table = Dict(
-        "kind" => "pacrunner-umami-libraries", "schema_version" => 1, "device" => String(device), "gpu_slots" => gpu_slots, "gpu_memory" => gpu_memory,
+        "kind" => "pacrunner-umami-libraries", "schema_version" => 1, "device" => String(device), "precision" => String(precision), "gpu_slots" => gpu_slots, "gpu_memory" => gpu_memory,
         "artifact_id" => d["artifact_id"], "export" => abspath(export_path), "metadata" => abspath(metadata_path),
         "particle_count" => provider["particle_count"], "libraries" => entries,
         "channels" => [Dict("flavor_libraries" => [k - 1 for k in fl], "libraries" => sort(unique(fl)) .- 1) for fl in channels],

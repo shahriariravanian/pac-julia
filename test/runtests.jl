@@ -522,7 +522,17 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             withenv("NVCC" => GpuScript.NVCC) do
                 for f in ("pp_3j.json", "zggg_union.json")
                     @test isempty(UmamiScript.check(joinpath(@__DIR__, "data", "export", f); quiet = true, cuda = true))
+                    @test isempty(UmamiScript.check(joinpath(@__DIR__, "data", "export", f); quiet = true, cuda = true, precision = :mixed))
                 end
+            end
+        end
+        @testset "mixed precision on the GPU" begin
+            # PAC_MIXED against the CPU's f64: the helicity sum within 1e-5 relative (measured: 2.5e-6
+            # at worst), no output off by more than that of the sum
+            for c in CASES
+                (sums, each) = GpuScript.errors_folder(c; nvflags = "-DPAC_MIXED")
+                @test maximum(sums) < 1e-5
+                @test maximum(each) < 1e-5
             end
         end
     else

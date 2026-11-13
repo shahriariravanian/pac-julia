@@ -253,25 +253,25 @@ PAC_FN void source_embedded(double *out, int family, int orientation, const doub
 /* l Weyl, r vector → Weyl:
  *   o[0] = -i l[0] r[3] - i l[1] r[1] + l[1] r[2] + i l[0] r[0]
  *   o[1] = -l[0] r[2] - i l[0] r[1] + i l[1] r[0] + i l[1] r[3] */
-PAC_FN void vertex_weyl_vector_a(double *out, const double *l, const double *r)
+PAC_FN void vertex_weyl_vector_a(pac_real *out, const pac_real *l, const pac_real *r)
 {
-    cplx l0 = get(l, 0), l1 = get(l, 1);
-    cplx r0 = get(r, 0), r1 = get(r, 1), r2 = get(r, 2), r3 = get(r, 3);
-    cplx o0 = add(add(sub(neg(mul_i(mul(l0, r3))), mul_i(mul(l1, r1))), mul(l1, r2)), mul_i(mul(l0, r0)));
-    cplx o1 = add(add(sub(neg(mul(l0, r2)), mul_i(mul(l0, r1))), mul_i(mul(l1, r0))), mul_i(mul(l1, r3)));
-    put2(out, o0, o1);
+    rcplx l0 = rget(l, 0), l1 = rget(l, 1);
+    rcplx r0 = rget(r, 0), r1 = rget(r, 1), r2 = rget(r, 2), r3 = rget(r, 3);
+    rcplx o0 = radd(radd(rsub(rneg(rmul_i(rmul(l0, r3))), rmul_i(rmul(l1, r1))), rmul(l1, r2)), rmul_i(rmul(l0, r0)));
+    rcplx o1 = radd(radd(rsub(rneg(rmul(l0, r2)), rmul_i(rmul(l0, r1))), rmul_i(rmul(l1, r0))), rmul_i(rmul(l1, r3)));
+    rput2(out, o0, o1);
 }
 
 /* l Weyl, r vector → Weyl:
  *   o[0] = -l[1] r[2] + i l[0] r[0] + i l[0] r[3] + i l[1] r[1]
  *   o[1] = -i l[1] r[3] + l[0] r[2] + i l[0] r[1] + i l[1] r[0] */
-PAC_FN void vertex_weyl_vector_b(double *out, const double *l, const double *r)
+PAC_FN void vertex_weyl_vector_b(pac_real *out, const pac_real *l, const pac_real *r)
 {
-    cplx l0 = get(l, 0), l1 = get(l, 1);
-    cplx r0 = get(r, 0), r1 = get(r, 1), r2 = get(r, 2), r3 = get(r, 3);
-    cplx o0 = add(add(add(neg(mul(l1, r2)), mul_i(mul(l0, r0))), mul_i(mul(l0, r3))), mul_i(mul(l1, r1)));
-    cplx o1 = add(add(add(neg(mul_i(mul(l1, r3))), mul(l0, r2)), mul_i(mul(l0, r1))), mul_i(mul(l1, r0)));
-    put2(out, o0, o1);
+    rcplx l0 = rget(l, 0), l1 = rget(l, 1);
+    rcplx r0 = rget(r, 0), r1 = rget(r, 1), r2 = rget(r, 2), r3 = rget(r, 3);
+    rcplx o0 = radd(radd(radd(rneg(rmul(l1, r2)), rmul_i(rmul(l0, r0))), rmul_i(rmul(l0, r3))), rmul_i(rmul(l1, r1)));
+    rcplx o1 = radd(radd(radd(rneg(rmul_i(rmul(l1, r3))), rmul(l0, r2)), rmul_i(rmul(l0, r1))), rmul_i(rmul(l1, r0)));
+    rput2(out, o0, o1);
 }
 
 /* l antisymmetric tensor, r vector → vector:
@@ -279,52 +279,53 @@ PAC_FN void vertex_weyl_vector_b(double *out, const double *l, const double *r)
  *   o[1] = l[0] r[0] + l[3] r[2] + l[4] r[3]
  *   o[2] = l[1] r[0] - l[3] r[1] + l[5] r[3]
  *   o[3] = l[2] r[0] - l[4] r[1] - l[5] r[2] */
-PAC_FN void vertex_tensor_vector(double *out, const double *l, const double *r)
+PAC_FN void vertex_tensor_vector(pac_real *out, const pac_real *l, const pac_real *r)
 {
-    cplx l0 = get(l, 0), l1 = get(l, 1), l2 = get(l, 2), l3 = get(l, 3), l4 = get(l, 4), l5 = get(l, 5);
-    cplx r0 = get(r, 0), r1 = get(r, 1), r2 = get(r, 2), r3 = get(r, 3);
-    put4(out,
-         add(add(mul(l0, r1), mul(l1, r2)), mul(l2, r3)),
-         add(add(mul(l0, r0), mul(l3, r2)), mul(l4, r3)),
-         add(sub(mul(l1, r0), mul(l3, r1)), mul(l5, r3)),
-         sub(sub(mul(l2, r0), mul(l4, r1)), mul(l5, r2)));
+    rcplx l0 = rget(l, 0), l1 = rget(l, 1), l2 = rget(l, 2), l3 = rget(l, 3), l4 = rget(l, 4), l5 = rget(l, 5);
+    rcplx r0 = rget(r, 0), r1 = rget(r, 1), r2 = rget(r, 2), r3 = rget(r, 3);
+    rput4(out,
+          radd(radd(rmul(l0, r1), rmul(l1, r2)), rmul(l2, r3)),
+          radd(radd(rmul(l0, r0), rmul(l3, r2)), rmul(l4, r3)),
+          radd(rsub(rmul(l1, r0), rmul(l3, r1)), rmul(l5, r3)),
+          rsub(rsub(rmul(l2, r0), rmul(l4, r1)), rmul(l5, r2)));
 }
 
 /* l vector, r vector → antisymmetric tensor:
  *   o = (l[0] r[1] - l[1] r[0], l[0] r[2] - l[2] r[0], l[0] r[3] - l[3] r[0],
  *        l[1] r[2] - l[2] r[1], l[1] r[3] - l[3] r[1], l[2] r[3] - l[3] r[2]) */
-PAC_FN void vertex_vector_wedge(double *out, const double *l, const double *r)
+PAC_FN void vertex_vector_wedge(pac_real *out, const pac_real *l, const pac_real *r)
 {
-    cplx l0 = get(l, 0), l1 = get(l, 1), l2 = get(l, 2), l3 = get(l, 3);
-    cplx r0 = get(r, 0), r1 = get(r, 1), r2 = get(r, 2), r3 = get(r, 3);
-    cplx o[6] = {sub(mul(l0, r1), mul(l1, r0)), sub(mul(l0, r2), mul(l2, r0)), sub(mul(l0, r3), mul(l3, r0)),
-                 sub(mul(l1, r2), mul(l2, r1)), sub(mul(l1, r3), mul(l3, r1)), sub(mul(l2, r3), mul(l3, r2))};
-    for (int j = 0; j < 6; j++) put(out, j, o[j]);
+    rcplx l0 = rget(l, 0), l1 = rget(l, 1), l2 = rget(l, 2), l3 = rget(l, 3);
+    rcplx r0 = rget(r, 0), r1 = rget(r, 1), r2 = rget(r, 2), r3 = rget(r, 3);
+    rcplx o[6] = {rsub(rmul(l0, r1), rmul(l1, r0)), rsub(rmul(l0, r2), rmul(l2, r0)), rsub(rmul(l0, r3), rmul(l3, r0)),
+                  rsub(rmul(l1, r2), rmul(l2, r1)), rsub(rmul(l1, r3), rmul(l3, r1)), rsub(rmul(l2, r3), rmul(l3, r2))};
+    for (int j = 0; j < 6; j++) rput(out, j, o[j]);
 }
 
 /* a·b of two complex vectors; of a complex vector and a momentum */
-PAC_FN static cplx dot(const double *a, const double *b)
+PAC_FN static rcplx dot(const pac_real *a, const pac_real *b)
 {
-    return sub(sub(sub(mul(get(a, 0), get(b, 0)), mul(get(a, 1), get(b, 1))), mul(get(a, 2), get(b, 2))),
-               mul(get(a, 3), get(b, 3)));
+    return rsub(rsub(rsub(rmul(rget(a, 0), rget(b, 0)), rmul(rget(a, 1), rget(b, 1))), rmul(rget(a, 2), rget(b, 2))),
+                rmul(rget(a, 3), rget(b, 3)));
 }
 
-PAC_FN static cplx dot_real(const double *a, const double *b)
+PAC_FN static rcplx dot_real(const pac_real *a, const pac_real *b)
 {
-    return sub(sub(sub(mulr(get(a, 0), b[0]), mulr(get(a, 1), b[1])), mulr(get(a, 2), b[2])), mulr(get(a, 3), b[3]));
+    return rsub(rsub(rsub(rmulr(rget(a, 0), b[0]), rmulr(rget(a, 1), b[1])), rmulr(rget(a, 2), b[2])), rmulr(rget(a, 3), b[3]));
 }
 
 /* l vector, r vector → vector, the colour-ordered three-gluon vertex; u = momenta[0],
  * v = momenta[1]: o[j] = (l·r)(u[j] - v[j]) + 2((l·v) r[j] - (r·u) l[j]) */
-PAC_FN void vertex_three_vector(double *out, const double *l, const double *r, const double *u, const double *v)
+PAC_FN void vertex_three_vector(pac_real *out, const pac_real *l, const pac_real *r, const pac_real *u, const pac_real *v)
 {
-    cplx lr = dot(l, r), lv = dot_real(l, v), ru = dot_real(r, u);
-    cplx o[4];
+    rcplx lr = dot(l, r), lv = dot_real(l, v), ru = dot_real(r, u);
+    rcplx o[4];
     for (int j = 0; j < 4; j++)
-        o[j] = add(mulr(lr, u[j] - v[j]), mulr(sub(mul(lv, get(r, j)), mul(ru, get(l, j))), 2.0));
-    for (int j = 0; j < 4; j++) put(out, j, o[j]);
+        o[j] = radd(rmulr(lr, u[j] - v[j]), rmulr(rsub(rmul(lv, rget(r, j)), rmul(ru, rget(l, j))), 2));
+    for (int j = 0; j < 4; j++) rput(out, j, o[j]);
 }
 
+#ifndef PAC_MIXED
 /* the vertex instruction: out[j] (mode)= o[j] × (coupling × factor) */
 PAC_FN void vertex(double *out, int type, int mode, const double *l, const double *r, const double *u,
             const double *v, const double *coupling, const double *factor)
@@ -342,43 +343,47 @@ PAC_FN void vertex(double *out, int type, int mode, const double *l, const doubl
     cplx s = mul(get(coupling, 0), get(factor, 0));
     for (int j = 0; j < n; j++) put(out, j, combine(get(out, j), mul(get(o, j), s), mode));
 }
+#endif
 
 /* ==== propagator: out[j] = o[j] × factor / (k·k) ================================================= */
 
+/* 1 / (k·k) in double; the propagators' numerators take k rounded to pac_real (kr) */
 PAC_FN static double reciprocal_norm(const double *k) { return 1.0 / (((k[0] * k[0] - k[1] * k[1]) - k[2] * k[2]) - k[3] * k[3]); }
 
 /* c Weyl:
  *   o[0] = -i c[0] k[3] - i c[1] k[1] + c[1] k[2] + i c[0] k[0]
  *   o[1] = -c[0] k[2] - i c[0] k[1] + i c[1] k[0] + i c[1] k[3] */
-PAC_FN void propagator_weyl_a(double *out, const double *c, const double *k, const double *factor)
+PAC_FN void propagator_weyl_a(pac_real *out, const pac_real *c, const double *k, const pac_real *factor)
 {
-    cplx c0 = get(c, 0), c1 = get(c, 1);
-    cplx s = mulr(get(factor, 0), reciprocal_norm(k));
-    cplx o0 = add(add(sub(neg(mul_i(mulr(c0, k[3]))), mul_i(mulr(c1, k[1]))), mulr(c1, k[2])), mul_i(mulr(c0, k[0])));
-    cplx o1 = add(add(sub(neg(mulr(c0, k[2])), mul_i(mulr(c0, k[1]))), mul_i(mulr(c1, k[0]))), mul_i(mulr(c1, k[3])));
-    put2(out, mul(o0, s), mul(o1, s));
+    pac_real kr[4] = {(pac_real)k[0], (pac_real)k[1], (pac_real)k[2], (pac_real)k[3]};
+    rcplx c0 = rget(c, 0), c1 = rget(c, 1);
+    rcplx s = rmulr(rget(factor, 0), (pac_real)reciprocal_norm(k));
+    rcplx o0 = radd(radd(rsub(rneg(rmul_i(rmulr(c0, kr[3]))), rmul_i(rmulr(c1, kr[1]))), rmulr(c1, kr[2])), rmul_i(rmulr(c0, kr[0])));
+    rcplx o1 = radd(radd(rsub(rneg(rmulr(c0, kr[2])), rmul_i(rmulr(c0, kr[1]))), rmul_i(rmulr(c1, kr[0]))), rmul_i(rmulr(c1, kr[3])));
+    rput2(out, rmul(o0, s), rmul(o1, s));
 }
 
 /* c Weyl:
  *   o[0] = -c[1] k[2] + i c[0] k[0] + i c[0] k[3] + i c[1] k[1]
  *   o[1] = -i c[1] k[3] + c[0] k[2] + i c[0] k[1] + i c[1] k[0] */
-PAC_FN void propagator_weyl_b(double *out, const double *c, const double *k, const double *factor)
+PAC_FN void propagator_weyl_b(pac_real *out, const pac_real *c, const double *k, const pac_real *factor)
 {
-    cplx c0 = get(c, 0), c1 = get(c, 1);
-    cplx s = mulr(get(factor, 0), reciprocal_norm(k));
-    cplx o0 = add(add(add(neg(mulr(c1, k[2])), mul_i(mulr(c0, k[0]))), mul_i(mulr(c0, k[3]))), mul_i(mulr(c1, k[1])));
-    cplx o1 = add(add(add(neg(mul_i(mulr(c1, k[3]))), mulr(c0, k[2])), mul_i(mulr(c0, k[1]))), mul_i(mulr(c1, k[0])));
-    put2(out, mul(o0, s), mul(o1, s));
+    pac_real kr[4] = {(pac_real)k[0], (pac_real)k[1], (pac_real)k[2], (pac_real)k[3]};
+    rcplx c0 = rget(c, 0), c1 = rget(c, 1);
+    rcplx s = rmulr(rget(factor, 0), (pac_real)reciprocal_norm(k));
+    rcplx o0 = radd(radd(radd(rneg(rmulr(c1, kr[2])), rmul_i(rmulr(c0, kr[0]))), rmul_i(rmulr(c0, kr[3]))), rmul_i(rmulr(c1, kr[1])));
+    rcplx o1 = radd(radd(radd(rneg(rmul_i(rmulr(c1, kr[3]))), rmulr(c0, kr[2])), rmul_i(rmulr(c0, kr[1]))), rmul_i(rmulr(c1, kr[0])));
+    rput2(out, rmul(o0, s), rmul(o1, s));
 }
 
 /* c vector, Feynman gauge: o[j] = -i c[j] */
-PAC_FN void propagator_vector(double *out, const double *c, const double *k, const double *factor)
+PAC_FN void propagator_vector(pac_real *out, const pac_real *c, const double *k, const pac_real *factor)
 {
-    cplx s = mulr(mul(get(factor, 0), cx(0.0, -1.0)), reciprocal_norm(k));
-    for (int j = 0; j < 4; j++) put(out, j, mul(get(c, j), s));
+    rcplx s = rmulr(rmul(rget(factor, 0), rx(0, -1)), (pac_real)reciprocal_norm(k));
+    for (int j = 0; j < 4; j++) rput(out, j, rmul(rget(c, j), s));
 }
 
-PAC_FN void propagator(double *out, int type, const double *c, const double *k, const double *factor)
+PAC_FN void propagator(pac_real *out, int type, const pac_real *c, const double *k, const pac_real *factor)
 {
     switch (type) {
     case PROPAGATOR_WEYL_A: propagator_weyl_a(out, c, k, factor); break;
@@ -389,24 +394,29 @@ PAC_FN void propagator(double *out, int type, const double *c, const double *k, 
 
 /* ==== scale, clear, closure ====================================================================== */
 
-PAC_FN void scale(double *c, int components, const double *factor)
+PAC_FN void scale(pac_real *c, int components, const pac_real *factor)
 {
-    cplx f = get(factor, 0);
-    for (int j = 0; j < components; j++) put(c, j, mul(f, get(c, j)));
+    rcplx f = rget(factor, 0);
+    for (int j = 0; j < components; j++) rput(c, j, rmul(f, rget(c, j)));
 }
 
-PAC_FN void clear(double *c, int components)
+PAC_FN void clear(pac_real *c, int components)
 {
-    for (int j = 0; j < components; j++) put(c, j, ZERO);
+    for (int j = 0; j < components; j++) rput(c, j, RZERO);
 }
 
-PAC_FN void closure(double *amplitude, const double *l, const double *r, const double *component_factors,
-             int components, const double *factor)
+PAC_FN void closure(pac_amp *amplitude, const pac_real *l, const pac_real *r, const pac_real *component_factors,
+             int components, const pac_real *factor)
 {
-    cplx a = get(amplitude, 0), f = get(factor, 0);
-    for (int j = 0; j < components; j++)
-        a = add(a, mul(mul(get(l, j), get(r, j)), mul(get(component_factors, j), f)));
-    put(amplitude, 0, a);
+    pac_amp re = amplitude[0], im = amplitude[1];
+    rcplx f = rget(factor, 0);
+    for (int j = 0; j < components; j++) {
+        rcplx t = rmul(rmul(rget(l, j), rget(r, j)), rmul(rget(component_factors, j), f));
+        re = re + (pac_amp)t.re;
+        im = im + (pac_amp)t.im;
+    }
+    amplitude[0] = re;
+    amplitude[1] = im;
 }
 
 /* ==== kernel ===================================================================================== */
@@ -431,35 +441,35 @@ PAC_FN void kernel_store(double *out, const double *values, const int *outputs, 
 
 /* ==== copy, scatter ============================================================================== */
 
-PAC_FN void copy_row(double *out, const double *src, int n, const double *factor)
+PAC_FN void copy_row(pac_real *out, const pac_real *src, int n, const pac_real *factor)
 {
-    cplx f = get(factor, 0);
-    int zero = f.re == 0.0 && f.im == 0.0;
-    for (int j = 0; j < n; j++) put(out, j, zero ? ZERO : mul(get(src, j), f));
+    rcplx f = rget(factor, 0);
+    int zero = f.re == 0 && f.im == 0;
+    for (int j = 0; j < n; j++) rput(out, j, zero ? RZERO : rmul(rget(src, j), f));
 }
 
-PAC_FN static inline cplx scatter_value(cplx v, cplx f)
+PAC_FN static inline rcplx scatter_value(rcplx v, rcplx f)
 {
-    if (f.im == 0.0) {
-        if (f.re == 1.0) return v;
-        if (f.re == -1.0) return neg(v);
-        return cx(v.re * f.re, v.im * f.re);
+    if (f.im == 0) {
+        if (f.re == 1) return v;
+        if (f.re == -1) return rneg(v);
+        return rx(v.re * f.re, v.im * f.re);
     }
-    if (f.re == 0.0) return cx(-v.im * f.im, v.re * f.im);
-    return mul(v, f);
+    if (f.re == 0) return rx(-v.im * f.im, v.re * f.im);
+    return rmul(v, f);
 }
 
-PAC_FN void scatter(double *out, const double *src, int n, int mode, const double *factor)
+PAC_FN void scatter(pac_real *out, const pac_real *src, int n, int mode, const pac_real *factor)
 {
-    cplx f = get(factor, 0);
-    for (int j = 0; j < n; j++) put(out, j, combine(get(out, j), scatter_value(get(src, j), f), mode));
+    rcplx f = rget(factor, 0);
+    for (int j = 0; j < n; j++) rput(out, j, rcombine(rget(out, j), scatter_value(rget(src, j), f), mode));
 }
 
 /* ==== reduction ================================================================================== */
 
-PAC_FN double reduce_term(double acc, const double *amplitude, const double *scale, double weight)
+PAC_FN double reduce_term(double acc, const pac_amp *amplitude, const double *scale, double weight)
 {
-    cplx a = get(amplitude, 0);
+    cplx a = cx(amplitude[0], amplitude[1]);
     if (scale) a = mul(a, get(scale, 0));
     return acc + weight * fma(a.re, a.re, a.im * a.im);
 }

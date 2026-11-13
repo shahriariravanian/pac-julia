@@ -21,11 +21,11 @@ struct Library
     instance::Ptr{Cvoid}   # umami_initialize's
 end
 
-function open_library(l, dir::String; interpreter::Bool, device::Symbol = :cpu)::Library
+function open_library(l, dir::String; interpreter::Bool, device::Symbol = :cpu, precision::Symbol = :f64)::Library
     n = output_count(l)
     lib = UmamiLibrary(l.process, l.colour, collect(0:l.legs-1), 0, 1.0, collect(0:n-1))
     provider = Dict("particle_count" => l.legs, "helicity_count" => n, "color_count" => 1, "masses" => zeros(l.legs))
-    so = build_umami_library(dir, lib, l, provider, n, Tuple{String,ComplexF64}[]; interpreter, device)
+    so = build_umami_library(dir, lib, l, provider, n, Tuple{String,ComplexF64}[]; interpreter, device, precision)
     h = dlopen(so)
     instance = Ref{Ptr{Cvoid}}(C_NULL)
     ccall(dlsym(h, :umami_initialize), Cint, (Ptr{Ptr{Cvoid}}, Cstring), instance, C_NULL) == UMAMI_SUCCESS ||
@@ -65,8 +65,11 @@ end
 
 same(x::Float64, y::Float64) = reinterpret(UInt64, x) == reinterpret(UInt64, y)
 
-# the failures for the first program of `path` that has an alpha_s power
-function check(path::String; quiet::Bool = false, cuda::Bool = false)
+# the failures for the first program of `path` that has an alpha_s power; precision = :mixed (CUDA):
+# within MIXED_RTOL instead of bit for bit
+const MIXED_RTOL = 1e-4
+function check(path::String; quiet::Bool = false, cuda::Bool = false, precision::Symbol = :f64)
+    agree(x, y) = precision == :f64 ? same(x, y) : isapprox(x, y; rtol = MIXED_RTOL)
     ls = load_recurrence_export(path; kernels = :none)
     refs = recurrence_references(path)
     k = findfirst(k -> refs[k] !== nothing && ls[k].alpha_s !== nothing && ls[k].alpha_s[2] !== nothing && ls[k].alpha_s[1] > 0, eachindex(ls))
@@ -76,8 +79,8 @@ function check(path::String; quiet::Bool = false, cuda::Bool = false)
     bad = String[]
     builds = cuda ? [(true, :cuda)] : [(false, :cpu), (true, :cpu)]   # (interpreter, device)
     for (interpreter, device) in builds, known in (true, false)
-        what = "$(device == :cuda ? "CUDA" : interpreter ? "interpreter" : "straight-line C"), alpha_s power $(known ? power : "unknown")"
-        lib = open_library(known ? l : with(l; alpha_s = (a0, nothing)), mktempdir(); interpreter, device)
+        what = "$(device == :cuda ? "CUDA $precision" : interpreter ? "interpreter" : "straight-line C"), alpha_s power $(known ? power : "unknown")"
+        lib = open_library(known ? l : with(l; alpha_s = (a0, nothing)), mktempdir(); interpreter, device, precision)
         try
             alpha_s_supported(lib) || push!(bad, "$what: alpha_s not a supported input")
             for (point, values) in zip(points, want)
@@ -85,11 +88,11 @@ function check(path::String; quiet::Bool = false, cuda::Bool = false)
                 # a power scales even a rounding difference; without one, it is the exported alpha_s
                 for alpha_s in (known ? (nothing, a0) : (nothing, a0, a0 * (1 + 1e-15)))
                     (status, me) = matrix_element(lib, point, alpha_s)
-                    (status == UMAMI_SUCCESS && same(me, total)) || push!(bad, "$what: alpha_s $alpha_s: status $status, $me ≠ $total")
+                    (status == UMAMI_SUCCESS && agree(me, total)) || push!(bad, "$what: alpha_s $alpha_s: status $status, $me ≠ $total")
                 end
                 (status, me) = matrix_element(lib, point, 1.1 * a0)
                 if known
-                    (status == UMAMI_SUCCESS && isapprox(me, 1.1^power * total; rtol = 1e-14)) ||
+                    (status == UMAMI_SUCCESS && isapprox(me, 1.1^power * total; rtol = precision == :f64 ? 1e-14 : MIXED_RTOL)) ||
                         push!(bad, "$what: alpha_s × 1.1: status $status, $me ≉ $(1.1^power * total)")
                 else
                     status == UMAMI_ERROR || push!(bad, "$what: alpha_s × 1.1 accepted (status $status)")
