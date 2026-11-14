@@ -194,6 +194,49 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
     return so
 end
 
+# the export's programs by (process_key, colour_id), each with its helicity ids
+function export_programs(d, export_path::AbstractString)::Dict{Tuple{String,String},Tuple{Lowered,Vector{String}}}
+    ls = load_recurrence_export(export_path; kernels = :none)
+    programs = Dict{Tuple{String,String},Tuple{Lowered,Vector{String}}}()
+    for (l, p) in zip(ls, d["programs"])
+        programs[(l.process, l.colour)] = (l, [String(h["id"]) for h in p["helicity_outputs"]])
+    end
+    return programs
+end
+
+# the library of one flavour of a channel (`r`: its runtime entry in the metadata), checked against
+# its program: the helicities are the provider's in order, one exported helicity per output
+function flavour_library(r, procs, programs, export_path::AbstractString, place::String)::UmamiLibrary
+    proc = procs[Int(r["process_index"])+1]
+    lib = UmamiLibrary(String(proc["id"]), String(r["color_id"]), Int.(r["permutation"]), Int(r["color_index"]),
+                       Float64(r["factor"]), Int.(r["helicity_export"]))
+    haskey(programs, (lib.process, lib.colour)) || error("$place: no program $(lib.process) $(lib.colour) in $export_path")
+    (l, ids) = programs[(lib.process, lib.colour)]
+    ids == [String(h) for h in proc["helicity_ids"]] ||
+        error("$(lib.process) $(lib.colour): the export's helicities are not the provider's, in order")
+    length(lib.helicity_export) == output_count(l) ||
+        error("$(lib.process) $(lib.colour): $(length(lib.helicity_export)) exported helicities for $(output_count(l)) outputs")
+    return lib
+end
+
+# the provider's distinct libraries, and per channel each flavour's library (an index into them)
+function provider_libraries(meta, programs, export_path::AbstractString)::Tuple{Vector{UmamiLibrary},Vector{Vector{Int}}}
+    procs = meta["runtime_processes"]
+    libraries = UmamiLibrary[]
+    channels = Vector{Int}[]
+    for (c, channel) in enumerate(meta["channels"])
+        push!(channels, [intern!(libraries, flavour_library(flavour["runtime"], procs, programs, export_path,
+                                                            "channel $(c - 1) flavour $(f - 1)"))
+                         for (f, flavour) in enumerate(channel["processes"])])
+    end
+    return (libraries, channels)
+end
+
+# a library's entry of umami_pac.json (0-based index, its path relative to the table)
+library_entry(k::Int, lib::UmamiLibrary, path::AbstractString) =
+    Dict("index" => k - 1, "path" => path, "process" => lib.process, "colour" => lib.colour, "permutation" => lib.permutation,
+         "colour_index" => lib.colour_index, "factor" => lib.factor)
+
 """
     umami_libraries(export, metadata, dir; optimize_programs = true, interpreter = false, cc, cflags = `-O2`,
                     device = :cpu, cuda_arch = "native", nvcc, gpu_slots = 0, gpu_memory = 256 MiB,
@@ -241,34 +284,8 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
     exported_count = length(meta["helicities"])
     parameters = [(String(p["name"]), cvalue(p["value"])) for p in d["parameters"]]
 
-    # the programs by (process_key, colour_id), with their helicity ids
-    ls = load_recurrence_export(export_path; kernels = :none)
-    programs = Dict{Tuple{String,String},Tuple{Lowered,Vector{String}}}()
-    for (l, p) in zip(ls, d["programs"])
-        programs[(l.process, l.colour)] = (l, [String(h["id"]) for h in p["helicity_outputs"]])
-    end
-
-    procs = meta["runtime_processes"]
-    libraries = UmamiLibrary[]
-    channels = []
-    for (c, channel) in enumerate(meta["channels"])
-        flavours = Int[]
-        for (f, flavour) in enumerate(channel["processes"])
-            r = flavour["runtime"]
-            process = String(procs[Int(r["process_index"])+1]["id"])
-            lib = UmamiLibrary(process, String(r["color_id"]), Int.(r["permutation"]), Int(r["color_index"]),
-                               Float64(r["factor"]), Int.(r["helicity_export"]))
-            haskey(programs, (lib.process, lib.colour)) ||
-                error("channel $(c - 1) flavour $(f - 1): no program $(lib.process) $(lib.colour) in $export_path")
-            (l, ids) = programs[(lib.process, lib.colour)]
-            want = [String(h) for h in procs[Int(r["process_index"])+1]["helicity_ids"]]
-            ids == want || error("$(lib.process) $(lib.colour): the export's helicities are not the provider's, in order")
-            length(lib.helicity_export) == output_count(l) ||
-                error("$(lib.process) $(lib.colour): $(length(lib.helicity_export)) exported helicities for $(output_count(l)) outputs")
-            push!(flavours, intern!(libraries, lib))
-        end
-        push!(channels, flavours)
-    end
+    programs = export_programs(d, export_path)
+    (libraries, channels) = provider_libraries(meta, programs, export_path)
 
     mkpath(dir)
     device in (:cuda, :cuda_provider) && build_cuda_runtime(dir; nvcc, cuda_arch, pool = device == :cuda)
@@ -286,9 +303,7 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
         quiet || println("library $(k - 1) of $(length(libraries)): $(lib.process) $(lib.colour) $(lib.permutation)")
         so
     end
-    entries = [Dict("index" => k - 1, "path" => relpath(so, dir), "process" => lib.process, "colour" => lib.colour,
-                    "permutation" => lib.permutation, "colour_index" => lib.colour_index, "factor" => lib.factor)
-               for ((k, lib, _, _), so) in zip(jobs, sos)]
+    entries = [library_entry(k, lib, relpath(so, dir)) for ((k, lib, _, _), so) in zip(jobs, sos)]
     table = Dict(
         "kind" => "pacrunner-umami-libraries", "schema_version" => 1, "device" => String(device), "precision" => String(precision),
         "gpu_slots" => device == :cuda ? gpu_slots : nothing, "gpu_memory" => device == :cpu ? nothing : gpu_memory,

@@ -14,13 +14,6 @@
 # a copy of `l` with some fields replaced
 with(l::Lowered; kw...) = Lowered((haskey(kw, f) ? kw[f] : getfield(l, f) for f in fieldnames(Lowered))...)
 
-# an edge's planes as a range of plane offsets
-function plane_range(l::Lowered, e::EdgeIndex)::UnitRange{Int}
-    c = edge_layout(l, e)
-    return c.start:c.start+c.components-1
-end
-overlaps(a::UnitRange, b::UnitRange) = !isempty(intersect(a, b))
-
 # the vertex rows that continue a fused run
 fused_rows(l::Lowered) = count(o -> is_vertex(o.op) && !o.first, l.ops)
 
@@ -98,12 +91,6 @@ function writes_fresh(l::Lowered, op::LOp)::Bool
     return false
 end
 
-# the rows whose d is not an edge (an amplitude, an output)
-no_destination(op::LOp) = op.op in (CLOSURE, CLEAR_AMPLITUDE, REDUCE)
-
-# the edges a row reads as operands (a source's l is its embedding, not an edge)
-operand_edges(op::LOp) = op.op == SOURCE || op.op == CLEAR_AMPLITUDE || op.op == REDUCE ? () : (op.l, op.r)
-
 # the currents a row reads (a destination it updates counts as read)
 function reads(l::Lowered, op::LOp)::Vector{CurrentIndex}
     cs = CurrentIndex[]
@@ -122,8 +109,37 @@ end
 # Returns the new layout and the peak of live planes (the bound no layout of this order beats).
 function liveness_layout(l::Lowered)::Tuple{Vector{LCurrent},Int,Int}
     nc, nr = length(l.currents), length(l.ops)
-    start = fill(-1, nc)     # the row a current becomes live (0: before the rows)
-    stop = zeros(Int, nc)    # its last row
+    (start, stop) = live_ranges(l)
+    size(c) = l.currents[c].components + isodd(l.currents[c].components)
+    starting = [CurrentIndex[] for _ in 0:nr]
+    ending = [CurrentIndex[] for _ in 0:nr]
+    for c in 1:nc
+        push!(starting[start[c]+1], c)
+        push!(ending[stop[c]+1], c)
+    end
+    planes = PlaneAllocator()
+    at = zeros(PlaneOffset, nc)
+    (live, peak) = (0, 0)
+    for t in 0:nr
+        for c in starting[t+1]
+            at[c] = alloc!(planes, size(c))
+            live += size(c)
+        end
+        peak = max(peak, live)
+        for c in ending[t+1]
+            release!(planes, at[c]:at[c]+size(c)-1)
+            live -= size(c)
+        end
+    end
+    return ([LCurrent(at[c], cur.components, cur.type) for (c, cur) in enumerate(l.currents)], planes.top, peak)
+end
+
+# For each current, the row it becomes live (0: before the rows: it starts at zero, is read before
+# written, or is never used) and its last row.
+function live_ranges(l::Lowered)::Tuple{Vector{Int},Vector{Int}}
+    nc = length(l.currents)
+    start = fill(-1, nc)
+    stop = zeros(Int, nc)
     for (k, op) in enumerate(l.ops)
         for c in reads(l, op)
             start[c] == -1 && (start[c] = 0)   # read before written: its zero start counts
@@ -139,52 +155,43 @@ function liveness_layout(l::Lowered)::Tuple{Vector{LCurrent},Int,Int}
         start[c] == -1 && (start[c] = 0)       # never used
         stop[c] = max(stop[c], start[c])
     end
-    size(c) = l.currents[c].components + isodd(l.currents[c].components)
+    return (start, stop)
+end
 
-    free = UnitRange{Int}[]   # sorted, disjoint, even-aligned
-    top = 0
-    function alloc(n)
-        for (i, r) in enumerate(free)
-            length(r) >= n || continue
-            free[i] = first(r)+n:last(r)
-            isempty(free[i]) && deleteat!(free, i)
-            return first(r)
-        end
-        top += n
-        return top - n
+# Planes handed out first fit: the free blocks (sorted, disjoint, even-aligned) below `top`, the
+# planes used so far.
+mutable struct PlaneAllocator
+    free::Vector{UnitRange{Int}}
+    top::Int
+end
+
+PlaneAllocator() = PlaneAllocator(UnitRange{Int}[], 0)
+
+# the first plane of a block of `n` planes
+function alloc!(p::PlaneAllocator, n::Int)::Int
+    for (i, r) in enumerate(p.free)
+        length(r) >= n || continue
+        p.free[i] = first(r)+n:last(r)
+        isempty(p.free[i]) && deleteat!(p.free, i)
+        return first(r)
     end
-    function release(r)
-        i = searchsortedfirst(free, r; by = first)
-        insert!(free, i, r)
-        if i < length(free) && last(free[i]) + 1 == first(free[i+1])     # join the next block
-            free[i] = first(free[i]):last(free[i+1])
-            deleteat!(free, i + 1)
-        end
-        if i > 1 && last(free[i-1]) + 1 == first(free[i])                # and the previous
-            free[i-1] = first(free[i-1]):last(free[i])
-            deleteat!(free, i)
-        end
+    p.top += n
+    return p.top - n
+end
+
+# the block `r` back, joined with its free neighbours
+function release!(p::PlaneAllocator, r::UnitRange{Int})
+    free = p.free
+    i = searchsortedfirst(free, r; by = first)
+    insert!(free, i, r)
+    if i < length(free) && last(free[i]) + 1 == first(free[i+1])     # join the next block
+        free[i] = first(free[i]):last(free[i+1])
+        deleteat!(free, i + 1)
     end
-    starting = [CurrentIndex[] for _ in 0:nr]
-    ending = [CurrentIndex[] for _ in 0:nr]
-    for c in 1:nc
-        push!(starting[start[c]+1], c)
-        push!(ending[stop[c]+1], c)
+    if i > 1 && last(free[i-1]) + 1 == first(free[i])                # and the previous
+        free[i-1] = first(free[i-1]):last(free[i])
+        deleteat!(free, i)
     end
-    at = zeros(PlaneOffset, nc)
-    (live, peak) = (0, 0)
-    for t in 0:nr
-        for c in starting[t+1]
-            at[c] = alloc(size(c))
-            live += size(c)
-        end
-        peak = max(peak, live)
-        for c in ending[t+1]
-            release(at[c]:at[c]+size(c)-1)
-            live -= size(c)
-        end
-    end
-    return ([LCurrent(at[c], cur.components, cur.type) for (c, cur) in enumerate(l.currents)], top, peak)
 end
 
 function reuse_planes(l::Lowered)::Lowered

@@ -163,6 +163,12 @@ struct Lowered
     fixed_layout::Bool                   # the layout is the producer's (RustiCol's): no reuse_planes
 end
 
+# the rows whose d is not an edge (an amplitude, an output)
+no_destination(op::LOp) = op.op in (CLOSURE, CLEAR_AMPLITUDE, REDUCE)
+
+# the edges a row reads as operands (a source's l is its embedding, not an edge)
+operand_edges(op::LOp) = op.op == SOURCE || op.op == CLEAR_AMPLITUDE || op.op == REDUCE ? () : (op.l, op.r)
+
 output_count(l::Lowered) = length(l.helicities)   # the helicity outputs
 
 # an edge's current, form, layout entry and first plane
@@ -170,6 +176,13 @@ edge_current(l::Lowered, e::EdgeIndex)::CurrentIndex = e == 0 ? 0 : l.edges[e].c
 edge_form(l::Lowered, e::EdgeIndex)::FormIndex = e == 0 ? 0 : l.edges[e].form
 edge_layout(l::Lowered, e::EdgeIndex)::LCurrent = l.currents[l.edges[e].current]
 edge_plane(l::Lowered, e::EdgeIndex)::PlaneOffset = edge_layout(l, e).start
+
+# an edge's planes as a range of plane offsets
+function plane_range(l::Lowered, e::EdgeIndex)::UnitRange{Int}
+    c = edge_layout(l, e)
+    return c.start:c.start+c.components-1
+end
+overlaps(a::UnitRange, b::UnitRange) = !isempty(intersect(a, b))
 
 # A row as text, for the C comments and dumps: main.json's names (c<i>, q<i>, s<i>, x<i>, a<i>, which
 # count from 0), an edge as its current with the momentum it is read with (c12@q3)

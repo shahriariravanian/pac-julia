@@ -94,193 +94,262 @@ function export_kernels(d; kernels::Symbol = :c)::Dict{String,KernelLibrary}
     return out
 end
 
+# ---- one program entry → Lowered ---------------------------------------------------------------
+
+# a kernel binding of the file: the stub's inputs (literals as slots of `scaleset`), its output
+# components, the kernel, and whether it stores its pairs directly
+struct ExportBinding
+    inputs::Vector{KernelInput}
+    scaleset::Vector{ScaleIndex}
+    outputs::Vector{ComponentIndex}
+    kernel::KernelLibrary
+    direct::Bool
+end
+
+# What import_program collects while it reads an entry: the Lowered's tables, and the rows with
+# their d, l, r still edge requests (an index into `requests`), resolved to edges at the end
+# (resolved_ops) when each current's own form is known.
+struct ExportBuilder
+    scales::Vector{Complex{Float64}}
+    factors::Vector{Complex{Float64}}
+    layouts::Vector{Tuple{Int,Int,PhysicalType}}                        # the currents: (offset, components, type)
+    owns::Vector{FormIndex}                                             # each current's own form (0: none yet)
+    requests::Vector{Tuple{CurrentIndex,Union{Nothing,FormIndex}}}      # (current, form or nothing: any edge of it)
+    lists::Vector{Vector{FactorIndex}}
+    embeddings::Vector{Vector{EmbeddingEntry}}
+    stubs::Vector{LStub}
+    scalesets::Vector{Vector{ScaleIndex}}
+    instances::Vector{Tuple{StubIndex,ScaleSetIndex}}
+    weights::Vector{Float64}
+    bindings::Dict{Int,ExportBinding}                                   # by the file's id
+    rows::Vector{LOp}
+end
+
+ExportBuilder() = ExportBuilder(Complex{Float64}[], Complex{Float64}[], Tuple{Int,Int,PhysicalType}[], FormIndex[],
+                                Tuple{CurrentIndex,Union{Nothing,FormIndex}}[], Vector{FactorIndex}[],
+                                Vector{EmbeddingEntry}[], LStub[], Vector{ScaleIndex}[], Tuple{StubIndex,ScaleSetIndex}[],
+                                Float64[], Dict{Int,ExportBinding}(), LOp[])
+
+scale!(b::ExportBuilder, z)::ScaleIndex = intern_value!(b.scales, z)
+factor!(b::ExportBuilder, z)::FactorIndex = intern_value!(b.factors, z)
+row!(b::ExportBuilder, op::LOp) = push!(b.rows, op)
+
+# a request for an edge of the current at (offset, components, type), with `form` when the row
+# reads its momentum; the first form asked of a current becomes its own
+function want!(b::ExportBuilder, offset, components, ty::PhysicalType, form = nothing)::Int
+    c = intern!(b.layouts, (Int(offset), Int(components), ty))
+    c > length(b.owns) && push!(b.owns, 0)
+    form === nothing || b.owns[c] != 0 || (b.owns[c] = form)
+    push!(b.requests, (c, form))
+    return length(b.requests)
+end
+
+form_of(x)::FormIndex = x === nothing ? export_error("an operand without a momentum form") : Int(x) + 1
+set_mode(m)::Bool = m == "set" ? true : m == "add" ? false : export_error("mode $m")
+
+# one input of a binding; a literal takes the next slot of `scaleset`
+function binding_input!(b::ExportBuilder, scaleset::Vector{ScaleIndex}, i, id)::KernelInput
+    kind = i["kind"]
+    if kind == "parent"
+        return KernelInput(Int(i["parent"]) == 0 ? IN_L : IN_R, Int(i["component"]) + 1, i["imaginary"])
+    elseif kind == "destination"
+        i["amplitude"] && export_error("binding $id: an amplitude input")
+        return KernelInput(OUT, Int(i["component"]) + 1, i["imaginary"])
+    elseif kind == "momentum"
+        return KernelInput(Int(i["operand"]) == 0 ? MOMENTUM_U : MOMENTUM_V, Int(i["component"]) + 1, false)
+    elseif kind == "literal"
+        push!(scaleset, scale!(b, complex(f64(i["value"]), 0.0)))
+        return KernelInput(SCALE, length(scaleset), false)
+    elseif kind == "factor"
+        return KernelInput(FACTOR, 0, i["imaginary"])
+    end
+    export_error("binding $id: input kind $kind")
+end
+
+# the output components of a binding: its outputs are (re, im) pairs of one destination component each
+function binding_outputs(o, id)::Vector{ComponentIndex}
+    iseven(length(o)) || export_error("binding $id: $(length(o)) outputs")
+    outputs = ComponentIndex[]
+    for j in 1:2:length(o)
+        (re, im_) = (o[j], o[j+1])
+        all(x -> x["kind"] == "destination" && !x["amplitude"], (re, im_)) && re["component"] == im_["component"] &&
+            !re["imaginary"] && im_["imaginary"] || export_error("binding $id: outputs $j, $(j + 1) are not one component's (re, im)")
+        push!(outputs, Int(re["component"]) + 1)
+    end
+    return outputs
+end
+
+function import_binding!(b::ExportBuilder, x, libraries::Dict{String,KernelLibrary})
+    id, sha = x["id"], String(x["sha256"])
+    haskey(libraries, sha) || export_error("binding $id: no kernel $sha in the file")
+    scaleset = ScaleIndex[]
+    inputs = KernelInput[binding_input!(b, scaleset, i, id) for i in x["inputs"]]
+    b.bindings[Int(id)] = ExportBinding(inputs, scaleset, binding_outputs(x["outputs"], id), libraries[sha], Bool(x["direct"]))
+end
+
+# the binding instance (stub, scale set) of a binding, both interned
+instance!(b::ExportBuilder, x::ExportBinding)::InstanceIndex =
+    intern_instance!(k -> k.path == x.kernel.path && k.source == x.kernel.source, b.stubs, b.scalesets, b.instances,
+                     x.kernel, x.inputs, x.outputs, x.scaleset)
+
+# ---- the rows of the body, one function per instruction kind
+
+function import_clear!(b::ExportBuilder, i)
+    n = Int(i["component_count"])
+    row!(b, LOp(CLEAR; d = want!(b, i["current"], n, UNTYPED), n = n))
+end
+
+import_clear_amplitude!(b::ExportBuilder, i) = row!(b, LOp(CLEAR_AMPLITUDE; d = Int(i["amplitude"]) + 1))
+
+# `s`: the run's source the instruction names
+function import_source!(b::ExportBuilder, s)
+    family = s["family"]
+    haskey(FAMILY_TYPES, family) || export_error("source family $family")
+    ty = FAMILY_TYPES[family]
+    # component_count is the wavefunction's; an embedding writes the components it lists
+    # (union sources: a Weyl spinor into a 4-component slot, the rest +0)
+    n = Int(s["component_count"])
+    n == TYPE_COMPONENTS[ty] || export_error("a $family source of $n components")
+    embedded = !isempty(s["embedding"])
+    width = embedded ? maximum(Int(e["component"]) for e in s["embedding"]) + 1 : n
+    d = want!(b, s["current"], width, embedded ? UNTYPED : ty, form_of(s["momentum_form"]))
+    emb = 0
+    if embedded
+        push!(b.embeddings, [(Int(e["component"]) + 1, e["source_component"] === nothing ? 0 : Int(e["source_component"]) + 1,
+                              factor!(b, cvalue(e["factor"]))) for e in s["embedding"]])
+        emb = length(b.embeddings)
+    end
+    row!(b, source_op(d, ty, s["orientation"] == "antiparticle", Int(s["helicity"]), Int(s["chirality"]),
+                      scale!(b, cvalue(s["mass"])), factor!(b, cvalue(s["factor"])); embedding = emb))
+end
+
+function import_vertex!(b::ExportBuilder, i)
+    name = get(EXPORT_VERTICES, i["vertex"], nothing)
+    name === nothing && export_error("vertex $(i["vertex"])")
+    (opc, tl, tr, tout) = VERTEX_OPS[name]
+    reads = opc == V_THREE_VECTOR
+    i["right"] === nothing && export_error("vertex $(i["vertex"]) without a right operand")
+    l = want!(b, i["left"], TYPE_COMPONENTS[tl], tl, reads ? form_of(i["left_momentum"]) : nothing)
+    r = want!(b, i["right"], TYPE_COMPONENTS[tr], tr, reads ? form_of(i["right_momentum"]) : nothing)
+    d = want!(b, i["current"], TYPE_COMPONENTS[tout], tout)
+    row!(b, LOp(opc; set = set_mode(i["mode"]), first = true, last = true, d = d, t = scale!(b, cvalue(i["coupling"])),
+                l = l, r = r, x = factor!(b, cvalue(i["factor"]))))
+end
+
+function import_propagator!(b::ExportBuilder, i)
+    name = get(EXPORT_PROPAGATORS, i["propagator"], nothing)
+    name === nothing && export_error("propagator $(i["propagator"])")
+    (opc, ty) = PROPAGATOR_OPS[name]
+    Int(i["component_count"]) == TYPE_COMPONENTS[ty] || export_error("propagator $name of $(i["component_count"]) components")
+    d = want!(b, i["current"], TYPE_COMPONENTS[ty], ty, form_of(i["momentum_form"]))
+    row!(b, LOp(opc; d = d, x = factor!(b, cvalue(i["factor"]))))
+end
+
+function import_scale!(b::ExportBuilder, i)
+    n = Int(i["component_count"])
+    row!(b, LOp(SCALE_ROW; d = want!(b, i["current"], n, UNTYPED), n = n, x = factor!(b, cvalue(i["factor"]))))
+end
+
+# a copy or a scatter (which has a mode)
+function import_copy!(b::ExportBuilder, i, scatter::Bool)
+    n = Int(i["component_count"])
+    d = want!(b, i["current"], n, UNTYPED)
+    l = want!(b, i["source"], n, UNTYPED)
+    row!(b, LOp(scatter ? SCATTER : COPY; set = scatter && set_mode(i["mode"]), d = d, l = l, x = factor!(b, cvalue(i["factor"]))))
+end
+
+function import_closure!(b::ExportBuilder, i)
+    cf = [factor!(b, cvalue(z)) for z in i["component_factors"]]
+    n = length(cf)
+    row!(b, LOp(CLOSURE; d = Int(i["amplitude"]) + 1, t = intern!(b.lists, cf), l = want!(b, i["left"], n, UNTYPED),
+                r = want!(b, i["right"], n, UNTYPED), x = factor!(b, cvalue(i["factor"]))))
+end
+
+# the largest component of the given kinds a binding reads (0: none)
+reach(x::ExportBinding, kinds...) = maximum((i.n for i in x.inputs if i.kind in kinds); init = 0)
+
+# a kernel row's operand `at`, which the binding reads through the input kinds `part` (a component)
+# and `momentum` (its form): its edge request, or 0 when the binding reads neither
+function kernel_operand!(b::ExportBuilder, x::ExportBinding, at, part::InputKind, momentum::InputKind, form)::Int
+    comps = reach(x, part)
+    reads_form = any(i -> i.kind == momentum, x.inputs)
+    comps == 0 && !reads_form && return 0
+    at === nothing && export_error("a kernel input of a null operand")
+    return want!(b, at, max(1, comps), UNTYPED, reads_form ? form_of(form) : nothing)
+end
+
+function import_kernel!(b::ExportBuilder, i)
+    i["amplitude"] && export_error("a kernel with an amplitude destination")
+    x = get(b.bindings, Int(i["binding"]), nothing)
+    x === nothing && export_error("kernel row: no binding $(i["binding"])")
+    # each operand's components: the largest one the binding reads (at least 1)
+    nd = max(1, reach(x, OUT), maximum(x.outputs; init = 0))
+    l = kernel_operand!(b, x, i["left"], IN_L, MOMENTUM_U, i["left_momentum"])
+    r = kernel_operand!(b, x, i["right"], IN_R, MOMENTUM_V, i["right_momentum"])
+    row!(b, LOp(x.direct ? KERNEL_DIRECT : KERNEL; set = set_mode(i["mode"]), d = want!(b, i["destination"], nd, UNTYPED),
+                t = instance!(b, x), l = l, r = r, x = factor!(b, cvalue(i["factor"]))))
+end
+
+# one instruction of the body, with the run's sources
+function import_row!(b::ExportBuilder, i, sources)
+    kind = i["kind"]
+    kind == "clear" ? import_clear!(b, i) :
+    kind == "clear_amplitude" ? import_clear_amplitude!(b, i) :
+    kind == "source" ? import_source!(b, sources[Int(i["source"])+1]) :
+    kind == "vertex" ? import_vertex!(b, i) :
+    kind == "propagator" ? import_propagator!(b, i) :
+    kind == "scale" ? import_scale!(b, i) :
+    kind == "copy" ? import_copy!(b, i, false) :
+    kind == "scatter" ? import_copy!(b, i, true) :
+    kind == "closure" ? import_closure!(b, i) :
+    kind == "kernel" ? import_kernel!(b, i) : export_error("instruction $kind")
+end
+
+# one term of a run's reduction
+function import_reduction!(b::ExportBuilder, t)
+    x = t["apply_amplitude_scale"] ? factor!(b, cvalue(t["amplitude_scale"])) : 0
+    row!(b, LOp(REDUCE; d = Int(t["helicity_output"]) + 1, t = Int(t["amplitude"]) + 1, x = x,
+                n = intern_value!(b.weights, f64(t["weight"]))))
+end
+
+# The edges and the rows with their requests resolved: current c's own edge first (edge c), then
+# the other (current, form) pairs in the order the rows ask for them.
+function resolved_ops(b::ExportBuilder)::Tuple{Vector{LEdge},Vector{LOp}}
+    edges = [LEdge(c, b.owns[c]) for c in eachindex(b.layouts)]
+    resolve(k) = k == 0 ? 0 : ((c, f) = b.requests[k]; f === nothing || f == b.owns[c] ? c : intern!(edges, LEdge(c, f)))
+    ops = LOp[]
+    for o in b.rows
+        d = no_destination(o) ? o.d : resolve(o.d)      # d first, then l and r: the edges' order
+        (l, r) = isempty(operand_edges(o)) ? (o.l, o.r) : (resolve(o.l), resolve(o.r))
+        push!(ops, LOp(o.op, o.set, o.first, o.last, d, o.t, l, r, o.n, o.x))
+    end
+    return (edges, ops)
+end
+
+function export_alpha_s(p)
+    a = p["alpha_s"]
+    a === nothing && return nothing
+    power = a["squared_amplitude_power"]
+    return (f64(a["value"]["re"]), power === nothing ? nothing : Int(power))
+end
+
 # The rows of one full program entry, as a Lowered (its own process, colour, crossing, group
-# factor and helicities)
+# factor and helicities): the bindings, then per run the body (with the run's sources) and the
+# run's reduction.
 function import_program(p, libraries::Dict{String,KernelLibrary})::Lowered
-    scales = Complex{Float64}[]
-    factors = Complex{Float64}[]
-    scale(z) = intern_value!(scales, z)
-    factor(z) = intern_value!(factors, z)
-
-    # currents, keyed by (offset, components, type); the edge requests (current, form or nothing:
-    # "any edge of it") as pairs, resolved to edges at the end
-    keys = Tuple{Int,Int,PhysicalType}[]
-    owns = FormIndex[]                       # each current's own form (0: none yet)
-    pairs = Tuple{CurrentIndex,Union{Nothing,FormIndex}}[]
-    function want(offset, components, ty::PhysicalType, form = nothing)::Int
-        c = intern!(keys, (Int(offset), Int(components), ty))
-        c > length(owns) && push!(owns, 0)
-        form === nothing || owns[c] != 0 || (owns[c] = form)
-        push!(pairs, (c, form))
-        return length(pairs)
-    end
-    form_of(x) = x === nothing ? export_error("an operand without a momentum form") : Int(x) + 1
-
-    lists = Vector{FactorIndex}[]
-    embeddings = Vector{EmbeddingEntry}[]
-    stubs = LStub[]
-    scalesets = Vector{ScaleIndex}[]
-    instances = Tuple{StubIndex,ScaleSetIndex}[]
-    weights = Float64[]
-
-    # the kernel bindings: by id, (stub inputs with scale slots, the scale set, outputs, kernel, direct)
-    bindings = Dict{Int,Any}()
-    for b in p["kernel_bindings"]
-        sha = String(b["sha256"])
-        haskey(libraries, sha) || export_error("binding $(b["id"]): no kernel $sha in the file")
-        inputs = KernelInput[]
-        scaleset = ScaleIndex[]
-        for i in b["inputs"]
-            kind = i["kind"]
-            if kind == "parent"
-                push!(inputs, KernelInput(Int(i["parent"]) == 0 ? IN_L : IN_R, Int(i["component"]) + 1, i["imaginary"]))
-            elseif kind == "destination"
-                i["amplitude"] && export_error("binding $(b["id"]): an amplitude input")
-                push!(inputs, KernelInput(OUT, Int(i["component"]) + 1, i["imaginary"]))
-            elseif kind == "momentum"
-                push!(inputs, KernelInput(Int(i["operand"]) == 0 ? MOMENTUM_U : MOMENTUM_V, Int(i["component"]) + 1, false))
-            elseif kind == "literal"
-                push!(scaleset, scale(complex(f64(i["value"]), 0.0)))
-                push!(inputs, KernelInput(SCALE, length(scaleset), false))
-            elseif kind == "factor"
-                push!(inputs, KernelInput(FACTOR, 0, i["imaginary"]))
-            else
-                export_error("binding $(b["id"]): input kind $kind")
-            end
-        end
-        o = b["outputs"]
-        iseven(length(o)) || export_error("binding $(b["id"]): $(length(o)) outputs")
-        outputs = ComponentIndex[]
-        for j in 1:2:length(o)
-            (re, im_) = (o[j], o[j+1])
-            all(x -> x["kind"] == "destination" && !x["amplitude"], (re, im_)) && re["component"] == im_["component"] &&
-                !re["imaginary"] && im_["imaginary"] || export_error("binding $(b["id"]): outputs $j, $(j + 1) are not one component's (re, im)")
-            push!(outputs, Int(re["component"]) + 1)
-        end
-        bindings[Int(b["id"])] = (inputs, scaleset, outputs, libraries[sha], Bool(b["direct"]))
-    end
-    function instance(binding)::InstanceIndex
-        (inputs, scaleset, outputs, kernel, _) = binding
-        k = findfirst(s -> s.kernel.path == kernel.path && s.kernel.source == kernel.source && s.inputs == inputs && s.outputs == outputs, stubs)
-        k === nothing && (push!(stubs, LStub(kernel, inputs, outputs)); k = length(stubs))
-        return intern!(instances, (k, intern!(scalesets, scaleset)))
-    end
-    set_mode(m) = m == "set" ? true : m == "add" ? false : export_error("mode $m")
-
-    # one row of the body (pairs in d, l, r; resolved later), with the run's sources
-    raw = LOp[]
-    function row!(i, sources)
-        kind = i["kind"]
-        if kind == "clear"
-            n = Int(i["component_count"])
-            push!(raw, LOp(CLEAR; d = want(i["current"], n, UNTYPED), n = n))
-        elseif kind == "clear_amplitude"
-            push!(raw, LOp(CLEAR_AMPLITUDE; d = Int(i["amplitude"]) + 1))
-        elseif kind == "source"
-            s = sources[Int(i["source"])+1]
-            family = s["family"]
-            haskey(FAMILY_TYPES, family) || export_error("source family $family")
-            ty = FAMILY_TYPES[family]
-            # component_count is the wavefunction's; an embedding writes the components it lists
-            # (union sources: a Weyl spinor into a 4-component slot, the rest +0)
-            n = Int(s["component_count"])
-            n == TYPE_COMPONENTS[ty] || export_error("a $family source of $n components")
-            embedded = !isempty(s["embedding"])
-            width = embedded ? maximum(Int(e["component"]) for e in s["embedding"]) + 1 : n
-            d = want(s["current"], width, embedded ? UNTYPED : ty, form_of(s["momentum_form"]))
-            emb = 0
-            if embedded
-                push!(embeddings, [(Int(e["component"]) + 1, e["source_component"] === nothing ? 0 : Int(e["source_component"]) + 1,
-                                    factor(cvalue(e["factor"]))) for e in s["embedding"]])
-                emb = length(embeddings)
-            end
-            push!(raw, source_op(d, ty, s["orientation"] == "antiparticle", Int(s["helicity"]), Int(s["chirality"]),
-                                 scale(cvalue(s["mass"])), factor(cvalue(s["factor"])); embedding = emb))
-        elseif kind == "vertex"
-            name = get(EXPORT_VERTICES, i["vertex"], nothing)
-            name === nothing && export_error("vertex $(i["vertex"])")
-            (opc, tl, tr, tout) = VERTEX_OPS[name]
-            reads = opc == V_THREE_VECTOR
-            i["right"] === nothing && export_error("vertex $(i["vertex"]) without a right operand")
-            l = want(i["left"], TYPE_COMPONENTS[tl], tl, reads ? form_of(i["left_momentum"]) : nothing)
-            r = want(i["right"], TYPE_COMPONENTS[tr], tr, reads ? form_of(i["right_momentum"]) : nothing)
-            d = want(i["current"], TYPE_COMPONENTS[tout], tout)
-            push!(raw, LOp(opc; set = set_mode(i["mode"]), first = true, last = true, d = d, t = scale(cvalue(i["coupling"])),
-                           l = l, r = r, x = factor(cvalue(i["factor"]))))
-        elseif kind == "propagator"
-            name = get(EXPORT_PROPAGATORS, i["propagator"], nothing)
-            name === nothing && export_error("propagator $(i["propagator"])")
-            (opc, ty) = PROPAGATOR_OPS[name]
-            Int(i["component_count"]) == TYPE_COMPONENTS[ty] || export_error("propagator $name of $(i["component_count"]) components")
-            d = want(i["current"], TYPE_COMPONENTS[ty], ty, form_of(i["momentum_form"]))
-            push!(raw, LOp(opc; d = d, x = factor(cvalue(i["factor"]))))
-        elseif kind == "scale"
-            n = Int(i["component_count"])
-            push!(raw, LOp(SCALE_ROW; d = want(i["current"], n, UNTYPED), n = n, x = factor(cvalue(i["factor"]))))
-        elseif kind == "copy" || kind == "scatter"
-            n = Int(i["component_count"])
-            d = want(i["current"], n, UNTYPED)
-            l = want(i["source"], n, UNTYPED)
-            push!(raw, LOp(kind == "copy" ? COPY : SCATTER; set = kind == "scatter" && set_mode(i["mode"]), d = d, l = l,
-                           x = factor(cvalue(i["factor"]))))
-        elseif kind == "closure"
-            cf = [factor(cvalue(z)) for z in i["component_factors"]]
-            n = length(cf)
-            push!(raw, LOp(CLOSURE; d = Int(i["amplitude"]) + 1, t = intern!(lists, cf), l = want(i["left"], n, UNTYPED),
-                           r = want(i["right"], n, UNTYPED), x = factor(cvalue(i["factor"]))))
-        elseif kind == "kernel"
-            i["amplitude"] && export_error("a kernel with an amplitude destination")
-            b = get(bindings, Int(i["binding"]), nothing)
-            b === nothing && export_error("kernel row: no binding $(i["binding"])")
-            (inputs, _, outputs, _, direct) = b
-            # each operand's components: the largest one the binding reads (at least 1)
-            reach(kinds...) = maximum((x.n for x in inputs if x.kind in kinds); init = 0)
-            nd = max(1, reach(OUT), maximum(outputs; init = 0))
-            # an operand the binding reads (a component or its momentum): its edge; else 0
-            function operand(at, part::InputKind, momentum::InputKind, form)
-                comps = reach(part)
-                reads_form = any(x -> x.kind == momentum, inputs)
-                comps == 0 && !reads_form && return 0
-                at === nothing && export_error("a kernel input of a null operand")
-                return want(at, max(1, comps), UNTYPED, reads_form ? form_of(form) : nothing)
-            end
-            l = operand(i["left"], IN_L, MOMENTUM_U, i["left_momentum"])
-            r = operand(i["right"], IN_R, MOMENTUM_V, i["right_momentum"])
-            push!(raw, LOp(direct ? KERNEL_DIRECT : KERNEL; set = set_mode(i["mode"]), d = want(i["destination"], nd, UNTYPED),
-                           t = instance(b), l = l, r = r, x = factor(cvalue(i["factor"]))))
-        else
-            export_error("instruction $kind")
-        end
-    end
-
+    b = ExportBuilder()
+    foreach(x -> import_binding!(b, x, libraries), p["kernel_bindings"])
     for run in p["runs"]
-        sources = run["sources"]
-        for i in p["body"]
-            row!(i, sources)
-        end
-        for t in run["reduction"]
-            x = t["apply_amplitude_scale"] ? factor(cvalue(t["amplitude_scale"])) : 0
-            push!(raw, LOp(REDUCE; d = Int(t["helicity_output"]) + 1, t = Int(t["amplitude"]) + 1, x = x,
-                           n = intern_value!(weights, f64(t["weight"]))))
-        end
+        foreach(i -> import_row!(b, i, run["sources"]), p["body"])
+        foreach(t -> import_reduction!(b, t), run["reduction"])
     end
-
-    # the edges: current c's own edge first (edge c), then the other (current, form) pairs
-    edges = [LEdge(c, owns[c]) for c in eachindex(keys)]
-    resolve(k) = k == 0 ? 0 : ((c, f) = pairs[k]; f === nothing || f == owns[c] ? c : intern!(edges, LEdge(c, f)))
-    has_d(op) = !(op.op in (CLOSURE, CLEAR_AMPLITUDE, REDUCE))
-    has_lr(op) = !(op.op in (SOURCE, CLEAR_AMPLITUDE, REDUCE))
-    ops = [LOp(o.op, o.set, o.first, o.last, has_d(o) ? resolve(o.d) : o.d, o.t, has_lr(o) ? resolve(o.l) : o.l,
-               has_lr(o) ? resolve(o.r) : o.r, o.n, o.x) for o in raw]
-    currents = [LCurrent(offset, n, ty) for (offset, n, ty) in keys]
-
+    (edges, ops) = resolved_ops(b)
+    currents = [LCurrent(offset, n, ty) for (offset, n, ty) in b.layouts]
     legs = Int(p["external_count"])
     forms = [Form([(Int(t["leg"]) + 1, f64(t["coefficient"])) for t in f]) for f in p["momentum_forms"]]
-    a = p["alpha_s"]
-    alpha_s = a === nothing ? nothing : (f64(a["value"]["re"]), a["squared_amplitude_power"] === nothing ? nothing : Int(a["squared_amplitude_power"]))
-    l = Lowered(UIR_VERSION, String(p["process_key"]), String(p["colour_id"]), legs, export_crossing(p, legs), forms, scales,
-                factors, alpha_s, export_helicities(p), currents, Int(p["current_component_count"]), edges, lists, embeddings,
-                stubs, scalesets, instances, ops, Int(p["amplitude_count"]), weights, export_group(p), true)
+    l = Lowered(UIR_VERSION, String(p["process_key"]), String(p["colour_id"]), legs, export_crossing(p, legs), forms, b.scales,
+                b.factors, export_alpha_s(p), export_helicities(p), currents, Int(p["current_component_count"]), edges, b.lists,
+                b.embeddings, b.stubs, b.scalesets, b.instances, ops, Int(p["amplitude_count"]), b.weights, export_group(p), true)
     validate(l)
     return l
 end

@@ -97,91 +97,123 @@ label_c(s::String) = "L_" * replace(s, r"[^A-Za-z0-9_]" => c -> "_$(string(UInt3
 const_c(x::Float64) = isnan(x) ? "sj_double(0x$(string(reinterpret(UInt64, x); base = 16))ull)" :
                       isinf(x) ? (x > 0 ? "HUGE_VAL" : "-HUGE_VAL") : repr(x)
 
-# the kernel `name` of `app` as C (KERNEL_PRELUDE before it)
-function kernel_c(name::String, app::SavedApplication)::String
+# What kernel_c collects while it writes a kernel: the C lines of the body, the registers and stack
+# slots they use (declared at the top), and the funclet calls (each a return point).
+mutable struct KernelWriter
+    name::String
+    mir::MIR
+    complex::Bool                # a complex model: the operand of a LoadMath goes to Temp, else to Ret
+    labels::Set{String}
+    regs::Set{String}
+    slots::Set{Int}
+    body::Vector{String}
+    returns::Int                 # funclet calls so far: the return points R_0, R_1, ...
+    has_ret::Bool                # a funclet returns (a branch to ".ret")
+end
+
+KernelWriter(name::String, app::SavedApplication) =
+    KernelWriter(name, app.mir, is_complex(app.config), Set(i.label for i in app.mir.code if i isa Label), Set{String}(),
+                 Set{Int}(), String[], 0, false)
+
+# a kernel compile can write: no parameters, saved for a direct arena
+function check_kernel(name::String, app::SavedApplication)
     app.count_params == 0 || refuse("$name takes $(app.count_params) parameters")
     app.config.opt & CONFIG_OPTIONS.direct_arena != 0 || refuse("$name was not saved for a direct arena")
-    mir = app.mir
-    complex = is_complex(app.config)
-    labels = Set(i.label for i in mir.code if i isa Label)
-    regs = Set{String}()
-    used(r::Reg) = (s = reg_c(r); push!(regs, s); s)
-    slots = Set{Int}()
-    at(l::Loc, offset::Int = 0) = (l.kind == LOC_STACK && push!(slots, l.index + offset); loc_c(l, offset))
-    returns = 0
-    has_ret = false
-    body = String[]
-    line(s) = push!(body, s)
-    for i in mir.code
-        if i isa Nop || i isa End
-        elseif i isa Uni
-            f = get(UNI_C, i.op, nothing)
-            f === nothing && refuse("$name: the operation $(i.op)")
-            line("$(used(i.dst)) = $(f(used(i.s1)));")
-        elseif i isa Bi
-            f = get(BI_C, i.op, nothing)
-            f === nothing && refuse("$name: the operation $(i.op)")
-            line("$(used(i.dst)) = $(f(used(i.s1), used(i.s2)));")
-        elseif i isa Fused
-            line("$(used(i.dst)) = $(FUSED_C[i.op](used(i.a), used(i.b), used(i.c)));")
-        elseif i isa Mov
-            line("$(used(i.dst)) = $(used(i.s1));")
-        elseif i isa Load
-            line("$(used(i.dst)) = $(at(i.loc));")
-        elseif i isa Save
-            line("$(at(i.loc)) = $(used(i.src));")
-        elseif i isa LoadConst
-            line("$(used(i.dst)) = $(const_c(mir.consts[i.idx+1]));")
-        elseif i isa LoadComplex
-            line("$(used(i.xd)) = $(at(i.loc)); $(used(i.yd)) = $(at(i.loc, 1));")
-        elseif i isa SaveComplex
-            line("$(at(i.loc)) = $(used(i.xs)); $(at(i.loc, 1)) = $(used(i.ys));")
-        elseif i isa LoadMath || i isa LoadConstMath
-            # the operand goes to Temp (complex) or Ret (real) first, as symjit replays it
-            t = used(Reg(complex ? REG_TEMP : REG_RET, 0))
-            line("$t = $(i isa LoadMath ? at(i.loc) : const_c(mir.consts[i.idx+1])); $(used(i.dst)) = $(BI_C[i.op](used(i.s1), t));")
-        elseif i isa ComplexBi
-            (xd, yd, x1, y1, x2, y2) = used.((i.xd, i.yd, i.x1, i.y1, i.x2, i.y2))
-            (xt, yt, t) = used.((Reg(REG_GEN, 2), Reg(REG_GEN, 3), Reg(REG_TEMP, 0)))
-            if i.op == :Plus || i.op == :Minus
-                o = i.op == :Plus ? "+" : "-"
-                line("$xd = $x1 $o $x2; $yd = $y1 $o $y2;")
-            elseif i.op == :Times    # amd/scalar.rs times_complex
-                line("$xt = $y1 * $y2; $xt = fma($x1, $x2, -$xt); $yt = $x1 * $y2; $yd = fma($x2, $y1, $yt); $xd = $xt;")
-            elseif i.op == :Divide   # amd/scalar.rs divide_complex
-                line("$xt = $y1 * $y2; $xt = fma($x1, $x2, $xt); $yt = $x1 * $y2; $yt = fma($x2, $y1, -$yt); " *
-                     "$t = $x2 * $x2; $t = fma($y2, $y2, $t); $xd = $xt / $t; $yd = $yt / $t;")
-            else
-                refuse("$name: the complex operation $(i.op)")
-            end
-        elseif i isa IfElse
-            line("$(used(i.dst)) = $(at(i.cond)) != 0.0 ? $(used(i.true_val)) : $(used(i.false_val));")
-        elseif i isa Label
-            line("$(label_c(i.label)):;")
-        elseif i isa Branch
-            if i.label == ".ret"
-                line("goto L_return;")
-                has_ret = true
-            else
-                i.label in labels || refuse("$name: no label $(i.label)")
-                line("goto $(label_c(i.label));")
-            end
-        elseif i isa BranchIf
-            i.label in labels || refuse("$name: no label $(i.label)")
-            line("if ($(i.is_else ? "" : "!")($(used(i.cond)) == 0.0)) goto $(label_c(i.label));")
-        elseif i isa Call
-            i.num_args == 0 && i.label in labels || refuse("$name: a call of $(i.label) (math functions are not supported)")
-            line("ret = $returns; goto $(label_c(i.label)); R_$returns:;")
-            returns += 1
-        else
-            refuse("$name: the instruction $i")
-        end
+end
+
+line!(g::KernelWriter, s::String) = push!(g.body, s)
+used!(g::KernelWriter, r::Reg)::String = (s = reg_c(r); push!(g.regs, s); s)
+at!(g::KernelWriter, l::Loc, offset::Int = 0)::String = (l.kind == LOC_STACK && push!(g.slots, l.index + offset); loc_c(l, offset))
+known_label(labels::Set{String}, name::String, label::String) = label in labels || refuse("$name: no label $label")
+funclet(labels::Set{String}, name::String, i::Call) =
+    i.num_args == 0 && i.label in labels || refuse("$name: a call of $(i.label) (math functions are not supported)")
+
+# ---- one MIR instruction as C, by its type
+
+emit_c!(g::KernelWriter, i::Union{Nop,End}) = nothing
+emit_c!(g::KernelWriter, i::Instruction) = refuse("$(g.name): the instruction $i")
+
+function emit_c!(g::KernelWriter, i::Uni)
+    f = get(UNI_C, i.op, nothing)
+    f === nothing && refuse("$(g.name): the operation $(i.op)")
+    line!(g, "$(used!(g, i.dst)) = $(f(used!(g, i.s1)));")
+end
+
+function emit_c!(g::KernelWriter, i::Bi)
+    f = get(BI_C, i.op, nothing)
+    f === nothing && refuse("$(g.name): the operation $(i.op)")
+    line!(g, "$(used!(g, i.dst)) = $(f(used!(g, i.s1), used!(g, i.s2)));")
+end
+
+emit_c!(g::KernelWriter, i::Fused) = line!(g, "$(used!(g, i.dst)) = $(FUSED_C[i.op](used!(g, i.a), used!(g, i.b), used!(g, i.c)));")
+emit_c!(g::KernelWriter, i::Mov) = line!(g, "$(used!(g, i.dst)) = $(used!(g, i.s1));")
+emit_c!(g::KernelWriter, i::Load) = line!(g, "$(used!(g, i.dst)) = $(at!(g, i.loc));")
+emit_c!(g::KernelWriter, i::Save) = line!(g, "$(at!(g, i.loc)) = $(used!(g, i.src));")
+emit_c!(g::KernelWriter, i::LoadConst) = line!(g, "$(used!(g, i.dst)) = $(const_c(g.mir.consts[i.idx+1]));")
+emit_c!(g::KernelWriter, i::LoadComplex) = line!(g, "$(used!(g, i.xd)) = $(at!(g, i.loc)); $(used!(g, i.yd)) = $(at!(g, i.loc, 1));")
+emit_c!(g::KernelWriter, i::SaveComplex) = line!(g, "$(at!(g, i.loc)) = $(used!(g, i.xs)); $(at!(g, i.loc, 1)) = $(used!(g, i.ys));")
+
+# the operand goes to Temp (complex) or Ret (real) first, as symjit replays it
+function emit_c!(g::KernelWriter, i::Union{LoadMath,LoadConstMath})
+    t = used!(g, Reg(g.complex ? REG_TEMP : REG_RET, 0))
+    operand = i isa LoadMath ? at!(g, i.loc) : const_c(g.mir.consts[i.idx+1])
+    line!(g, "$t = $operand; $(used!(g, i.dst)) = $(BI_C[i.op](used!(g, i.s1), t));")
+end
+
+# +, -, ×, ÷ of register pairs, as symjit's x86-64 generator (amd/scalar.rs times_complex, divide_complex)
+function emit_c!(g::KernelWriter, i::ComplexBi)
+    (xd, yd, x1, y1, x2, y2) = (used!(g, r) for r in (i.xd, i.yd, i.x1, i.y1, i.x2, i.y2))
+    (xt, yt, t) = (used!(g, r) for r in (Reg(REG_GEN, 2), Reg(REG_GEN, 3), Reg(REG_TEMP, 0)))
+    if i.op == :Plus || i.op == :Minus
+        o = i.op == :Plus ? "+" : "-"
+        line!(g, "$xd = $x1 $o $x2; $yd = $y1 $o $y2;")
+    elseif i.op == :Times
+        line!(g, "$xt = $y1 * $y2; $xt = fma($x1, $x2, -$xt); $yt = $x1 * $y2; $yd = fma($x2, $y1, $yt); $xd = $xt;")
+    elseif i.op == :Divide
+        line!(g, "$xt = $y1 * $y2; $xt = fma($x1, $x2, $xt); $yt = $x1 * $y2; $yt = fma($x2, $y1, -$yt); " *
+                 "$t = $x2 * $x2; $t = fma($y2, $y2, $t); $xd = $xt / $t; $yd = $yt / $t;")
+    else
+        refuse("$(g.name): the complex operation $(i.op)")
     end
+end
+
+emit_c!(g::KernelWriter, i::IfElse) =
+    line!(g, "$(used!(g, i.dst)) = $(at!(g, i.cond)) != 0.0 ? $(used!(g, i.true_val)) : $(used!(g, i.false_val));")
+emit_c!(g::KernelWriter, i::Label) = line!(g, "$(label_c(i.label)):;")
+
+function emit_c!(g::KernelWriter, i::Branch)
+    if i.label == ".ret"
+        line!(g, "goto L_return;")
+        g.has_ret = true
+    else
+        known_label(g.labels, g.name, i.label)
+        line!(g, "goto $(label_c(i.label));")
+    end
+end
+
+function emit_c!(g::KernelWriter, i::BranchIf)
+    known_label(g.labels, g.name, i.label)
+    line!(g, "if ($(i.is_else ? "" : "!")($(used!(g, i.cond)) == 0.0)) goto $(label_c(i.label));")
+end
+
+# a funclet call: its return point is the next R_k
+function emit_c!(g::KernelWriter, i::Call)
+    funclet(g.labels, g.name, i)
+    line!(g, "ret = $(g.returns); goto $(label_c(i.label)); R_$(g.returns):;")
+    g.returns += 1
+end
+
+# the names of a declaration, shortest first
+declared(names) = sort(collect(names); by = r -> (length(r), r))
+
+# The C function of a kernel: `comment`, the declarations, the body, and the funclets' return
+# switch (`returns` return points; `has_ret`: a funclet returns).
+function kernel_function(name::String, comment::String, declarations::Vector{String}, body::Vector{String}, returns::Int,
+                         has_ret::Bool)::String
     out = IOBuffer()
-    println(out, "/* the symjit kernel $name ($(length(mir.code)) MIR instructions), from its .plane.symjit by kernel_c.jl */")
+    println(out, comment)
     println(out, "PAC_FN static int $name(double *mem) {")
-    isempty(slots) || println(out, "double ", join(("stack$k = 0.0" for k in sort(collect(slots))), ", "), ";")
-    isempty(regs) || println(out, "double ", join(("$r = 0.0" for r in sort(collect(regs); by = r -> (length(r), r))), ", "), ";")
+    foreach(d -> println(out, d), declarations)
     has_ret && println(out, "int ret = -1;")
     foreach(l -> println(out, l), body)
     println(out, "return 0;")
@@ -194,6 +226,18 @@ function kernel_c(name::String, app::SavedApplication)::String
     end
     println(out, "}")
     return String(take!(out))
+end
+
+# the kernel `name` of `app` as C (KERNEL_PRELUDE before it)
+function kernel_c(name::String, app::SavedApplication)::String
+    check_kernel(name, app)
+    g = KernelWriter(name, app)
+    foreach(i -> emit_c!(g, i), g.mir.code)
+    declarations = String[]
+    isempty(g.slots) || push!(declarations, "double " * join(("stack$k = 0.0" for k in sort(collect(g.slots))), ", ") * ";")
+    isempty(g.regs) || push!(declarations, "double " * join(("$r = 0.0" for r in declared(g.regs)), ", ") * ";")
+    comment = "/* the symjit kernel $name ($(length(g.mir.code)) MIR instructions), from its .plane.symjit by kernel_c.jl */"
+    return kernel_function(name, comment, declarations, g.body, g.returns, g.has_ret)
 end
 
 kernel_c(name::String, path::AbstractString) = kernel_c(name, read_sjb(path; lowered = true))
@@ -217,7 +261,8 @@ struct MixedStep
     dst::String                       # the name it defines ("" for none: a store to mem, control)
     args::Vector{String}              # the names it reads
     kind::Symbol                      # :arith (f32 unless needed), :f64 (always), :move (its source's type unless needed),
-                                      # :load (from mem), :save (to mem), :ctrl (control: raw C)
+                                      # :select (f64 when a branch is; its condition a mask, f64), :load (from mem),
+                                      # :save (to mem), :ctrl (control: raw C)
     render::Function                  # (operand expressions, type) -> the C expression (or, :ctrl, the C)
     seeds::Vector{String}             # the operands it needs in f64 (a divisor)
 end
@@ -225,140 +270,154 @@ end
 mfn(t, f) = t == :f32 ? f * "f" : f            # sqrt → sqrtf
 mlit(t, x::Float64) = t == :f32 ? "((float)$(const_c(x)))" : const_c(x)
 
-function mixed_steps(name::String, app::SavedApplication)
-    mir = app.mir
-    complex = is_complex(app.config)
-    labels = Set(i.label for i in mir.code if i isa Label)
-    steps = MixedStep[]
-    step(dst, args, kind, render; seeds = String[]) = push!(steps, MixedStep(dst, collect(String, args), kind, render, collect(String, seeds)))
-    arith(dst, args, f) = step(dst, args, :arith, f)
-    f64(dst, args, f) = step(dst, args, :f64, f)
-    ctrl(c) = step("", String[], :ctrl, (_, _) -> c)
-    loc(l::Loc, offset::Int = 0) = loc_c(l, offset)
-    function load!(dst, l::Loc, offset = 0)
-        n = loc(l, offset)
-        l.kind == LOC_MEM ? step(dst, String[], :load, (_, t) -> t == :f32 ? "(float)$n" : n) :
-                            step(dst, [n], :move, (a, _) -> a[1])
-    end
-    function save!(src, l::Loc, offset = 0)
-        n = loc(l, offset)
-        l.kind == LOC_MEM ? step("", [src], :save, (a, _) -> "$n = $(a[1])") : step(n, [src], :move, (a, _) -> a[1])
-    end
-    # a real operation of BI_C's or UNI_C's: f64 for the bit operations, the division (its divisor a seed)
-    function bi!(op, dst, s1, s2)
-        if op == :Divide
-            step(dst, [s1, s2], :f64, (a, _) -> "$(a[1]) / $(a[2])"; seeds = [s2])
-        elseif op in (:Plus, :Minus, :Times)
-            o = op == :Plus ? "+" : op == :Minus ? "-" : "*"
-            arith(dst, [s1, s2], (a, _) -> "$(a[1]) $o $(a[2])")
-        else
-            f = get(BI_C, op, nothing)
-            f === nothing && refuse("$name: the operation $op")
-            f64(dst, [s1, s2], (a, _) -> f(a[1], a[2]))
-        end
-    end
-    uni = Dict(:Neg => (a, t) -> "-$(a[1])", :Abs => (a, t) -> "$(mfn(t, "fabs"))($(a[1]))", :Abs2 => (a, t) -> "$(a[1]) * $(a[1])",
-               :Root => (a, t) -> "$(mfn(t, "sqrt"))($(a[1]))", :RealRoot => (a, t) -> "$(mfn(t, "sqrt"))($(a[1]))",
-               :Round => (a, t) -> "$(mfn(t, "nearbyint"))($(a[1]))", :Floor => (a, t) -> "$(mfn(t, "floor"))($(a[1]))",
-               :Ceiling => (a, t) -> "$(mfn(t, "ceil"))($(a[1]))", :Trunc => (a, t) -> "$(mfn(t, "trunc"))($(a[1]))",
-               :Half => (a, t) -> "$(a[1]) * $(mlit(t, 0.5))")
-    fused = Dict(:MulAdd => (a, t) -> "$(mfn(t, "fma"))($(a[1]), $(a[2]), $(a[3]))",
-                 :MulSub => (a, t) -> "$(mfn(t, "fma"))($(a[1]), $(a[2]), -$(a[3]))",
-                 :NegMulAdd => (a, t) -> "$(mfn(t, "fma"))(-$(a[1]), $(a[2]), $(a[3]))",
-                 :NegMulSub => (a, t) -> "$(mfn(t, "fma"))(-$(a[1]), $(a[2]), -$(a[3]))")
-    returns = 0
-    has_ret = false
-    for i in mir.code
-        if i isa Nop || i isa End
-        elseif i isa Uni
-            d, s = reg_c(i.dst), reg_c(i.s1)
-            if i.op == :Recip
-                step(d, [s], :f64, (a, _) -> "1.0 / $(a[1])"; seeds = [s])
-            elseif i.op in (:Real, :Conjugate)
-                step(d, [s], :move, (a, _) -> a[1])
-            elseif i.op == :Imaginary
-                arith(d, String[], (_, t) -> mlit(t, 0.0))
-            elseif haskey(uni, i.op)
-                arith(d, [s], uni[i.op])
-            else
-                f = get(UNI_C, i.op, nothing)
-                f === nothing && refuse("$name: the operation $(i.op)")
-                f64(d, [s], (a, _) -> f(a[1]))
-            end
-        elseif i isa Bi
-            bi!(i.op, reg_c(i.dst), reg_c(i.s1), reg_c(i.s2))
-        elseif i isa Fused
-            arith(reg_c(i.dst), reg_c.([i.a, i.b, i.c]), fused[i.op])
-        elseif i isa Mov
-            step(reg_c(i.dst), [reg_c(i.s1)], :move, (a, _) -> a[1])
-        elseif i isa Load
-            load!(reg_c(i.dst), i.loc)
-        elseif i isa Save
-            save!(reg_c(i.src), i.loc)
-        elseif i isa LoadConst
-            x = mir.consts[i.idx+1]
-            arith(reg_c(i.dst), String[], (_, t) -> mlit(t, x))
-        elseif i isa LoadComplex
-            load!(reg_c(i.xd), i.loc); load!(reg_c(i.yd), i.loc, 1)
-        elseif i isa SaveComplex
-            save!(reg_c(i.xs), i.loc); save!(reg_c(i.ys), i.loc, 1)
-        elseif i isa LoadMath || i isa LoadConstMath
-            t = reg_c(Reg(complex ? REG_TEMP : REG_RET, 0))
-            if i isa LoadMath
-                load!(t, i.loc)
-            else
-                x = mir.consts[i.idx+1]
-                arith(t, String[], (_, ty) -> mlit(ty, x))
-            end
-            bi!(i.op, reg_c(i.dst), reg_c(i.s1), t)
-        elseif i isa ComplexBi
-            (xd, yd, x1, y1, x2, y2) = reg_c.((i.xd, i.yd, i.x1, i.y1, i.x2, i.y2))
-            (xt, yt, t) = reg_c.((Reg(REG_GEN, 2), Reg(REG_GEN, 3), Reg(REG_TEMP, 0)))
-            if i.op == :Plus || i.op == :Minus
-                bi!(i.op, xd, x1, x2); bi!(i.op, yd, y1, y2)
-            elseif i.op == :Times    # as kernel_c
-                bi!(:Times, xt, y1, y2); arith(xt, [x1, x2, xt], fused[:MulSub]); bi!(:Times, yt, x1, y2)
-                arith(yd, [x2, y1, yt], fused[:MulAdd]); step(xd, [xt], :move, (a, _) -> a[1])
-            elseif i.op == :Divide
-                bi!(:Times, xt, y1, y2); arith(xt, [x1, x2, xt], fused[:MulAdd]); bi!(:Times, yt, x1, y2)
-                arith(yt, [x2, y1, yt], fused[:MulSub]); bi!(:Times, t, x2, x2); arith(t, [y2, y2, t], fused[:MulAdd])
-                bi!(:Divide, xd, xt, t); bi!(:Divide, yd, yt, t)
-            else
-                refuse("$name: the complex operation $(i.op)")
-            end
-        elseif i isa IfElse
-            c = loc(i.cond)
-            step(reg_c(i.dst), [reg_c(i.true_val), reg_c(i.false_val), c], :select,
-                 (a, _) -> "$(a[3]) != 0.0 ? $(a[1]) : $(a[2])")
-        elseif i isa Label
-            ctrl("$(label_c(i.label)):;")
-        elseif i isa Branch
-            if i.label == ".ret"
-                ctrl("goto L_return;"); has_ret = true
-            else
-                i.label in labels || refuse("$name: no label $(i.label)")
-                ctrl("goto $(label_c(i.label));")
-            end
-        elseif i isa BranchIf
-            i.label in labels || refuse("$name: no label $(i.label)")
-            c = reg_c(i.cond)
-            step("", [c], :ctrl, (a, _) -> "if ($(i.is_else ? "" : "!")($(a[1]) == 0.0)) goto $(label_c(i.label));")
-        elseif i isa Call
-            i.num_args == 0 && i.label in labels || refuse("$name: a call of $(i.label) (math functions are not supported)")
-            ctrl("ret = $returns; goto $(label_c(i.label)); R_$returns:;")
-            returns += 1
-        else
-            refuse("$name: the instruction $i")
-        end
-    end
-    return (steps, returns, has_ret)
+# the unary operations that follow their value's type, and the fused multiply-adds: (operands, type) -> C
+const MIXED_UNI = Dict{Symbol,Function}(
+    :Neg => (a, t) -> "-$(a[1])", :Abs => (a, t) -> "$(mfn(t, "fabs"))($(a[1]))", :Abs2 => (a, t) -> "$(a[1]) * $(a[1])",
+    :Root => (a, t) -> "$(mfn(t, "sqrt"))($(a[1]))", :RealRoot => (a, t) -> "$(mfn(t, "sqrt"))($(a[1]))",
+    :Round => (a, t) -> "$(mfn(t, "nearbyint"))($(a[1]))", :Floor => (a, t) -> "$(mfn(t, "floor"))($(a[1]))",
+    :Ceiling => (a, t) -> "$(mfn(t, "ceil"))($(a[1]))", :Trunc => (a, t) -> "$(mfn(t, "trunc"))($(a[1]))",
+    :Half => (a, t) -> "$(a[1]) * $(mlit(t, 0.5))")
+const MIXED_FUSED = Dict{Symbol,Function}(
+    :MulAdd => (a, t) -> "$(mfn(t, "fma"))($(a[1]), $(a[2]), $(a[3]))",
+    :MulSub => (a, t) -> "$(mfn(t, "fma"))($(a[1]), $(a[2]), -$(a[3]))",
+    :NegMulAdd => (a, t) -> "$(mfn(t, "fma"))(-$(a[1]), $(a[2]), $(a[3]))",
+    :NegMulSub => (a, t) -> "$(mfn(t, "fma"))(-$(a[1]), $(a[2]), -$(a[3]))")
+const MIXED_COPY = (a, _) -> a[1]
+
+# what mixed_steps collects: the steps, and the funclets as KernelWriter does
+mutable struct MixedWriter
+    name::String
+    mir::MIR
+    complex::Bool
+    labels::Set{String}
+    steps::Vector{MixedStep}
+    returns::Int
+    has_ret::Bool
 end
 
-# the kernel `name` of `app` in mixed precision (KERNEL_PRELUDE before it); same prototype as kernel_c's
-function kernel_c_mixed(name::String, app::SavedApplication)::String
-    app.count_params == 0 || refuse("$name takes $(app.count_params) parameters")
-    (steps, returns, has_ret) = mixed_steps(name, app)
-    # backward: the definitions the denominators need in f64
+step!(m::MixedWriter, dst, args, kind::Symbol, render; seeds = String[]) =
+    push!(m.steps, MixedStep(dst, collect(String, args), kind, render, collect(String, seeds)))
+arith!(m::MixedWriter, dst, args, render) = step!(m, dst, args, :arith, render)
+move!(m::MixedWriter, dst, src) = step!(m, dst, [src], :move, MIXED_COPY)
+ctrl!(m::MixedWriter, c::String) = step!(m, "", String[], :ctrl, (_, _) -> c)
+const_step!(m::MixedWriter, dst, x::Float64) = arith!(m, dst, String[], (_, t) -> mlit(t, x))
+
+# a load from / a save to a location: mem is double (rounded or widened there); a stack slot is a name
+function load!(m::MixedWriter, dst, l::Loc, offset = 0)
+    n = loc_c(l, offset)
+    l.kind == LOC_MEM ? step!(m, dst, String[], :load, (_, t) -> t == :f32 ? "(float)$n" : n) : move!(m, dst, n)
+end
+
+function save!(m::MixedWriter, src, l::Loc, offset = 0)
+    n = loc_c(l, offset)
+    l.kind == LOC_MEM ? step!(m, "", [src], :save, (a, _) -> "$n = $(a[1])") : move!(m, n, src)
+end
+
+# a real binary operation: the division f64 with its divisor a seed, +, -, × following their value's
+# type, the others (comparisons, masks: BI_C's) f64 on their exact operands
+function bi!(m::MixedWriter, op::Symbol, dst, s1, s2)
+    if op == :Divide
+        step!(m, dst, [s1, s2], :f64, (a, _) -> "$(a[1]) / $(a[2])"; seeds = [s2])
+    elseif op in (:Plus, :Minus, :Times)
+        o = op == :Plus ? "+" : op == :Minus ? "-" : "*"
+        arith!(m, dst, [s1, s2], (a, _) -> "$(a[1]) $o $(a[2])")
+    else
+        f = get(BI_C, op, nothing)
+        f === nothing && refuse("$(m.name): the operation $op")
+        step!(m, dst, [s1, s2], :f64, (a, _) -> f(a[1], a[2]))
+    end
+end
+
+# ---- one MIR instruction as steps, by its type
+
+step_c!(m::MixedWriter, i::Union{Nop,End}) = nothing
+step_c!(m::MixedWriter, i::Instruction) = refuse("$(m.name): the instruction $i")
+
+function step_c!(m::MixedWriter, i::Uni)
+    d, s = reg_c(i.dst), reg_c(i.s1)
+    if i.op == :Recip
+        step!(m, d, [s], :f64, (a, _) -> "1.0 / $(a[1])"; seeds = [s])
+    elseif i.op in (:Real, :Conjugate)
+        move!(m, d, s)
+    elseif i.op == :Imaginary
+        const_step!(m, d, 0.0)
+    elseif haskey(MIXED_UNI, i.op)
+        arith!(m, d, [s], MIXED_UNI[i.op])
+    else
+        f = get(UNI_C, i.op, nothing)
+        f === nothing && refuse("$(m.name): the operation $(i.op)")
+        step!(m, d, [s], :f64, (a, _) -> f(a[1]))
+    end
+end
+
+step_c!(m::MixedWriter, i::Bi) = bi!(m, i.op, reg_c(i.dst), reg_c(i.s1), reg_c(i.s2))
+step_c!(m::MixedWriter, i::Fused) = arith!(m, reg_c(i.dst), reg_c.([i.a, i.b, i.c]), MIXED_FUSED[i.op])
+step_c!(m::MixedWriter, i::Mov) = move!(m, reg_c(i.dst), reg_c(i.s1))
+step_c!(m::MixedWriter, i::Load) = load!(m, reg_c(i.dst), i.loc)
+step_c!(m::MixedWriter, i::Save) = save!(m, reg_c(i.src), i.loc)
+step_c!(m::MixedWriter, i::LoadConst) = const_step!(m, reg_c(i.dst), m.mir.consts[i.idx+1])
+step_c!(m::MixedWriter, i::LoadComplex) = (load!(m, reg_c(i.xd), i.loc); load!(m, reg_c(i.yd), i.loc, 1))
+step_c!(m::MixedWriter, i::SaveComplex) = (save!(m, reg_c(i.xs), i.loc); save!(m, reg_c(i.ys), i.loc, 1))
+
+function step_c!(m::MixedWriter, i::Union{LoadMath,LoadConstMath})
+    t = reg_c(Reg(m.complex ? REG_TEMP : REG_RET, 0))
+    i isa LoadMath ? load!(m, t, i.loc) : const_step!(m, t, m.mir.consts[i.idx+1])
+    bi!(m, i.op, reg_c(i.dst), reg_c(i.s1), t)
+end
+
+# as emit_c!'s ComplexBi, one step per operation
+function step_c!(m::MixedWriter, i::ComplexBi)
+    (xd, yd, x1, y1, x2, y2) = reg_c.((i.xd, i.yd, i.x1, i.y1, i.x2, i.y2))
+    (xt, yt, t) = reg_c.((Reg(REG_GEN, 2), Reg(REG_GEN, 3), Reg(REG_TEMP, 0)))
+    if i.op == :Plus || i.op == :Minus
+        bi!(m, i.op, xd, x1, x2); bi!(m, i.op, yd, y1, y2)
+    elseif i.op == :Times
+        bi!(m, :Times, xt, y1, y2); arith!(m, xt, [x1, x2, xt], MIXED_FUSED[:MulSub]); bi!(m, :Times, yt, x1, y2)
+        arith!(m, yd, [x2, y1, yt], MIXED_FUSED[:MulAdd]); move!(m, xd, xt)
+    elseif i.op == :Divide
+        bi!(m, :Times, xt, y1, y2); arith!(m, xt, [x1, x2, xt], MIXED_FUSED[:MulAdd]); bi!(m, :Times, yt, x1, y2)
+        arith!(m, yt, [x2, y1, yt], MIXED_FUSED[:MulSub]); bi!(m, :Times, t, x2, x2); arith!(m, t, [y2, y2, t], MIXED_FUSED[:MulAdd])
+        bi!(m, :Divide, xd, xt, t); bi!(m, :Divide, yd, yt, t)
+    else
+        refuse("$(m.name): the complex operation $(i.op)")
+    end
+end
+
+step_c!(m::MixedWriter, i::IfElse) =
+    step!(m, reg_c(i.dst), [reg_c(i.true_val), reg_c(i.false_val), loc_c(i.cond, 0)], :select,
+          (a, _) -> "$(a[3]) != 0.0 ? $(a[1]) : $(a[2])")
+step_c!(m::MixedWriter, i::Label) = ctrl!(m, "$(label_c(i.label)):;")
+
+function step_c!(m::MixedWriter, i::Branch)
+    if i.label == ".ret"
+        ctrl!(m, "goto L_return;")
+        m.has_ret = true
+    else
+        known_label(m.labels, m.name, i.label)
+        ctrl!(m, "goto $(label_c(i.label));")
+    end
+end
+
+function step_c!(m::MixedWriter, i::BranchIf)
+    known_label(m.labels, m.name, i.label)
+    step!(m, "", [reg_c(i.cond)], :ctrl, (a, _) -> "if ($(i.is_else ? "" : "!")($(a[1]) == 0.0)) goto $(label_c(i.label));")
+end
+
+function step_c!(m::MixedWriter, i::Call)
+    funclet(m.labels, m.name, i)
+    ctrl!(m, "ret = $(m.returns); goto $(label_c(i.label)); R_$(m.returns):;")
+    m.returns += 1
+end
+
+# the steps of the kernel, with its funclet return points and whether a funclet returns
+function mixed_steps(name::String, app::SavedApplication)
+    m = MixedWriter(name, app.mir, is_complex(app.config), Set(i.label for i in app.mir.code if i isa Label), MixedStep[], 0, false)
+    foreach(i -> step_c!(m, i), m.mir.code)
+    return (m.steps, m.returns, m.has_ret)
+end
+
+# backward: the steps whose value a denominator needs in f64 (the seeds' backward slices)
+function needed_steps(steps::Vector{MixedStep})::BitVector
     needed = Set{String}()
     need = falses(length(steps))
     for k in reverse(eachindex(steps))
@@ -370,77 +429,92 @@ function kernel_c_mixed(name::String, app::SavedApplication)::String
         end
         union!(needed, s.seeds)
     end
-    # forward: each step's type, its operands converted where their current type differs
-    cur = Dict{String,Symbol}()            # a name's current type (absent: f64, as declared)
-    doubles, floats = Set{String}(), Set{String}()
-    typeof_(n) = get(cur, n, :f64)
-    function ref(n, t)
-        startswith(n, "mem[") && return t == :f32 ? "(float)$n" : n
-        have = typeof_(n)
-        have == :f32 ? push!(floats, n) : push!(doubles, n)
-        have == t && return have == :f32 ? "$(n)_f" : n
-        return t == :f64 ? "(double)$(n)_f" : "(float)$n"
+    return need
+end
+
+# What the forward pass keeps: each name's current type (absent: f64, as declared), the names
+# declared as double and as float, the C lines, and the counts for the kernel's comment.
+struct MixedBody
+    cur::Dict{String,Symbol}
+    doubles::Set{String}
+    floats::Set{String}
+    body::Vector{String}
+    counts::Dict{Symbol,Int}
+end
+
+MixedBody() = MixedBody(Dict{String,Symbol}(), Set{String}(), Set{String}(), String[], Dict(:f64 => 0, :f32 => 0, :conversions => 0))
+
+current_type(b::MixedBody, n::String)::Symbol = get(b.cur, n, :f64)
+
+# the name `n` read as type `t`: its variable of its current type, converted when that differs
+function ref!(b::MixedBody, n::String, t::Symbol)::String
+    startswith(n, "mem[") && return t == :f32 ? "(float)$n" : n
+    have = current_type(b, n)
+    have == :f32 ? push!(b.floats, n) : push!(b.doubles, n)
+    have == t && return have == :f32 ? "$(n)_f" : n
+    return t == :f64 ? "(double)$(n)_f" : "(float)$n"
+end
+
+# before control flow: every f32 value widened (exactly) into its double; after it all are f64
+function sync!(b::MixedBody)
+    for (n, t) in sort(collect(b.cur))
+        t == :f32 || continue
+        push!(b.body, "$n = (double)$(n)_f;"); push!(b.doubles, n)
+        b.counts[:conversions] += 1
     end
-    body = String[]
-    counts = Dict(:f64 => 0, :f32 => 0, :conversions => 0)
-    function sync!()
-        for (n, t) in sort(collect(cur))
-            t == :f32 || continue
-            push!(body, "$n = (double)$(n)_f;"); push!(doubles, n)
-            counts[:conversions] += 1
-        end
-        empty!(cur)
+    empty!(b.cur)
+end
+
+# the type of a step's value: f64 when a denominator needs it
+step_type(b::MixedBody, s::MixedStep, needed::Bool)::Symbol =
+    needed || s.kind == :f64 ? :f64 :
+    s.kind == :move ? current_type(b, s.args[1]) :
+    s.kind == :select ? (any(a -> current_type(b, a) == :f64, s.args[1:2]) ? :f64 : :f32) :
+    s.kind == :save ? :f64 : :f32
+
+# one step as C: its operands converted where their current type differs from the step's
+function emit_step!(b::MixedBody, s::MixedStep, needed::Bool)
+    if s.kind == :ctrl
+        sync!(b)
+        push!(b.body, s.render([ref!(b, a, :f64) for a in s.args], :f64))
+        return
     end
-    for (k, s) in enumerate(steps)
-        if s.kind == :ctrl
-            sync!()
-            push!(body, s.render([ref(a, :f64) for a in s.args], :f64))
-            continue
-        end
-        t = need[k] || s.kind == :f64 ? :f64 :
-            s.kind == :move ? typeof_(s.args[1]) :
-            s.kind == :select ? (any(a -> typeof_(a) == :f64, s.args[1:2]) ? :f64 : :f32) :
-            s.kind == :save ? :f64 : :f32
-        operands = String[]
-        for (j, a) in enumerate(s.args)
-            want = s.kind == :select && j == 3 ? :f64 : t      # the condition: a mask (f64)
-            r = ref(a, want)
-            (startswith(r, "(double)") || startswith(r, "(float)")) && (counts[:conversions] += 1)
-            push!(operands, r)
-        end
-        s.kind == :load && t == :f32 && (counts[:conversions] += 1)
-        expr = s.render(operands, t)
-        if s.kind == :save
-            push!(body, expr * ";")
-        else
-            s.kind in (:move, :select) || (counts[t] += 1)
-            cur[s.dst] = t
-            if t == :f32
-                push!(floats, s.dst); push!(body, "$(s.dst)_f = $expr;")
-            else
-                push!(doubles, s.dst); push!(body, "$(s.dst) = $expr;")
-            end
-        end
+    t = step_type(b, s, needed)
+    operands = String[]
+    for (j, a) in enumerate(s.args)
+        want = s.kind == :select && j == 3 ? :f64 : t      # the condition: a mask (f64)
+        r = ref!(b, a, want)
+        (startswith(r, "(double)") || startswith(r, "(float)")) && (b.counts[:conversions] += 1)
+        push!(operands, r)
     end
-    out = IOBuffer()
-    println(out, "/* the symjit kernel $name in mixed precision (kernel_c.jl's kernel_c_mixed): ",
-            "$(counts[:f32]) f32 and $(counts[:f64]) f64 operations, $(counts[:conversions]) conversions */")
-    println(out, "PAC_FN static int $name(double *mem) {")
-    order(v) = sort(collect(v); by = r -> (length(r), r))
-    isempty(doubles) || println(out, "double ", join(("$n = 0.0" for n in order(doubles)), ", "), ";")
-    isempty(floats) || println(out, "float ", join(("$(n)_f = 0.0f" for n in order(floats)), ", "), ";")
-    has_ret && println(out, "int ret = -1;")
-    foreach(l -> println(out, l), body)
-    println(out, "return 0;")
-    if has_ret
-        println(out, "L_return:")
-        println(out, "switch (ret) {")
-        foreach(k -> println(out, "case $k: goto R_$k;"), 0:returns-1)
-        println(out, "}")
-        println(out, "return -1;  /* a return outside a funclet */")
+    s.kind == :load && t == :f32 && (b.counts[:conversions] += 1)
+    expr = s.render(operands, t)
+    if s.kind == :save
+        push!(b.body, expr * ";")
+        return
     end
-    println(out, "}")
-    return String(take!(out))
+    s.kind in (:move, :select) || (b.counts[t] += 1)
+    b.cur[s.dst] = t
+    if t == :f32
+        push!(b.floats, s.dst); push!(b.body, "$(s.dst)_f = $expr;")
+    else
+        push!(b.doubles, s.dst); push!(b.body, "$(s.dst) = $expr;")
+    end
+end
+
+# the kernel `name` of `app` in mixed precision (KERNEL_PRELUDE before it); same prototype as kernel_c's
+function kernel_c_mixed(name::String, app::SavedApplication)::String
+    check_kernel(name, app)
+    (steps, returns, has_ret) = mixed_steps(name, app)
+    need = needed_steps(steps)
+    b = MixedBody()
+    foreach(k -> emit_step!(b, steps[k], need[k]), eachindex(steps))
+    declarations = String[]
+    isempty(b.doubles) || push!(declarations, "double " * join(("$n = 0.0" for n in declared(b.doubles)), ", ") * ";")
+    isempty(b.floats) || push!(declarations, "float " * join(("$(n)_f = 0.0f" for n in declared(b.floats)), ", ") * ";")
+    comment = "/* the symjit kernel $name in mixed precision (kernel_c.jl's kernel_c_mixed): " *
+              "$(b.counts[:f32]) f32 and $(b.counts[:f64]) f64 operations, $(b.counts[:conversions]) conversions */"
+    return kernel_function(name, comment, declarations, b.body, returns, has_ret)
 end
 
 kernel_c_mixed(name::String, path::AbstractString) = kernel_c_mixed(name, read_sjb(path; lowered = true))

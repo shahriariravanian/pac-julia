@@ -91,87 +91,103 @@ function set_flag(mode::String)::Bool
     error("unknown mode $mode")
 end
 
-function lower(p::Program)::Lowered
-    types = physical_types(p)
-    own = own_forms(p)
-    (currents, planes) = plain_layout(p, types)
+# What lower collects: the edges beyond each current's own, the rows, and the kernel tables.
+struct Lowering
+    own::Vector{FormIndex}                                 # each current's own form
+    edges::Vector{LEdge}
+    ops::Vector{LOp}
+    lists::Vector{Vector{FactorIndex}}
+    stubs::Vector{LStub}
+    scalesets::Vector{Vector{ScaleIndex}}
+    instances::Vector{Tuple{StubIndex,ScaleSetIndex}}
+end
 
-    # edge c is current c with its own momentum; a current read with another form gets one more edge
-    edges = [LEdge(c, own[c]) for c in eachindex(p.currents)]
-    edge(c::CurrentIndex, f::FormIndex) = c == 0 ? 0 : f == own[c] ? c : intern!(edges, LEdge(c, f))
-    operand(c::CurrentIndex) = c   # an operand whose momentum the row does not read: its own edge
+# edge c is current c with its own momentum; a current read with another form gets one more edge
+Lowering(p::Program, own::Vector{FormIndex}) =
+    Lowering(own, [LEdge(c, own[c]) for c in eachindex(p.currents)], LOp[], Vector{FactorIndex}[], LStub[], Vector{ScaleIndex}[],
+             Tuple{StubIndex,ScaleSetIndex}[])
 
-    ops = LOp[]
+# the edge of current `c` read with form `f` (0: a null operand)
+edge!(w::Lowering, c::CurrentIndex, f::FormIndex)::EdgeIndex = c == 0 ? 0 : f == w.own[c] ? c : intern!(w.edges, LEdge(c, f))
+
+# the binding instance (stub, scale set) of a binding: its scale inputs become slots of the scale set
+function instance!(w::Lowering, b::Binding)::InstanceIndex
+    scaleset = ScaleIndex[]
+    inputs = KernelInput[]
+    for i in b.inputs
+        if i.kind == SCALE
+            push!(scaleset, i.n)
+            push!(inputs, KernelInput(SCALE, length(scaleset), false))
+        else
+            push!(inputs, i)
+        end
+    end
+    return intern_instance!(k -> k.name == b.kernel.name, w.stubs, w.scalesets, w.instances, b.kernel, inputs, b.outputs, scaleset)
+end
+
+# the SOURCE rows, at the head: each source current's edge is the current with the source's form
+# (its own edge, unless a row reads it with another)
+function lower_sources!(w::Lowering, p::Program)
     for (c, cur) in enumerate(p.currents)
         s = cur.source
         s === nothing && continue
         s.orientation in ("particle", "antiparticle") || error("$(cname(c)): unknown orientation $(s.orientation)")
-        # its edge: the current with the source's form (its own edge, unless a row reads it with another)
-        push!(ops, source_op(edge(c, s.form), FAMILY_TYPES[s.family], s.orientation == "antiparticle", s.helicity,
-                             s.chirality, s.mass, s.factor))
+        push!(w.ops, source_op(edge!(w, c, s.form), FAMILY_TYPES[s.family], s.orientation == "antiparticle", s.helicity,
+                               s.chirality, s.mass, s.factor))
     end
+end
 
-    lists = Vector{FactorIndex}[]
-    stubs = LStub[]
-    scalesets = Vector{ScaleIndex}[]
-    instances = Tuple{StubIndex,ScaleSetIndex}[]
-    function instance(b::Binding)::InstanceIndex
-        scaleset = ScaleIndex[]
-        inputs = KernelInput[]
-        for i in b.inputs
-            if i.kind == SCALE
-                push!(scaleset, i.n)
-                push!(inputs, KernelInput(SCALE, length(scaleset), false))
-            else
-                push!(inputs, i)
-            end
-        end
-        k = findfirst(s -> s.kernel.name == b.kernel.name && s.inputs == inputs && s.outputs == b.outputs, stubs)
-        k === nothing && (push!(stubs, LStub(b.kernel, inputs, b.outputs)); k = length(stubs))
-        return intern!(instances, (k, intern!(scalesets, scaleset)))
-    end
+# ---- one operation of the body as its row; an operand whose momentum the row does not read is its
+# current's own edge (the current's index)
 
-    for op in p.body
-        if op isa Vertex
-            (opc, _, _, _) = VERTEX_OPS[op.type]
-            reads = opc == V_THREE_VECTOR
-            l = reads ? edge(op.l, op.u) : operand(op.l)
-            r = reads ? edge(op.r, op.v) : operand(op.r)
-            push!(ops, LOp(opc; set = set_flag(op.mode), first = true, last = true, d = operand(op.out), t = op.coupling,
-                           l = l, r = r, x = op.factor))
-        elseif op isa Propagator
-            opc = PROPAGATOR_OPS[op.type][1]
-            push!(ops, LOp(opc; d = edge(op.current, op.momentum), x = op.factor))
-        elseif op isa Kernel
-            b = p.bindings[op.binding]
-            kinds = [i.kind for i in b.inputs]
-            l = MOMENTUM_U in kinds ? edge(op.l, op.u) : operand(op.l)
-            r = MOMENTUM_V in kinds ? edge(op.r, op.v) : operand(op.r)
-            # a direct binding with factor 1 stores its pairs as they are, whatever its mode (pac2json's
-            # kernel_store!): KERNEL_DIRECT with SET
-            direct = b.direct && is_one(p.factors[op.factor])
-            push!(ops, LOp(direct ? KERNEL_DIRECT : KERNEL; set = direct || set_flag(op.mode), d = operand(op.out),
-                           t = instance(b), l = l, r = r, x = op.factor))
-        elseif op isa Closure
-            push!(ops, LOp(CLOSURE; d = op.amplitude, t = intern!(lists, op.component_factors), l = operand(op.l),
-                           r = operand(op.r), x = op.factor))
-        elseif op isa Scale
-            push!(ops, LOp(SCALE_ROW; d = operand(op.current), n = op.components, x = op.factor))
-        elseif op isa Clear
-            push!(ops, LOp(CLEAR; d = operand(op.current), n = op.components))
-        else
-            error("unknown operation $op")
-        end
-    end
+function lower_op!(w::Lowering, p::Program, op::Vertex)
+    (opc, _, _, _) = VERTEX_OPS[op.type]
+    reads = opc == V_THREE_VECTOR
+    l = reads ? edge!(w, op.l, op.u) : op.l
+    r = reads ? edge!(w, op.r, op.v) : op.r
+    push!(w.ops, LOp(opc; set = set_flag(op.mode), first = true, last = true, d = op.out, t = op.coupling, l = l, r = r,
+                     x = op.factor))
+end
 
+lower_op!(w::Lowering, p::Program, op::Propagator) =
+    push!(w.ops, LOp(PROPAGATOR_OPS[op.type][1]; d = edge!(w, op.current, op.momentum), x = op.factor))
+
+function lower_op!(w::Lowering, p::Program, op::Kernel)
+    b = p.bindings[op.binding]
+    kinds = [i.kind for i in b.inputs]
+    l = MOMENTUM_U in kinds ? edge!(w, op.l, op.u) : op.l
+    r = MOMENTUM_V in kinds ? edge!(w, op.r, op.v) : op.r
+    # a direct binding with factor 1 stores its pairs as they are, whatever its mode (pac2json's
+    # kernel_store!): KERNEL_DIRECT with SET
+    direct = b.direct && is_one(p.factors[op.factor])
+    push!(w.ops, LOp(direct ? KERNEL_DIRECT : KERNEL; set = direct || set_flag(op.mode), d = op.out, t = instance!(w, b),
+                     l = l, r = r, x = op.factor))
+end
+
+lower_op!(w::Lowering, p::Program, op::Closure) =
+    push!(w.ops, LOp(CLOSURE; d = op.amplitude, t = intern!(w.lists, op.component_factors), l = op.l, r = op.r, x = op.factor))
+lower_op!(w::Lowering, p::Program, op::Scale) = push!(w.ops, LOp(SCALE_ROW; d = op.current, n = op.components, x = op.factor))
+lower_op!(w::Lowering, p::Program, op::Clear) = push!(w.ops, LOp(CLEAR; d = op.current, n = op.components))
+lower_op!(w::Lowering, p::Program, op::Operation) = error("unknown operation $op")
+
+# the reduction as REDUCE rows, output by output, each output's terms in order; returns the weights
+function lower_reduction!(w::Lowering, p::Program)::Vector{Float64}
     weights = Float64[]
-    for (h, terms) in enumerate(p.reduction), (a, w) in terms
-        push!(ops, LOp(REDUCE; d = h, t = a, n = intern_value!(weights, w)))
+    for (h, terms) in enumerate(p.reduction), (a, x) in terms
+        push!(w.ops, LOp(REDUCE; d = h, t = a, n = intern_value!(weights, x)))
     end
+    return weights
+end
 
+function lower(p::Program)::Lowered
+    (currents, planes) = plain_layout(p, physical_types(p))
+    w = Lowering(p, own_forms(p))
+    lower_sources!(w, p)
+    foreach(op -> lower_op!(w, p, op), p.body)
+    weights = lower_reduction!(w, p)
     l = Lowered(UIR_VERSION, p.process, p.colour, p.legs, p.crossing, p.forms, p.scales, p.factors, p.alpha_s,
-                p.helicities, currents, planes, edges, lists, Vector{EmbeddingEntry}[], stubs, scalesets, instances, ops,
-                p.amplitudes, weights, p.group_factor, false)
+                p.helicities, currents, planes, w.edges, w.lists, Vector{EmbeddingEntry}[], w.stubs, w.scalesets, w.instances,
+                w.ops, p.amplitudes, weights, p.group_factor, false)
     validate(l)
     return l
 end
