@@ -6,12 +6,15 @@ batch by flavour (one DifferentialCrossSection per library of the UMAMI channel)
   python mg7_run.py prepare OUTPUT [--device cpu|cuda] [--precision f64|mixed|...] [--julia JULIA]
       the recurrence export of every SubProcesses/*/lc artifact and, per UMAMI provider, the
       libraries in OUTPUT/lib/pacrunner[-cuda]/<name>_<provider>/umami_pac.json
-  python mg7_run.py run OUTPUT [--device cpu|cuda|cuda-<precision>] [generate_events arguments, default -f]
+  python mg7_run.py run OUTPUT [--device cpu|cuda|cuda_provider|<device>-<precision>] [generate_events arguments, default -f]
       bin/generate_events with the replaced subprocess class (stock libraries still built: the
       full-colour pass keeps the stock ratio library); PAC_UMAMI_TIMER=LOG times every call of the
       PacRunner libraries (test/umami_timer.c)
 
-Run with the python of the output (the shebang of OUTPUT/bin/generate_events). The full-colour
+Run with the python of the output (the shebang of OUTPUT/bin/generate_events). The provider
+libraries (prepare --device cuda_provider) run in MadSpace's GPU runtime: run.device = ["cuda"] in
+the run card, color_accuracy = "lc", and a CUDA build of MadSpace in MadGraph7's
+madspace/install-cuda. The full-colour
 pass gets MadSpace's matrix_element_flavor, the remapped flavour: with several flavours per UMAMI
 channel only color_accuracy = "lc" is right for now (checked below)."""
 
@@ -116,16 +119,45 @@ def install(output, device="cpu"):
 
     class PacSubprocess(AmplicolSubprocess):
         def load_matrix_elements(self, api_path_formats, member_metas):
-            super().load_matrix_elements(api_path_formats, member_metas)  # checks, stock lib, ratio lib
+            """AmplicolSubprocess.load_matrix_elements's checks, but our libraries instead of the
+            stock one (not loaded); on a CUDA device (the provider libraries) LC only, the stock ratio
+            library being a CPU one."""
+            process = self.process
+            run_args = process.run_card["run"]
             dir_ = table_dir(output, self.meta["me_path"], device)
             table = json.load(open(os.path.join(dir_, "umami_pac.json")))
+            provider = table["device"] == "cuda_provider"
+            want = "cuda" if provider else "cpu"
+            if any(d != want for d in process.device_types):
+                raise RuntimeError(f"PacRunner libraries of device {table['device']} ({dir_}) need run.device = "
+                                   f"[\"{want}\"], not {run_args['device']}")
+            if run_args["dummy_matrix_element"]:
+                raise RuntimeError("[amplicol] processes need their matrix elements")
+            gridpack_args = process.run_card["gridpack"]
+            if gridpack_args["save_gridpack"] and gridpack_args["include_source"]:
+                raise RuntimeError("gridpacks of [amplicol] processes cannot include the sources")
+            if self.meta["qcd_power"] < 0 and process.systematics_enabled():
+                raise RuntimeError("the scale and PDF systematics of [amplicol] processes that mix coupling "
+                                   "orders are not supported yet: disable [systematics]")
+            self.supports_alpha_s = self.meta.get("supports_alpha_s", True)
+            if not self.supports_alpha_s and not process.run_card["beam"]["fixed_ren_scale"]:
+                raise RuntimeError("the AmpliCol matrix elements of this model cannot take the running alpha_s, "
+                                   "as the model has no SMINPUTS 3 parameter: use a fixed renormalization scale")
+            parameters = amplicol_parameters(self.meta, process)
+            self.channel_index = self.meta["umami_channel"]
+            self.surrogates = []
+            self.ratio_matrix_element = None
             channel = table["channels"][self.channel_index]
             libs = channel["libraries"]
             flavors = self.meta["flavors"]
-            if len(libs) > 1 and self.ratio_matrix_element is not None:
-                raise RuntimeError("PacRunner libraries: several flavours per UMAMI channel need "
-                                   "color_accuracy = \"lc\" (the ratio pass gets the remapped flavour)")
-            parameters = amplicol_parameters(self.meta, self.process)
+            if process.run_card["amplicol"]["color_accuracy"] != "lc":
+                if provider:
+                    raise RuntimeError("PacRunner on a CUDA device: color_accuracy = \"lc\" only (the stock "
+                                       "full-colour ratio library is a CPU one)")
+                if len(libs) > 1:
+                    raise RuntimeError("PacRunner libraries: several flavours per UMAMI channel need "
+                                       "color_accuracy = \"lc\" (the ratio pass gets the remapped flavour)")
+                self.ratio_matrix_element = self.load(self.meta["ratio_path"], self.meta["ratio_artifact"], parameters)
             self.pac_libraries = libs
             self.pac_matrix_elements = [
                 self.load(timed(os.path.join(dir_, table["libraries"][k]["path"]), f"{os.path.basename(dir_)}/{k}"),
@@ -133,6 +165,7 @@ def install(output, device="cpu"):
                 for k in libs]
             # per mg7 flavour: its library's position among the channel's
             self.pac_diff_xs = [libs.index(channel["flavor_libraries"][f["index"]]) for f in flavors]
+            self.matrix_elements = self.pac_matrix_elements[:1]   # what AmplicolSubprocess reads
             print(f"PacRunner: subprocess {self.subproc_id} channel {self.channel_index}: "
                   f"{len(flavors)} flavours on {len(libs)} libraries", flush=True)
 
@@ -176,6 +209,12 @@ def run(output, args, device="cpu"):
     sys.path.append(mg5_dir(output))
     from madgraph.mg7 import bootstrap
     bootstrap.ensure_madspace(interactive=False)  # MadGraph7's madspace first on sys.path
+    if device.startswith("cuda_provider"):
+        # MadSpace built with CUDA (ENABLE_CUDA) beside the CPU build: madspace/install-cuda
+        cuda = os.path.join(mg5_dir(output), "madspace", "install-cuda")
+        if not os.path.isdir(os.path.join(cuda, "madspace")):
+            sys.exit(f"--device {device} needs a CUDA build of MadSpace in {cuda}")
+        sys.path.insert(0, cuda)
     install(output, device)
     from madgraph.mg7.launch import main
     os.chdir(output)
