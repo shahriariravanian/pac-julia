@@ -45,10 +45,11 @@
  * CUDA: MadSpace's GPU runtime passes device pointers (count = stride = the batch, offset 0) and
  * its stream as the output UMAMI_OUT_GPU_STREAM. One call queues the events on that stream
  * (pac_gpu_provider: the checks, the program and pac_finish in each event's thread, the outputs
- * written in place) and returns without waiting. An event that fails a check (flavour, random,
- * helicity index, alpha_s, momenta, result) leaves its code in a sticky error flag, which the next
- * call reports (UMAMI_ERROR) and umami_free prints. The alpha_s scale is the device's pow, which
- * may differ from glibc's by an ulp. */
+ * written in place) and returns without waiting. An event that fails a check (pac_check, the
+ * momenta, the result) gets a NaN matrix element and leaves its code in an error flag; the next
+ * call that sees the flag prints it, clears it and returns UMAMI_ERROR without queuing its own
+ * events (umami_free prints one still pending). The alpha_s scale is the device's pow, which may
+ * differ from glibc's by an ulp. */
 #include "umami.h"
 #include "runner.h"
 #include <math.h>
@@ -79,7 +80,7 @@ typedef struct {
     double *scales;   /* the alpha_s scale of each event */
 #endif
 #ifdef PAC_CUDA_PROVIDER
-    int *error;       /* the sticky error flag (mapped pinned): a failing event's code */
+    int *error;       /* the error flag (mapped pinned): a failing event's code, until reported */
 #endif
 } Instance;
 
@@ -175,22 +176,22 @@ static PacParameter const *find_parameter(char const *name) {
     return NULL;
 }
 
-static bool close_to(double x, double y) {
-    return x == y || fabs(x - y) <= 1e-12 * fmax(fabs(x), fabs(y));
-}
+static bool close_to(double x, double y) { return pac_close_to(x, y); }
 
 static bool alpha_s_warned = false;   /* the unknown-power refusal is reported once */
 
 #ifdef PAC_CUDA_PROVIDER
-/* an earlier call's failing event (the sticky flag), printed; true: there is one */
+/* an earlier call's failing event (the flag), printed and cleared; true: there was one */
 static bool report_error(Instance *instance) {
     int code = *(volatile int *)instance->error;
     if (code == 0) return false;
+    *(volatile int *)instance->error = 0;   /* reported once: later calls go on */
     static char const *const what[] = {"", "a flavour index other than 0", "a random number outside [0, 1)",
         "a helicity index outside the exported ones", "an alpha_s it cannot take (non-finite, negative, or "
         "another than the exported one without a proven power)", "a non-finite momentum",
         "a failing kernel", "a non-finite matrix element"};
-    fprintf(stderr, "umami (%s %s): an event of an earlier call had %s\n", RUNNER_PROCESS, RUNNER_COLOUR,
+    fprintf(stderr, "umami (%s %s): an event of an earlier call (its matrix element is NaN) had %s\n",
+            RUNNER_PROCESS, RUNNER_COLOUR,
             code > 0 && code < (int)(sizeof(what) / sizeof(what[0])) ? what[code] : "an unknown failure");
     return true;
 }
@@ -279,36 +280,25 @@ PAC_EXPORT UmamiStatus umami_matrix_element(UmamiHandle handle, size_t count, si
     bool scaled = false;
 #endif
     for (size_t event = offset; event < offset + count; ++event) {
-        if (in[UMAMI_IN_FLAVOR_INDEX] && ((int const *)in[UMAMI_IN_FLAVOR_INDEX])[event] != 0)
-            return UMAMI_ERROR;
         double random = in[UMAMI_IN_RANDOM_HELICITY] ?
             ((double const *)in[UMAMI_IN_RANDOM_HELICITY])[event] : 0.5;
-        if (!isfinite(random) || random < 0.0 || random >= 1.0) return UMAMI_ERROR;
-        int fixed = -1;
-        if (in[UMAMI_IN_HELICITY_INDEX]) {
-            /* a fixed exported helicity; one the program does not have contributes nothing */
-            fixed = ((int const *)in[UMAMI_IN_HELICITY_INDEX])[event];
-            if (fixed < 0 || fixed >= PAC_EXPORTED_HELICITY_COUNT) return UMAMI_ERROR;
-        }
-        double scale = 1.0;
-        bool event_scaled = false;
-        if (in[UMAMI_IN_ALPHA_S]) {
-            double alpha_s = ((double const *)in[UMAMI_IN_ALPHA_S])[event];
-            if (!isfinite(alpha_s) || alpha_s < 0.0) return UMAMI_ERROR;
-            if (alpha_s != PAC_ALPHA_S0) {
-                if (PAC_ALPHA_S_SCALES) {
-                    scale = pow(alpha_s / PAC_ALPHA_S0, PAC_ALPHA_S_POWER);
-                    event_scaled = true;
-                } else if (!close_to(alpha_s, PAC_ALPHA_S0)) {
-                    if (!alpha_s_warned) {
-                        alpha_s_warned = true;
-                        fprintf(stderr, "umami (%s %s): alpha_s = %.17g, but the program was exported with "
-                                "%.17g and its alpha_s power is unknown: export it again at this alpha_s\n",
-                                RUNNER_PROCESS, RUNNER_COLOUR, alpha_s, PAC_ALPHA_S0);
-                    }
-                    return UMAMI_ERROR;
-                }
+        /* a fixed exported helicity; one the program does not have contributes nothing */
+        int fixed = in[UMAMI_IN_HELICITY_INDEX] ? ((int const *)in[UMAMI_IN_HELICITY_INDEX])[event] : -1;
+        double alpha_s = in[UMAMI_IN_ALPHA_S] ? ((double const *)in[UMAMI_IN_ALPHA_S])[event] : 0.0;
+        double scale;
+        int event_scaled;
+        int code = pac_check(in[UMAMI_IN_FLAVOR_INDEX] != NULL,
+                             in[UMAMI_IN_FLAVOR_INDEX] ? ((int const *)in[UMAMI_IN_FLAVOR_INDEX])[event] : 0, random,
+                             in[UMAMI_IN_HELICITY_INDEX] != NULL, fixed, in[UMAMI_IN_ALPHA_S] != NULL, alpha_s,
+                             &scale, &event_scaled);
+        if (code != 0) {
+            if (code == PAC_E_ALPHA_S && isfinite(alpha_s) && alpha_s >= 0.0 && !alpha_s_warned) {
+                alpha_s_warned = true;
+                fprintf(stderr, "umami (%s %s): alpha_s = %.17g, but the program was exported with "
+                        "%.17g and its alpha_s power is unknown: export it again at this alpha_s\n",
+                        RUNNER_PROCESS, RUNNER_COLOUR, alpha_s, PAC_ALPHA_S0);
             }
+            return UMAMI_ERROR;
         }
 #ifdef PAC_CUDA
         /* × 1.0 for an event at alpha_s0 changes no bit: one scale array for the call */

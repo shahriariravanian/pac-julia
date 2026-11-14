@@ -119,45 +119,39 @@ def install(output, device="cpu"):
 
     class PacSubprocess(AmplicolSubprocess):
         def load_matrix_elements(self, api_path_formats, member_metas):
-            """AmplicolSubprocess.load_matrix_elements's checks, but our libraries instead of the
-            stock one (not loaded); on a CUDA device (the provider libraries) LC only, the stock ratio
-            library being a CPU one."""
+            """AmplicolSubprocess.load_matrix_elements (its checks and attributes, the stock ratio
+            library), with our libraries instead of the stock one (not loaded); on a CUDA device (the
+            provider libraries) LC only, the stock ratio library being a CPU one."""
             process = self.process
-            run_args = process.run_card["run"]
             dir_ = table_dir(output, self.meta["me_path"], device)
             table = json.load(open(os.path.join(dir_, "umami_pac.json")))
             provider = table["device"] == "cuda_provider"
             want = "cuda" if provider else "cpu"
             if any(d != want for d in process.device_types):
                 raise RuntimeError(f"PacRunner libraries of device {table['device']} ({dir_}) need run.device = "
-                                   f"[\"{want}\"], not {run_args['device']}")
-            if run_args["dummy_matrix_element"]:
-                raise RuntimeError("[amplicol] processes need their matrix elements")
-            gridpack_args = process.run_card["gridpack"]
-            if gridpack_args["save_gridpack"] and gridpack_args["include_source"]:
-                raise RuntimeError("gridpacks of [amplicol] processes cannot include the sources")
-            if self.meta["qcd_power"] < 0 and process.systematics_enabled():
-                raise RuntimeError("the scale and PDF systematics of [amplicol] processes that mix coupling "
-                                   "orders are not supported yet: disable [systematics]")
-            self.supports_alpha_s = self.meta.get("supports_alpha_s", True)
-            if not self.supports_alpha_s and not process.run_card["beam"]["fixed_ren_scale"]:
-                raise RuntimeError("the AmpliCol matrix elements of this model cannot take the running alpha_s, "
-                                   "as the model has no SMINPUTS 3 parameter: use a fixed renormalization scale")
-            parameters = amplicol_parameters(self.meta, process)
-            self.channel_index = self.meta["umami_channel"]
-            self.surrogates = []
-            self.ratio_matrix_element = None
-            channel = table["channels"][self.channel_index]
+                                   f"[\"{want}\"], not {process.run_card['run']['device']}")
+            lc = process.run_card["amplicol"]["color_accuracy"] == "lc"
+            if provider and not lc:
+                raise RuntimeError("PacRunner on a CUDA device: color_accuracy = \"lc\" only (the stock "
+                                   "full-colour ratio library is a CPU one)")
+            channel = table["channels"][self.meta["umami_channel"]]
             libs = channel["libraries"]
             flavors = self.meta["flavors"]
-            if process.run_card["amplicol"]["color_accuracy"] != "lc":
-                if provider:
-                    raise RuntimeError("PacRunner on a CUDA device: color_accuracy = \"lc\" only (the stock "
-                                       "full-colour ratio library is a CPU one)")
-                if len(libs) > 1:
-                    raise RuntimeError("PacRunner libraries: several flavours per UMAMI channel need "
-                                       "color_accuracy = \"lc\" (the ratio pass gets the remapped flavour)")
-                self.ratio_matrix_element = self.load(self.meta["ratio_path"], self.meta["ratio_artifact"], parameters)
+            if len(libs) > 1 and not lc:
+                raise RuntimeError("PacRunner libraries: several flavours per UMAMI channel need "
+                                   "color_accuracy = \"lc\" (the ratio pass gets the remapped flavour)")
+            # mg7's own method, seeing CPU devices (its only refusal we lift) and not loading the
+            # stock LC library
+            real_load, types = self.load, process.device_types
+            self.load = lambda path, artifact, parameters: (
+                None if path == self.meta["me_path"] else real_load(path, artifact, parameters))
+            process.device_types = ["cpu"] * len(types)
+            try:
+                super().load_matrix_elements(api_path_formats, member_metas)
+            finally:
+                process.device_types = types
+                del self.load
+            parameters = amplicol_parameters(self.meta, process)
             self.pac_libraries = libs
             self.pac_matrix_elements = [
                 self.load(timed(os.path.join(dir_, table["libraries"][k]["path"]), f"{os.path.basename(dir_)}/{k}"),

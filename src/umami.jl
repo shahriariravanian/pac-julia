@@ -117,12 +117,16 @@ function find_cudart(nvcc::String)::String
 end
 
 # the process-wide GPU pool (pool.cu) in `dir`: libpacpool.so, with a copy of the CUDA runtime
-# it and the program libraries share (libcudart.so.N, found through rpath \$ORIGIN)
-function build_cuda_runtime(dir::String; nvcc::String = something(find_nvcc(), "nvcc"), cuda_arch::String = "native")::String
+# it and the program libraries share (libcudart.so.N, found through rpath \$ORIGIN). pool = false
+# (the CUDA provider, which runs on the caller's stream): the runtime copy alone.
+function build_cuda_runtime(dir::String; nvcc::String = something(find_nvcc(), "nvcc"), cuda_arch::String = "native",
+                            pool::Bool = true)::String
     so = joinpath(dir, "libpacpool.$(Libdl.dlext)")
     cudart = find_cudart(nvcc)
     m = match(r"^(libcudart\.so\.\d+)", basename(cudart))
-    cp(cudart, joinpath(dir, m === nothing ? basename(cudart) : m.captures[1]); force = true)
+    copy = joinpath(dir, m === nothing ? basename(cudart) : m.captures[1])
+    cp(cudart, copy; force = true)
+    pool || return copy
     cp(POOL_H, joinpath(dir, "pool.h"); force = true)
     run(`$nvcc -O3 -arch=$cuda_arch -shared -Xcompiler -fPIC -cudart shared -Xlinker -soname=libpacpool.$(Libdl.dlext)
          -Xlinker -rpath -Xlinker \$ORIGIN -I$dir -o $so $POOL_CU`)
@@ -153,6 +157,9 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
     precision == :f64 || cuda || error("precision = $precision needs device = :cuda or :cuda_provider")
     fmad && precision == :f64 && error("fmad = true is not the CPU's bits: precision = :mixed only")
     cuda && nvcc === nothing && error("device = :cuda needs nvcc (ENV[\"NVCC\"], the PATH or /usr/local/cuda/bin)")
+    Int(provider["particle_count"]) == l.legs ||
+        error("$(lib.process) $(lib.colour): the provider has $(provider["particle_count"]) particles, the program $(l.legs) legs")
+    l = permuted(l, lib.permutation)   # the library reads the caller's legs
     compile(dir, l; interpreter = interpreter || cuda)
     (tables, program) = umami_program_h(lib, l, provider, exported_count, parameters)
     write(joinpath(dir, "umami_tables.h"), tables)
@@ -162,7 +169,11 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
     cp(UMAMI_H, joinpath(dir, "umami.h"); force = true)
     so = joinpath(dir, "libumami_pac.$(Libdl.dlext)")
     if cuda
-        isfile(joinpath(runtime_dir, "libpacpool.$(Libdl.dlext)")) || build_cuda_runtime(runtime_dir; nvcc, cuda_arch)
+        if provider_build
+            any(f -> startswith(f, "libcudart.so"), readdir(runtime_dir)) || build_cuda_runtime(runtime_dir; nvcc, cuda_arch, pool = false)
+        else
+            isfile(joinpath(runtime_dir, "libpacpool.$(Libdl.dlext)")) || build_cuda_runtime(runtime_dir; nvcc, cuda_arch)
+        end
         file(f) = joinpath(dir, f)
         rpath = "\$ORIGIN/" * relpath(abspath(runtime_dir), abspath(dir))
         mixed = precision == :mixed ? ["-DPAC_MIXED"] : String[]
@@ -260,13 +271,13 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
     end
 
     mkpath(dir)
-    device in (:cuda, :cuda_provider) && build_cuda_runtime(dir; nvcc, cuda_arch)
+    device in (:cuda, :cuda_provider) && build_cuda_runtime(dir; nvcc, cuda_arch, pool = device == :cuda)
     # the libraries' folders and programs first (Julia work), then their builds (compilers) in parallel
     jobs = map(enumerate(libraries)) do (k, lib)
         sub = joinpath(dir, "programs", lpad(k - 1, 4, '0'))
         mkpath(sub)
         l = programs[(lib.process, lib.colour)][1]
-        (k, lib, sub, permuted(optimize_programs ? optimize(l) : l, lib.permutation))
+        (k, lib, sub, optimize_programs ? optimize(l) : l)   # build_umami_library folds the permutation in
     end
     sos = asyncmap(jobs; ntasks = Sys.CPU_THREADS) do (k, lib, sub, l)
         so = build_umami_library(sub, lib, l, provider, exported_count, parameters;
@@ -279,7 +290,8 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
                     "permutation" => lib.permutation, "colour_index" => lib.colour_index, "factor" => lib.factor)
                for ((k, lib, _, _), so) in zip(jobs, sos)]
     table = Dict(
-        "kind" => "pacrunner-umami-libraries", "schema_version" => 1, "device" => String(device), "precision" => String(precision), "gpu_slots" => gpu_slots, "gpu_memory" => gpu_memory,
+        "kind" => "pacrunner-umami-libraries", "schema_version" => 1, "device" => String(device), "precision" => String(precision),
+        "gpu_slots" => device == :cuda ? gpu_slots : nothing, "gpu_memory" => device == :cpu ? nothing : gpu_memory,
         "artifact_id" => d["artifact_id"], "export" => abspath(export_path), "metadata" => abspath(metadata_path),
         "particle_count" => provider["particle_count"], "libraries" => entries,
         "channels" => [Dict("flavor_libraries" => [k - 1 for k in fl], "libraries" => sort(unique(fl)) .- 1) for fl in channels],

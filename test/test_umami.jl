@@ -156,7 +156,7 @@ release(c::Cuda, p::Ptr{Cvoid}) = ccall(dlsym(c.rt, :cudaFree), Cint, (Ptr{Cvoid
 # points, cycled) at offset 5 of a longer stride, with a workspace of about 97 events (several
 # launches): the sampled pass (random helicity in; ME, colour and helicity index out) and the
 # fixed-helicity pass, half the events at alpha_s0 and half at 1.1 alpha_s0; then a flavour other
-# than 0, which the next call reports. f64: bit for bit at alpha_s0, the device's pow within 4 ulp
+# than 0: that event's ME is NaN, the next call reports it once and the one after runs. f64: bit for bit at alpha_s0, the device's pow within 4 ulp
 # elsewhere; mixed: within MIXED_RTOL. Returns the failures.
 function check_provider(path::String; precision::Symbol = :f64, events::Int = 300, quiet::Bool = false)
     ls = load_recurrence_export(path; kernels = :none)
@@ -235,7 +235,14 @@ function check_provider(path::String; precision::Symbol = :f64, events::Int = 30
         outs = [(UMAMI_OUT_MATRIX_ELEMENT, dme), (UMAMI_OUT_GPU_STREAM, stream[])]
         call_batch(gpu, N, stride, offset, ins, outs) == UMAMI_SUCCESS || push!(bad, "flavour 1: the queuing call failed")
         sync()
+        gme = download!(c, fill(0.0, stride), dme)
+        (isnan(gme[offset+3]) && all(isfinite, gme[offset+1:offset+2]) && all(isfinite, gme[offset+4:offset+N])) ||
+            push!(bad, "flavour 1: not exactly that event's matrix element NaN")
         call_batch(gpu, N, stride, offset, ins[1:1], outs) == UMAMI_ERROR || push!(bad, "flavour 1: the next call did not report it")
+        # reported once: the flag is cleared and the library goes on
+        call_batch(gpu, N, stride, offset, ins[1:1], outs) == UMAMI_SUCCESS || push!(bad, "flavour 1: the call after the report failed")
+        sync()
+        all(isfinite, download!(c, fill(0.0, stride), dme)[offset+1:offset+N]) || push!(bad, "after the report: a non-finite matrix element")
         foreach(p -> release(c, p), (dflav, dme, values(d)...))
         ccall(dlsym(rt, :cudaStreamDestroy), Cint, (Ptr{Cvoid},), stream[])
     finally
