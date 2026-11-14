@@ -8,7 +8,8 @@ batch by flavour (one DifferentialCrossSection per library of the UMAMI channel)
       libraries in OUTPUT/lib/pacrunner[-cuda]/<name>_<provider>/umami_pac.json
   python mg7_run.py run OUTPUT [--device cpu|cuda|cuda-<precision>] [generate_events arguments, default -f]
       bin/generate_events with the replaced subprocess class (stock libraries still built: the
-      full-colour pass keeps the stock ratio library)
+      full-colour pass keeps the stock ratio library); PAC_UMAMI_TIMER=LOG times every call of the
+      PacRunner libraries (test/umami_timer.c)
 
 Run with the python of the output (the shebang of OUTPUT/bin/generate_events). The full-colour
 pass gets MadSpace's matrix_element_flavor, the remapped flavour: with several flavours per UMAMI
@@ -93,6 +94,19 @@ def prepare(output, device="cpu", julia="julia", precision="f64"):
                                precision])
 
 
+def timed(path, name):
+    """With PAC_UMAMI_TIMER=LOG: a shim (test/umami_timer.c) in front of the library, which appends
+    "NAME pid calls events matrix_element_seconds initialize_seconds" to LOG at exit."""
+    log = os.environ.get("PAC_UMAMI_TIMER")
+    if not log:
+        return path
+    shim = os.path.join(os.path.dirname(path), "libumami_timer.so")
+    subprocess.check_call(["cc", "-O2", "-std=c11", "-fPIC", "-shared", f"-I{os.path.join(PAC_JULIA, 'c')}",
+                           f'-DREAL_LIB="{os.path.abspath(path)}"', f'-DLOG_FILE="{os.path.abspath(log)}"',
+                           f'-DNAME="{name}"', os.path.join(PAC_JULIA, "test", "umami_timer.c"), "-o", shim, "-ldl"])
+    return shim
+
+
 def install(output, device="cpu"):
     """Replace AmplicolSubprocess (in madgraph_process, which instantiates it) by PacSubprocess."""
     import madspace as ms
@@ -114,7 +128,8 @@ def install(output, device="cpu"):
             parameters = amplicol_parameters(self.meta, self.process)
             self.pac_libraries = libs
             self.pac_matrix_elements = [
-                self.load(os.path.join(dir_, table["libraries"][k]["path"]), self.meta["artifact"], parameters)
+                self.load(timed(os.path.join(dir_, table["libraries"][k]["path"]), f"{os.path.basename(dir_)}/{k}"),
+                          self.meta["artifact"], parameters)
                 for k in libs]
             # per mg7 flavour: its library's position among the channel's
             self.pac_diff_xs = [libs.index(channel["flavor_libraries"][f["index"]]) for f in flavors]
