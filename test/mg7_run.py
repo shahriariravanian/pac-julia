@@ -64,7 +64,19 @@ def card_parameters(output, references):
     return parameters
 
 
-def prepare(output, device="cpu", julia="julia", precision="f64"):
+def julia_build(julia="julia"):
+    """umami_libraries in a julia process: (export, metadata, dir, device, precision) -> None"""
+    script = ("using PacRunner; umami_libraries(ARGS[1], ARGS[2], ARGS[3]; device = Symbol(ARGS[4]), "
+              "precision = Symbol(ARGS[5])); println(ARGS[3])")
+    return lambda *args: subprocess.check_call([julia, f"--project={PAC_JULIA}", "-e", script, *args])
+
+
+def prepare(output, device="cpu", julia="julia", precision="f64", build=None):
+    """The recurrence export and the PacRunner libraries of every [amplicol] provider of `output`;
+    `build(export, metadata, dir, device, precision)` runs umami_libraries (default: a julia
+    process, julia_build). Returns the libraries' folders."""
+    build = build or julia_build(julia)
+    folders = []
     output = os.path.abspath(output)
     entries = json.load(open(os.path.join(output, "SubProcesses", "subprocesses.json")))
     entries = entries.get("subprocesses", entries) if isinstance(entries, dict) else entries
@@ -91,10 +103,9 @@ def prepare(output, device="cpu", julia="julia", precision="f64"):
         match = [m for pid, m in providers if pid is None or stem.endswith("_" + str(pid))]
         if len(match) != 1:
             raise RuntimeError(f"{me_path}: no single provider metadata among {providers}")
-        script = ("using PacRunner; umami_libraries(ARGS[1], ARGS[2], ARGS[3]; device = Symbol(ARGS[4]), "
-                  "precision = Symbol(ARGS[5])); println(ARGS[3])")
-        subprocess.check_call([julia, f"--project={PAC_JULIA}", "-e", script, export, match[0], dir_, device,
-                               precision])
+        build(export, match[0], dir_, device, precision)
+        folders.append(dir_)
+    return folders
 
 
 def timed(path, name):
