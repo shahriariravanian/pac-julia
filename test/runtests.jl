@@ -412,7 +412,8 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
               ArenaIndex(optimize(lower(p))).size
         # on the UIR interpreter: its source (and the GPU context's) next to pacops, the same runner.h
         vm = compile(mktempdir(), p; interpreter = true)
-        @test files(vm) == ["Makefile", "pacops.c", "pacops.h", "pool.cu", "pool.h", "runner.c", "runner.h", "uirgpu.c", "uirgpu.h", "uirvm.c", "uirvm.h"]
+        @test files(vm) == ["Makefile", "pacops.c", "pacops.h", "pool.cu", "pool.h", "runner.c", "runner.h", "uirgpu.c", "uirgpu.h", "uirgpu_pool.c",
+                              "uirgpu_provider.c", "uirgpu_umami.c", "uirvm.c", "uirvm.h"]
         @test read(joinpath(vm, "runner.h"), String) == read(joinpath(compile(mktempdir(), p), "runner.h"), String)
     end
 
