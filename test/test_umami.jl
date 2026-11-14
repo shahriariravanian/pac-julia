@@ -77,13 +77,15 @@ function check(path::String; quiet::Bool = false, cuda::Bool = false, precision:
     (l, (points, want)) = (ls[k], refs[k])
     (a0, power) = l.alpha_s
     bad = String[]
-    builds = cuda ? [(true, :cuda)] : [(false, :cpu), (true, :cpu)]   # (interpreter, device)
+    # (interpreter, device); CUDA f64 after the straight-line C, to compare them at another alpha_s
+    builds = cuda ? (precision == :f64 ? [(false, :cpu), (true, :cuda)] : [(true, :cuda)]) : [(false, :cpu), (true, :cpu)]
+    scaled = Dict{Int,Float64}()   # the first build's values at 1.1 alpha_s0: every f64 build's, bit for bit
     for (interpreter, device) in builds, known in (true, false)
         what = "$(device == :cuda ? "CUDA $precision" : interpreter ? "interpreter" : "straight-line C"), alpha_s power $(known ? power : "unknown")"
         lib = open_library(known ? l : with(l; alpha_s = (a0, nothing)), mktempdir(); interpreter, device, precision)
         try
             alpha_s_supported(lib) || push!(bad, "$what: alpha_s not a supported input")
-            for (point, values) in zip(points, want)
+            for (p, (point, values)) in enumerate(zip(points, want))
                 total = foldl(+, values; init = 0.0)
                 # a power scales even a rounding difference; without one, it is the exported alpha_s
                 for alpha_s in (known ? (nothing, a0) : (nothing, a0, a0 * (1 + 1e-15)))
@@ -94,6 +96,10 @@ function check(path::String; quiet::Bool = false, cuda::Bool = false, precision:
                 if known
                     (status == UMAMI_SUCCESS && isapprox(me, 1.1^power * total; rtol = precision == :f64 ? 1e-14 : MIXED_RTOL)) ||
                         push!(bad, "$what: alpha_s × 1.1: status $status, $me ≉ $(1.1^power * total)")
+                    if precision == :f64
+                        first_me = get!(scaled, p, me)
+                        same(me, first_me) || push!(bad, "$what: alpha_s × 1.1: $me, not the first build's $first_me")
+                    end
                 else
                     status == UMAMI_ERROR || push!(bad, "$what: alpha_s × 1.1 accepted (status $status)")
                 end

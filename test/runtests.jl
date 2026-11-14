@@ -574,7 +574,13 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             provider = Dict("particle_count" => l.legs, "helicity_count" => n, "color_count" => 1, "masses" => zeros(l.legs))
             lib(e) = PacRunner.UmamiLibrary(l.process, l.colour, collect(0:l.legs-1), 0, 1.0, e)
             h(e, count) = PacRunner.umami_program_h(lib(e), l, provider, count, Tuple{String,ComplexF64}[])
-            @test occursin("pac_helicity_runtime[] = {", h(collect(0:n-1), n))
+            @test occursin("pac_helicity_runtime[] = {", first(h(collect(0:n-1), n)))
+            # the leg permutation folded into the crossing: program leg l reads the caller's leg permutation[crossing leg]
+            perm = reverse(collect(0:l.legs-1))
+            p = PacRunner.permuted(l, perm)
+            base = l.crossing === nothing ? [(k, 1.0) for k in 1:l.legs] : l.crossing
+            @test p.crossing == [(perm[leg] + 1, sign) for (leg, sign) in base]
+            @test_throws ErrorException PacRunner.permuted(l, zeros(Int, l.legs))
             @test_throws ErrorException h(collect(0:n-1), 0)              # no exported helicities
             @test_throws ErrorException h(Int[], n)                       # no runtime helicities
             @test_throws ErrorException h([0:n-2; n], n)                  # out of range

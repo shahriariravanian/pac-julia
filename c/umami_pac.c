@@ -7,8 +7,9 @@
  * (flavor_diff_xs_indices), and each library sees flavour 0.
  *
  * Per event, as the stock pyAmpliCol wrapper (API/umami/umami.c) evaluates one contribution:
- *   - the momenta, input[event + stride*(particle + particle_count*component)], gathered in the
- *     program's leg order: runtime leg j = input leg permutation[j];
+ *   - the momenta, input[event + stride*(particle + particle_count*component)], read in the
+ *     caller's leg order: the library's leg permutation (runtime leg j = input leg permutation[j])
+ *     is folded into the program's crossing when the library is built (umami_libraries);
  *   - run(): the runtime helicities' values;
  *   - with a helicity index input (exported numbering, the reweight pass): that helicity's value ×
  *     factor (0 when the program does not have it);
@@ -24,15 +25,18 @@
  *     The input is always accepted (MadGraph passes it whenever the model has alpha_s); a program
  *     without a proven power accepts only the export's alpha_s (relative 1e-12) and fails otherwise;
  *   - the colour index is the program's.
+ * The end of each event (scale, fixed or summed helicity, draw, factor) is pac_finish
+ * (umami_finish.h), shared with the GPU build.
  * The model parameters are those of the export: umami_set_parameter accepts a known parameter at
  * its exported value (relative 1e-12) and refuses any other value.
  * The flavour input must be 0; the channel input is not read (the library is one program).
  *
  * With PAC_CUDA (umami_libraries(...; device = :cuda)) the program runs on the GPU (uirgpu.h: the
  * UIR interpreter, one thread per point) and the library still identifies as a CPU provider:
- * MadSpace passes host memory and calls from its CPU threads. Per call, the events are checked and
- * their momenta gathered (plane-major, the program's leg order), one GPU run computes every
- * event's runtime helicities, and the per-event code below is the CPU build's: the same bits.
+ * MadSpace passes host memory and calls from its CPU threads. Per call, the host checks the inputs
+ * and computes the alpha_s scales (glibc's pow, as the CPU build); one GPU run (pac_gpu_umami)
+ * uploads the momentum rows of the call as they are, runs the program and pac_finish in each
+ * event's thread, and returns only the matrix elements and helicity indices: the CPU build's bits.
  * The GPU memory and streams are the process-wide slot pool's (libpacpool.so, pool.h): a call
  * borrows a free slot, so MadSpace's threads run on the GPU at the same time (up to the pool's
  * slots; by default one per CPU), whatever the number of libraries. */
@@ -52,6 +56,7 @@ typedef struct {
     double real, imaginary;
 } PacParameter;
 
+#include "umami_finish.h"
 #include "umami_program.h"
 
 #define PAC_EXPORT __attribute__((visibility("default")))
@@ -61,23 +66,19 @@ typedef struct {
     double momenta[4 * PAC_PARTICLES];
     double values[RUNNER_OUTPUTS];
 #ifdef PAC_CUDA
-    size_t capacity;  /* events the batch buffers hold */
-    double *batch_momenta;   /* [4 legs][count] */
-    double *batch_values;    /* [outputs][count] */
+    size_t capacity;  /* events the scale buffer holds */
+    double *scales;   /* the alpha_s scale of each event */
 #endif
 } Instance;
 
 #ifdef PAC_CUDA
-/* the instance's batch buffers for `count` events */
+/* the instance's scale buffer for `count` events */
 static bool reserve_batch(Instance *instance, size_t count) {
     if (count <= instance->capacity) return true;
     size_t n = count > 2 * instance->capacity ? count : 2 * instance->capacity;
-    double *m = realloc(instance->batch_momenta, (4 * (size_t)PAC_PARTICLES * n + 1) * sizeof(double));
-    if (m == NULL) return false;
-    instance->batch_momenta = m;
-    double *v = realloc(instance->batch_values, ((size_t)RUNNER_OUTPUTS * n + 1) * sizeof(double));
-    if (v == NULL) return false;
-    instance->batch_values = v;
+    double *x = realloc(instance->scales, (n + 1) * sizeof(double));
+    if (x == NULL) return false;
+    instance->scales = x;
     instance->capacity = n;
     return true;
 }
@@ -207,17 +208,10 @@ PAC_EXPORT UmamiStatus umami_matrix_element(UmamiHandle handle, size_t count, si
     Instance *instance = handle;
     double const *momenta = in[UMAMI_IN_MOMENTA];
     size_t const n = PAC_PARTICLES;
+    bool const draw = out[UMAMI_OUT_HELICITY_INDEX] != NULL && in[UMAMI_IN_HELICITY_INDEX] == NULL;
 #ifdef PAC_CUDA
-    /* the events' momenta, plane-major, then one GPU run for all of them */
     if (!reserve_batch(instance, count)) return UMAMI_ERROR;
-    for (size_t e = 0; e < count; ++e)
-        for (size_t j = 0; j < n; ++j)
-            for (size_t k = 0; k < 4; ++k) {
-                double value = momenta[offset + e + stride * (n * k + pac_permutation[j])];
-                if (!isfinite(value)) return UMAMI_ERROR;
-                instance->batch_momenta[(4 * j + k) * count + e] = value;
-            }
-    if (pac_gpu_run(instance->batch_momenta, instance->batch_values, count) != 0) return UMAMI_ERROR;
+    bool scaled = false;
 #endif
     for (size_t event = offset; event < offset + count; ++event) {
         if (in[UMAMI_IN_FLAVOR_INDEX] && ((int const *)in[UMAMI_IN_FLAVOR_INDEX])[event] != 0)
@@ -225,23 +219,21 @@ PAC_EXPORT UmamiStatus umami_matrix_element(UmamiHandle handle, size_t count, si
         double random = in[UMAMI_IN_RANDOM_HELICITY] ?
             ((double const *)in[UMAMI_IN_RANDOM_HELICITY])[event] : 0.5;
         if (!isfinite(random) || random < 0.0 || random >= 1.0) return UMAMI_ERROR;
-#ifndef PAC_CUDA
-        for (size_t j = 0; j < n; ++j)
-            for (size_t k = 0; k < 4; ++k) {
-                double value = momenta[event + stride * (n * k + pac_permutation[j])];
-                if (!isfinite(value)) return UMAMI_ERROR;
-                instance->momenta[4 * j + k] = value;
-            }
-#endif
+        int fixed = -1;
+        if (in[UMAMI_IN_HELICITY_INDEX]) {
+            /* a fixed exported helicity; one the program does not have contributes nothing */
+            fixed = ((int const *)in[UMAMI_IN_HELICITY_INDEX])[event];
+            if (fixed < 0 || fixed >= PAC_EXPORTED_HELICITY_COUNT) return UMAMI_ERROR;
+        }
         double scale = 1.0;
-        bool scaled = false;
+        bool event_scaled = false;
         if (in[UMAMI_IN_ALPHA_S]) {
             double alpha_s = ((double const *)in[UMAMI_IN_ALPHA_S])[event];
             if (!isfinite(alpha_s) || alpha_s < 0.0) return UMAMI_ERROR;
             if (alpha_s != PAC_ALPHA_S0) {
                 if (PAC_ALPHA_S_SCALES) {
                     scale = pow(alpha_s / PAC_ALPHA_S0, PAC_ALPHA_S_POWER);
-                    scaled = true;
+                    event_scaled = true;
                 } else if (!close_to(alpha_s, PAC_ALPHA_S0)) {
                     if (!alpha_s_warned) {
                         alpha_s_warned = true;
@@ -253,43 +245,37 @@ PAC_EXPORT UmamiStatus umami_matrix_element(UmamiHandle handle, size_t count, si
                 }
             }
         }
-        int label = 0;
-        double total = 0.0;
-        double *values = instance->values;
 #ifdef PAC_CUDA
-        for (size_t h = 0; h < RUNNER_OUTPUTS; ++h) values[h] = instance->batch_values[h * count + (event - offset)];
+        /* × 1.0 for an event at alpha_s0 changes no bit: one scale array for the call */
+        instance->scales[event - offset] = scale;
+        scaled = scaled || event_scaled;
 #else
-        if (run(values, instance->arena, instance->momenta) != 0) return UMAMI_ERROR;
-#endif
-        if (scaled)
-            for (size_t h = 0; h < RUNNER_OUTPUTS; ++h) values[h] *= scale;
-        if (in[UMAMI_IN_HELICITY_INDEX]) {
-            /* a fixed exported helicity; one the program does not have contributes nothing */
-            label = ((int const *)in[UMAMI_IN_HELICITY_INDEX])[event];
-            if (label < 0 || label >= PAC_EXPORTED_HELICITY_COUNT) return UMAMI_ERROR;
-            int runtime = pac_helicity_runtime[label];
-            if (runtime >= 0) total += PAC_FACTOR * values[runtime];
-        } else {
-            for (size_t h = 0; h < RUNNER_OUTPUTS; ++h) total += values[h];
-            if (out[UMAMI_OUT_HELICITY_INDEX]) {
-                /* the helicity drawn in proportion to its value */
-                double target = random * total, cumulative = 0.0;
-                size_t chosen = 0;
-                for (size_t h = 0; h < RUNNER_OUTPUTS; ++h) {
-                    if (values[h] <= 0.0) continue;
-                    chosen = h;
-                    cumulative += values[h];
-                    if (cumulative > target) break;
-                }
-                label = pac_helicity_export[chosen];
+        for (size_t j = 0; j < n; ++j)
+            for (size_t k = 0; k < 4; ++k) {
+                double value = momenta[event + stride * (n * k + j)];
+                if (!isfinite(value)) return UMAMI_ERROR;
+                instance->momenta[4 * j + k] = value;
             }
-            total *= PAC_FACTOR;
-        }
-        if (!isfinite(total)) return UMAMI_ERROR;
-        if (out[UMAMI_OUT_MATRIX_ELEMENT]) ((double *)out[UMAMI_OUT_MATRIX_ELEMENT])[event] = total;
+        if (run(instance->values, instance->arena, instance->momenta) != 0) return UMAMI_ERROR;
+        double me;
+        int label;
+        if (pac_finish(instance->values, 1, event_scaled, scale, fixed, random, draw, &me, &label) != 0)
+            return UMAMI_ERROR;
+        if (out[UMAMI_OUT_MATRIX_ELEMENT]) ((double *)out[UMAMI_OUT_MATRIX_ELEMENT])[event] = me;
         if (out[UMAMI_OUT_HELICITY_INDEX]) ((int *)out[UMAMI_OUT_HELICITY_INDEX])[event] = label;
+#endif
         if (out[UMAMI_OUT_COLOR_INDEX]) ((int *)out[UMAMI_OUT_COLOR_INDEX])[event] = PAC_COLOR_INDEX;
     }
+#ifdef PAC_CUDA
+    double *me = out[UMAMI_OUT_MATRIX_ELEMENT] ? (double *)out[UMAMI_OUT_MATRIX_ELEMENT] + offset : NULL;
+    int *label = out[UMAMI_OUT_HELICITY_INDEX] ? (int *)out[UMAMI_OUT_HELICITY_INDEX] + offset : NULL;
+    if (pac_gpu_umami(momenta + offset, stride, count, scaled ? instance->scales : NULL,
+                      in[UMAMI_IN_HELICITY_INDEX] ? (int const *)in[UMAMI_IN_HELICITY_INDEX] + offset : NULL,
+                      in[UMAMI_IN_RANDOM_HELICITY] ? (double const *)in[UMAMI_IN_RANDOM_HELICITY] + offset : NULL,
+                      draw, me, label) != 0)
+        return UMAMI_ERROR;
+    (void)n;
+#endif
     return UMAMI_SUCCESS;
 }
 
@@ -297,8 +283,7 @@ PAC_EXPORT UmamiStatus umami_free(UmamiHandle handle) {
     if (handle == NULL) return UMAMI_SUCCESS;
     Instance *instance = handle;
 #ifdef PAC_CUDA
-    free(instance->batch_momenta);
-    free(instance->batch_values);
+    free(instance->scales);
 #endif
     free(instance->arena);
     free(instance);

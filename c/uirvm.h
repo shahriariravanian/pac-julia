@@ -142,6 +142,12 @@ PAC_FN int uir_stub(uint32_t stub, const uir_program *g, const uir_arena *a, con
  * leg l at momenta[(4 l + j) ld], output h at out[h ld] (the caller passes the point's first
  * element; ld = 1: the point's values in order). Returns 0, or the first failing kernel's status. */
 PAC_FN void uir_forms(const uir_program *g, const uir_arena *a, const double *momenta);
+/* the same with another momentum layout: component j of leg l at momenta[(leg_step l + component_step j) ld]
+ * (uir_forms: 4, 1; MadSpace's [stride (n k + particle) + event]: 1, n with ld = the stride) */
+PAC_FN void uir_forms_layout(const uir_program *g, const uir_arena *a, const double *momenta, size_t leg_step,
+                             size_t component_step);
+PAC_FN int uir_run_layout(const uir_program *g, const uir_arena *a, const double *momenta, size_t leg_step,
+                          size_t component_step, double *out);
 PAC_FN int uir_rows(const uir_program *g, const uir_arena *a, double *out);
 PAC_FN void uir_group(const uir_program *g, const uir_arena *a, double *out);
 PAC_FN int uir_run(const uir_program *g, const uir_arena *a, const double *momenta, double *out);

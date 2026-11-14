@@ -23,6 +23,7 @@
 
 const UMAMI_C = joinpath(dirname(@__DIR__), "c", "umami_pac.c")
 const UMAMI_H = joinpath(dirname(@__DIR__), "c", "umami.h")
+const UMAMI_FINISH_H = joinpath(dirname(@__DIR__), "c", "umami_finish.h")
 
 struct UmamiLibrary
     process::String              # the provider's runtime process (the export's process_key)
@@ -40,8 +41,21 @@ Base.hash(lib::UmamiLibrary, h::UInt) = hash(key(lib), h)
 
 clit(x::Float64) = isfinite(x) ? repr(x) : error("not finite: $x")
 
-# umami_program.h of `lib`, whose program is `l`
-function umami_program_h(lib::UmamiLibrary, l::Lowered, provider, exported_count::Int, parameters)::String
+# `l` reading the caller's legs (MadSpace's order): the library's leg permutation (runtime leg j =
+# input leg permutation[j], 0-based) folded into the crossing, so program leg l is sign × the
+# caller's leg permutation[crossing leg] (× 1.0 without a crossing: the same bits). No gather in the
+# library: the form fill reads the caller's momenta as they are.
+function permuted(l::Lowered, permutation::Vector{Int})::Lowered
+    length(permutation) == l.legs || error("$(l.process) $(l.colour): a permutation of $(length(permutation)) legs for $(l.legs)")
+    sort(permutation) == 0:l.legs-1 || error("$(l.process) $(l.colour): $permutation is not a permutation")
+    crossing = l.crossing === nothing ? [(permutation[k] + 1, 1.0) for k in 1:l.legs] :
+               [(permutation[leg] + 1, sign) for (leg, sign) in l.crossing]
+    return with(l; crossing)
+end
+
+# umami_tables.h of `lib` (whose program is `l`): what umami_finish.h reads, on the CPU and the GPU
+# (its tables PAC_TABLE: __device__ under nvcc), and umami_program.h: the host's constants
+function umami_program_h(lib::UmamiLibrary, l::Lowered, provider, exported_count::Int, parameters)::Tuple{String,String}
     what = "$(lib.process) $(lib.colour)"
     exported_count > 0 || error("$what: the provider exports no helicities")
     isempty(lib.helicity_export) && error("$what: no runtime helicities")
@@ -55,7 +69,8 @@ function umami_program_h(lib::UmamiLibrary, l::Lowered, provider, exported_count
     scales = power !== nothing && alpha_s0 > 0   # values at another alpha_s: × (alpha_s / alpha_s0)^power
     masses = Float64.(provider["masses"])
     out = IOBuffer()
-    println(out, "/* $(lib.process) $(lib.colour), permutation $(lib.permutation): written by PacRunner's umami_libraries */")
+    println(out, "/* $(lib.process) $(lib.colour), permutation $(lib.permutation) (in the program's crossing): ",
+            "written by PacRunner's umami_libraries, included by umami_finish.h */")
     println(out, "#define PAC_PARTICLES $(Int(provider["particle_count"]))")
     println(out, "#define PAC_HELICITY_COUNT $(Int(provider["helicity_count"]))")
     println(out, "#define PAC_EXPORTED_HELICITY_COUNT $exported_count")
@@ -65,17 +80,18 @@ function umami_program_h(lib::UmamiLibrary, l::Lowered, provider, exported_count
     println(out, "#define PAC_ALPHA_S_SCALES $(Int(scales))")
     println(out, "#define PAC_ALPHA_S0 $(clit(alpha_s0))")
     println(out, "#define PAC_ALPHA_S_POWER $(scales ? power : 0)")
+    println(out, "PAC_TABLE int pac_helicity_runtime[] = {", join(runtime, ", "), "};")
+    println(out, "PAC_TABLE int pac_helicity_export[] = {", join(lib.helicity_export, ", "), "};")
+    tables = String(take!(out))
+    println(out, "/* $(lib.process) $(lib.colour): written by PacRunner's umami_libraries (umami_tables.h: the rest) */")
     println(out, "static const double pac_masses[] = {", join(clit.(masses), ", "), "};")
-    println(out, "static const size_t pac_permutation[] = {", join(lib.permutation, ", "), "};")
-    println(out, "static const int pac_helicity_runtime[] = {", join(runtime, ", "), "};")
-    println(out, "static const int pac_helicity_export[] = {", join(lib.helicity_export, ", "), "};")
     println(out, "static const PacParameter pac_parameters[] = {")
     for (name, z) in parameters
         println(out, "    {", cstring(name), ", ", clit(real(z)), ", ", clit(imag(z)), "},")
     end
     println(out, "    {NULL, 0.0, 0.0},")
     println(out, "};")
-    return String(take!(out))
+    return (tables, String(take!(out)))
 end
 
 const UMAMI_DEVICES = (:cpu, :cuda)
@@ -135,8 +151,11 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
     fmad && precision == :f64 && error("fmad = true is not the CPU's bits: precision = :mixed only")
     cuda && nvcc === nothing && error("device = :cuda needs nvcc (ENV[\"NVCC\"], the PATH or /usr/local/cuda/bin)")
     compile(dir, l; interpreter = interpreter || cuda)
-    write(joinpath(dir, "umami_program.h"), umami_program_h(lib, l, provider, exported_count, parameters))
+    (tables, program) = umami_program_h(lib, l, provider, exported_count, parameters)
+    write(joinpath(dir, "umami_tables.h"), tables)
+    write(joinpath(dir, "umami_program.h"), program)
     cp(UMAMI_C, joinpath(dir, "umami_pac.c"); force = true)
+    cp(UMAMI_FINISH_H, joinpath(dir, "umami_finish.h"); force = true)
     cp(UMAMI_H, joinpath(dir, "umami.h"); force = true)
     so = joinpath(dir, "libumami_pac.$(Libdl.dlext)")
     if cuda
@@ -144,7 +163,7 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
         file(f) = joinpath(dir, f)
         rpath = "\$ORIGIN/" * relpath(abspath(runtime_dir), abspath(dir))
         mixed = precision == :mixed ? ["-DPAC_MIXED"] : String[]
-        run(`$nvcc $nvflags -arch=$cuda_arch --fmad=$fmad $mixed -Xcompiler -fPIC,-fvisibility=hidden -DPACPOOL_EXTERNAL
+        run(`$nvcc $nvflags -arch=$cuda_arch --fmad=$fmad $mixed -Xcompiler -fPIC,-fvisibility=hidden -DPACPOOL_EXTERNAL -DUIRGPU_UMAMI
              -DUIRGPU_SLOTS=$gpu_slots -DUIRGPU_SLOT_BYTES=$(Int(gpu_memory)) -x cu -c -o $(file("runner_gpu.o")) $(file("runner.c"))`)
         run(`$cc $cflags -std=c99 -ffp-contract=off -fPIC -fvisibility=hidden -DPAC_CUDA -c
              -o $(file("umami_pac.o")) $(file("umami_pac.c"))`)
@@ -236,7 +255,7 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
         sub = joinpath(dir, "programs", lpad(k - 1, 4, '0'))
         mkpath(sub)
         l = programs[(lib.process, lib.colour)][1]
-        (k, lib, sub, optimize_programs ? optimize(l) : l)
+        (k, lib, sub, permuted(optimize_programs ? optimize(l) : l, lib.permutation))
     end
     sos = asyncmap(jobs; ntasks = Sys.CPU_THREADS) do (k, lib, sub, l)
         so = build_umami_library(sub, lib, l, provider, exported_count, parameters;
