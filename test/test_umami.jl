@@ -8,6 +8,7 @@
 using PacRunner
 using PacRunner: UmamiLibrary, build_umami_library, output_count, with
 using Libdl
+using Random
 
 # umami.h
 const UMAMI_SUCCESS = Cint(0)
@@ -21,11 +22,12 @@ struct Library
     instance::Ptr{Cvoid}   # umami_initialize's
 end
 
-function open_library(l, dir::String; interpreter::Bool, device::Symbol = :cpu, precision::Symbol = :f64)::Library
+function open_library(l, dir::String; interpreter::Bool, device::Symbol = :cpu, precision::Symbol = :f64,
+                      gpu_memory::Real = PacRunner.GPU_MEMORY_DEFAULT)::Library
     n = output_count(l)
     lib = UmamiLibrary(l.process, l.colour, collect(0:l.legs-1), 0, 1.0, collect(0:n-1))
     provider = Dict("particle_count" => l.legs, "helicity_count" => n, "color_count" => 1, "masses" => zeros(l.legs))
-    so = build_umami_library(dir, lib, l, provider, n, Tuple{String,ComplexF64}[]; interpreter, device, precision)
+    so = build_umami_library(dir, lib, l, provider, n, Tuple{String,ComplexF64}[]; interpreter, device, precision, gpu_memory)
     h = dlopen(so)
     instance = Ref{Ptr{Cvoid}}(C_NULL)
     ccall(dlsym(h, :umami_initialize), Cint, (Ptr{Ptr{Cvoid}}, Cstring), instance, C_NULL) == UMAMI_SUCCESS ||
@@ -110,6 +112,138 @@ function check(path::String; quiet::Bool = false, cuda::Bool = false, precision:
     end
     quiet || println("$(basename(path)): UMAMI library of $(l.process) $(l.colour) (alpha_s power $power): ",
                      isempty(bad) ? "all as expected" : "failures: " * join(first(bad, 8), "; "))
+    return bad
+end
+
+# ---- the CUDA provider (device = :cuda_provider), driven as MadSpace's GPU runtime drives it -----
+
+const UMAMI_IN_FLAVOR_INDEX = Cint(2)
+const UMAMI_IN_RANDOM_HELICITY = Cint(4)
+const UMAMI_IN_HELICITY_INDEX = Cint(6)
+const UMAMI_OUT_COLOR_INDEX = Cint(2)
+const UMAMI_OUT_HELICITY_INDEX = Cint(3)
+const UMAMI_OUT_GPU_STREAM = Cint(5)
+const UMAMI_META_DEVICE = Cint(0)
+const UMAMI_DEVICE_CUDA = Cint(1)
+
+# one umami_matrix_element call: inputs and outputs as (key, pointer) pairs
+function call_batch(lib::Library, count, stride, offset, inputs, outputs)::Cint
+    ik = Cint[k for (k, _) in inputs]; ip = Ptr{Cvoid}[p for (_, p) in inputs]
+    ok = Cint[k for (k, _) in outputs]; op = Ptr{Cvoid}[p for (_, p) in outputs]
+    return ccall(dlsym(lib.handle, :umami_matrix_element), Cint,
+                 (Ptr{Cvoid}, Csize_t, Csize_t, Csize_t, Csize_t, Ptr{Cint}, Ptr{Ptr{Cvoid}}, Csize_t, Ptr{Cint}, Ptr{Ptr{Cvoid}}),
+                 lib.instance, count, stride, offset, length(ik), ik, ip, length(ok), ok, op)
+end
+
+# the CUDA runtime the provider links (its copy in the build folder)
+struct Cuda
+    rt::Ptr{Cvoid}
+end
+cuda_check(c::Cuda, s::Cint, what) = s == 0 || error("$what: CUDA error $s")
+function upload(c::Cuda, x::Vector{T}) where {T}
+    r = Ref{Ptr{Cvoid}}(C_NULL)
+    cuda_check(c, ccall(dlsym(c.rt, :cudaMalloc), Cint, (Ptr{Ptr{Cvoid}}, Csize_t), r, sizeof(x)), "cudaMalloc")
+    cuda_check(c, ccall(dlsym(c.rt, :cudaMemcpy), Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Csize_t, Cint), r[], x, sizeof(x), 1), "cudaMemcpy")
+    return r[]
+end
+function download!(c::Cuda, x::Vector{T}, p::Ptr{Cvoid}) where {T}
+    cuda_check(c, ccall(dlsym(c.rt, :cudaMemcpy), Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Csize_t, Cint), x, p, sizeof(x), 2), "cudaMemcpy")
+    return x
+end
+release(c::Cuda, p::Ptr{Cvoid}) = ccall(dlsym(c.rt, :cudaFree), Cint, (Ptr{Cvoid},), p)
+
+# The provider against the straight-line CPU build on one batch of `events` (the export's reference
+# points, cycled) at offset 5 of a longer stride, with a workspace of about 97 events (several
+# launches): the sampled pass (random helicity in; ME, colour and helicity index out) and the
+# fixed-helicity pass, half the events at alpha_s0 and half at 1.1 alpha_s0; then a flavour other
+# than 0, which the next call reports. f64: bit for bit at alpha_s0, the device's pow within 4 ulp
+# elsewhere; mixed: within MIXED_RTOL. Returns the failures.
+function check_provider(path::String; precision::Symbol = :f64, events::Int = 300, quiet::Bool = false)
+    ls = load_recurrence_export(path; kernels = :none)
+    refs = recurrence_references(path)
+    k = findfirst(k -> refs[k] !== nothing && ls[k].alpha_s !== nothing && ls[k].alpha_s[2] !== nothing && ls[k].alpha_s[1] > 0, eachindex(ls))
+    k === nothing && error("$path: no program with an alpha_s power and reference values")
+    (l, (points, _)) = (ls[k], refs[k])
+    a0 = l.alpha_s[1]
+    n, exported, N = l.legs, output_count(l), events
+    stride, offset = N + 7, 5
+    bad = String[]
+    cpu = open_library(l, mktempdir(); interpreter = false)
+    dir = mktempdir()
+    gpu = open_library(l, dir; interpreter = true, device = :cuda_provider, precision,
+                       gpu_memory = 97 * PacRunner.gpu_bytes_per_point(l; precision) + 4096)
+    rt = dlopen(first(filter(f -> startswith(basename(f), "libcudart.so"), readdir(dir; join = true))))
+    c = Cuda(rt)
+    try
+        device = Ref{Cint}(-1)
+        ccall(dlsym(gpu.handle, :umami_get_meta), Cint, (Cint, Ptr{Cvoid}), UMAMI_META_DEVICE, device)
+        device[] == UMAMI_DEVICE_CUDA || push!(bad, "the provider reports device $(device[]), not CUDA")
+        rng = Random.Xoshiro(20261113)
+        momenta = fill(NaN, 4n * stride)
+        for e in 1:N, p in 1:n, j in 1:4
+            momenta[(n * (j - 1) + p - 1) * stride + offset + e] = points[mod1(e, length(points))][p][j]
+        end
+        random = rand(rng, stride)
+        alpha_s = [isodd(e) ? a0 : 1.1 * a0 for e in 1:stride]
+        fixed = Cint.(rand(rng, 0:exported-1, stride))
+        stream = Ref{Ptr{Cvoid}}(C_NULL)
+        cuda_check(c, ccall(dlsym(rt, :cudaStreamCreate), Cint, (Ptr{Ptr{Cvoid}},), stream), "cudaStreamCreate")
+        sync() = cuda_check(c, ccall(dlsym(rt, :cudaStreamSynchronize), Cint, (Ptr{Cvoid},), stream[]), "cudaStreamSynchronize")
+        d = Dict(:momenta => upload(c, momenta), :random => upload(c, random), :alpha_s => upload(c, alpha_s), :fixed => upload(c, fixed))
+        events_in(e) = offset < e <= offset + N
+        for pass in (:sampled, :fixed)
+            # the CPU build on host arrays
+            me = fill(-1.0, stride); hel = fill(Cint(-7), stride); col = fill(Cint(-7), stride)
+            ins = pass == :sampled ? [(UMAMI_IN_MOMENTA, momenta), (UMAMI_IN_ALPHA_S, alpha_s), (UMAMI_IN_RANDOM_HELICITY, random)] :
+                                     [(UMAMI_IN_MOMENTA, momenta), (UMAMI_IN_ALPHA_S, alpha_s), (UMAMI_IN_HELICITY_INDEX, fixed)]
+            GC.@preserve momenta alpha_s random fixed me hel col begin
+                outs = [(UMAMI_OUT_MATRIX_ELEMENT, pointer(me)), (UMAMI_OUT_COLOR_INDEX, pointer(col))]
+                pass == :sampled && push!(outs, (UMAMI_OUT_HELICITY_INDEX, pointer(hel)))
+                status = call_batch(cpu, N, stride, offset, [(key, pointer(x)) for (key, x) in ins], outs)
+                status == UMAMI_SUCCESS || push!(bad, "$pass: the CPU build: status $status")
+            end
+            # the provider on device arrays and a stream
+            dme, dhel, dcol = upload(c, fill(-1.0, stride)), upload(c, fill(Cint(-7), stride)), upload(c, fill(Cint(-7), stride))
+            dins = [(UMAMI_IN_MOMENTA, d[:momenta]), (UMAMI_IN_ALPHA_S, d[:alpha_s]),
+                    pass == :sampled ? (UMAMI_IN_RANDOM_HELICITY, d[:random]) : (UMAMI_IN_HELICITY_INDEX, d[:fixed])]
+            douts = [(UMAMI_OUT_MATRIX_ELEMENT, dme), (UMAMI_OUT_COLOR_INDEX, dcol), (UMAMI_OUT_GPU_STREAM, stream[])]
+            pass == :sampled && push!(douts, (UMAMI_OUT_HELICITY_INDEX, dhel))
+            status = call_batch(gpu, N, stride, offset, dins, douts)
+            status == UMAMI_SUCCESS || push!(bad, "$pass: the provider: status $status")
+            sync()
+            gme, ghel, gcol = download!(c, fill(0.0, stride), dme), download!(c, fill(Cint(0), stride), dhel), download!(c, fill(Cint(0), stride), dcol)
+            foreach(p -> release(c, p), (dme, dhel, dcol))
+            for e in 1:stride
+                if !events_in(e)
+                    (gme[e] == -1.0 && ghel[e] == -7 && gcol[e] == -7) || push!(bad, "$pass: slot $e outside the call written")
+                    continue
+                end
+                exact = alpha_s[e] == a0
+                ok = precision == :f64 ? (exact ? same(gme[e], me[e]) : abs(gme[e] - me[e]) <= 4 * eps(abs(me[e]))) :
+                     isapprox(gme[e], me[e]; rtol = MIXED_RTOL)
+                ok || push!(bad, "$pass: event $e (alpha_s $(alpha_s[e])): $(gme[e]) vs the CPU's $(me[e])")
+                gcol[e] == col[e] || push!(bad, "$pass: event $e: colour $(gcol[e]) vs $(col[e])")
+                if pass == :sampled && precision == :f64 && exact
+                    ghel[e] == hel[e] || push!(bad, "$pass: event $e: helicity $(ghel[e]) vs $(hel[e])")
+                end
+            end
+        end
+        # a flavour other than 0: queued without complaint, reported by the next call
+        flavour = zeros(Cint, stride); flavour[offset+3] = 1
+        dflav, dme = upload(c, flavour), upload(c, zeros(stride))
+        ins = [(UMAMI_IN_MOMENTA, d[:momenta]), (UMAMI_IN_FLAVOR_INDEX, dflav)]
+        outs = [(UMAMI_OUT_MATRIX_ELEMENT, dme), (UMAMI_OUT_GPU_STREAM, stream[])]
+        call_batch(gpu, N, stride, offset, ins, outs) == UMAMI_SUCCESS || push!(bad, "flavour 1: the queuing call failed")
+        sync()
+        call_batch(gpu, N, stride, offset, ins[1:1], outs) == UMAMI_ERROR || push!(bad, "flavour 1: the next call did not report it")
+        foreach(p -> release(c, p), (dflav, dme, values(d)...))
+        ccall(dlsym(rt, :cudaStreamDestroy), Cint, (Ptr{Cvoid},), stream[])
+    finally
+        close_library(cpu)
+        close_library(gpu)
+    end
+    quiet || println("$(basename(path)): CUDA provider ($precision) of $(l.process) $(l.colour), $N events: ",
+                     isempty(bad) ? "as the CPU build" : "failures: " * join(first(bad, 8), "; "))
     return bad
 end
 

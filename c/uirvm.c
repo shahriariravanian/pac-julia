@@ -370,8 +370,8 @@ PAC_FN void uir_forms_layout(const uir_program *g, const uir_arena *a, const dou
             for (uint32_t t = g->form_first[f]; t < g->form_first[f + 1]; t++) {
                 uint32_t leg = g->term_leg[t];
                 double x = g->crossing_leg
-                    ? g->crossing_sign[leg] * momenta[(leg_step * g->crossing_leg[leg] + component_step * j) * a->ld]
-                    : momenta[(leg_step * leg + component_step * j) * a->ld];
+                    ? g->crossing_sign[leg] * momenta[leg_step * g->crossing_leg[leg] + component_step * j]
+                    : momenta[leg_step * leg + component_step * j];
                 v = v + g->term_coefficient[t] * x;
             }
             a->forms[(4 * (size_t)f + j) * a->ld + a->i] = v;
@@ -380,7 +380,7 @@ PAC_FN void uir_forms_layout(const uir_program *g, const uir_arena *a, const dou
 
 PAC_FN void uir_forms(const uir_program *g, const uir_arena *a, const double *momenta)
 {
-    uir_forms_layout(g, a, momenta, 4, 1);
+    uir_forms_layout(g, a, momenta, 4 * a->ld, a->ld);
 }
 
 /* output h × the group factor, as pacops' group */
@@ -404,5 +404,5 @@ PAC_FN int uir_run_layout(const uir_program *g, const uir_arena *a, const double
 
 PAC_FN int uir_run(const uir_program *g, const uir_arena *a, const double *momenta, double *out)
 {
-    return uir_run_layout(g, a, momenta, 4, 1, out);
+    return uir_run_layout(g, a, momenta, 4 * a->ld, a->ld, out);
 }

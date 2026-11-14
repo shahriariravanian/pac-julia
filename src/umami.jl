@@ -17,6 +17,8 @@
 #
 # device = :cuda: the program runs on a CUDA GPU (the UIR interpreter, c/uirgpu.c, built by nvcc);
 # the library still identifies as a CPU provider (host pointers, MadSpace's CPU threads).
+# device = :cuda_provider: the library identifies as CUDA, for MadSpace's GPU runtime (its device
+# pointers and stream; asynchronous, umami_pac.c).
 #
 # The programs come from RustiCol's recurrence export (load_recurrence_export) of the same artifact,
 # with the same model parameters: a library refuses other values (umami_set_parameter).
@@ -94,7 +96,7 @@ function umami_program_h(lib::UmamiLibrary, l::Lowered, provider, exported_count
     return (tables, String(take!(out)))
 end
 
-const UMAMI_DEVICES = (:cpu, :cuda)
+const UMAMI_DEVICES = (:cpu, :cuda, :cuda_provider)   # :cuda: on the GPU, a CPU provider; :cuda_provider: a CUDA one
 const UMAMI_PRECISIONS = (:f64, :mixed)   # device = :cuda: :mixed is pacops.h's PAC_MIXED
 
 find_nvcc() = (c = get(ENV, "NVCC", something(Sys.which("nvcc"), "/usr/local/cuda/bin/nvcc"));
@@ -146,8 +148,9 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
                              runtime_dir::String = dir)::String
     device in UMAMI_DEVICES || error("device $device: one of $UMAMI_DEVICES")
     precision in UMAMI_PRECISIONS || error("precision $precision: one of $UMAMI_PRECISIONS")
-    cuda = device == :cuda
-    precision == :f64 || cuda || error("precision = $precision needs device = :cuda")
+    cuda = device in (:cuda, :cuda_provider)
+    provider_build = device == :cuda_provider
+    precision == :f64 || cuda || error("precision = $precision needs device = :cuda or :cuda_provider")
     fmad && precision == :f64 && error("fmad = true is not the CPU's bits: precision = :mixed only")
     cuda && nvcc === nothing && error("device = :cuda needs nvcc (ENV[\"NVCC\"], the PATH or /usr/local/cuda/bin)")
     compile(dir, l; interpreter = interpreter || cuda)
@@ -163,12 +166,16 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
         file(f) = joinpath(dir, f)
         rpath = "\$ORIGIN/" * relpath(abspath(runtime_dir), abspath(dir))
         mixed = precision == :mixed ? ["-DPAC_MIXED"] : String[]
-        run(`$nvcc $nvflags -arch=$cuda_arch --fmad=$fmad $mixed -Xcompiler -fPIC,-fvisibility=hidden -DPACPOOL_EXTERNAL -DUIRGPU_UMAMI
-             -DUIRGPU_SLOTS=$gpu_slots -DUIRGPU_SLOT_BYTES=$(Int(gpu_memory)) -x cu -c -o $(file("runner_gpu.o")) $(file("runner.c"))`)
-        run(`$cc $cflags -std=c99 -ffp-contract=off -fPIC -fvisibility=hidden -DPAC_CUDA -c
+        # the CPU provider runs on the slot pool (libpacpool.so); the CUDA provider on the caller's
+        # stream (gpu_memory: the workspace budget of a launch), with the same CUDA runtime copy
+        gpu = provider_build ? ["-DUIRGPU_PROVIDER"] : ["-DPACPOOL_EXTERNAL", "-DUIRGPU_UMAMI", "-DUIRGPU_SLOTS=$gpu_slots"]
+        run(`$nvcc $nvflags -arch=$cuda_arch --fmad=$fmad $mixed -Xcompiler -fPIC,-fvisibility=hidden $gpu
+             -DUIRGPU_SLOT_BYTES=$(Int(gpu_memory)) -x cu -c -o $(file("runner_gpu.o")) $(file("runner.c"))`)
+        run(`$cc $cflags -std=c99 -ffp-contract=off -fPIC -fvisibility=hidden $(provider_build ? "-DPAC_CUDA_PROVIDER" : "-DPAC_CUDA") -c
              -o $(file("umami_pac.o")) $(file("umami_pac.c"))`)
+        pool = provider_build ? String[] : ["-L$runtime_dir", "-lpacpool"]
         run(`$nvcc -shared -arch=$cuda_arch -cudart shared -o $so $(file("umami_pac.o")) $(file("runner_gpu.o"))
-             -L$runtime_dir -lpacpool -Xlinker -rpath -Xlinker $rpath -lm`)
+             $pool -Xlinker -rpath -Xlinker $rpath -lm`)
     else
         sources = [joinpath(dir, f) for f in ("umami_pac.c", "runner.c", "pacops.c")]
         run(`$cc $cflags -std=c99 -ffp-contract=off -fPIC -fvisibility=hidden -shared -o $so $sources -lm`)
@@ -198,7 +205,11 @@ bit for bit, or `:mixed`: the currents, their arithmetic and the vertex sums in 
 forms, propagator denominators, wavefunctions and amplitudes in f64, the kernels in f32 but the
 backward slices of their denominators (about 1e-7 relative on the matrix element, ~1e-5 at worst);
 `nvflags` adds nvcc flags (`-DPAC_ACC64`: the vertex sums in f64; `-DPAC_AMP32`: the amplitudes in
-f32); `fmad = false`: no contracted multiply-adds. The libraries are built in parallel.
+f32); `fmad = false`: no contracted multiply-adds. `device = :cuda_provider`: the same GPU build,
+but each library identifies as a CUDA provider for MadSpace's GPU runtime: device pointers, the
+caller's stream (UMAMI_OUT_GPU_STREAM), nothing synchronized; `gpu_memory` is then the workspace
+budget of one launch (a larger call runs as several launches on the stream). The libraries are
+built in parallel.
 """
 function umami_libraries(export_path::AbstractString, metadata_path::AbstractString, dir::AbstractString;
                          optimize_programs::Bool = true, interpreter::Bool = false,
@@ -208,7 +219,7 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
                          precision::Symbol = :f64, fmad::Bool = precision == :mixed, nvflags::Cmd = `-O3`,
                          quiet::Bool = false)::String
     precision in UMAMI_PRECISIONS || error("precision $precision: one of $UMAMI_PRECISIONS")
-    precision == :f64 || device == :cuda || error("precision = $precision needs device = :cuda")
+    precision == :f64 || device in (:cuda, :cuda_provider) || error("precision = $precision needs device = :cuda or :cuda_provider")
     d = read_export(export_path)
     meta = JSON.parse(read(metadata_path, String))
     get(meta, "kind", nothing) == "pyamplicol-umami-metadata" || error("$metadata_path: not a pyAmpliCol UMAMI metadata file")
@@ -249,7 +260,7 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
     end
 
     mkpath(dir)
-    device == :cuda && build_cuda_runtime(dir; nvcc, cuda_arch)
+    device in (:cuda, :cuda_provider) && build_cuda_runtime(dir; nvcc, cuda_arch)
     # the libraries' folders and programs first (Julia work), then their builds (compilers) in parallel
     jobs = map(enumerate(libraries)) do (k, lib)
         sub = joinpath(dir, "programs", lpad(k - 1, 4, '0'))

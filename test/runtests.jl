@@ -523,6 +523,9 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
                 for f in ("pp_3j.json", "zggg_union.json")
                     @test isempty(UmamiScript.check(joinpath(@__DIR__, "data", "export", f); quiet = true, cuda = true))
                     @test isempty(UmamiScript.check(joinpath(@__DIR__, "data", "export", f); quiet = true, cuda = true, precision = :mixed))
+                    # the CUDA provider (MadSpace's GPU runtime: device pointers, a stream) against the CPU build
+                    @test isempty(UmamiScript.check_provider(joinpath(@__DIR__, "data", "export", f); quiet = true))
+                    @test isempty(UmamiScript.check_provider(joinpath(@__DIR__, "data", "export", f); quiet = true, precision = :mixed))
                 end
             end
         end

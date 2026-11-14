@@ -39,7 +39,16 @@
  * event's thread, and returns only the matrix elements and helicity indices: the CPU build's bits.
  * The GPU memory and streams are the process-wide slot pool's (libpacpool.so, pool.h): a call
  * borrows a free slot, so MadSpace's threads run on the GPU at the same time (up to the pool's
- * slots; by default one per CPU), whatever the number of libraries. */
+ * slots; by default one per CPU), whatever the number of libraries.
+ *
+ * With PAC_CUDA_PROVIDER (umami_libraries(...; device = :cuda_provider)) the library identifies as
+ * CUDA: MadSpace's GPU runtime passes device pointers (count = stride = the batch, offset 0) and
+ * its stream as the output UMAMI_OUT_GPU_STREAM. One call queues the events on that stream
+ * (pac_gpu_provider: the checks, the program and pac_finish in each event's thread, the outputs
+ * written in place) and returns without waiting. An event that fails a check (flavour, random,
+ * helicity index, alpha_s, momenta, result) leaves its code in a sticky error flag, which the next
+ * call reports (UMAMI_ERROR) and umami_free prints. The alpha_s scale is the device's pow, which
+ * may differ from glibc's by an ulp. */
 #include "umami.h"
 #include "runner.h"
 #include <math.h>
@@ -47,7 +56,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef PAC_CUDA
+#if defined(PAC_CUDA) || defined(PAC_CUDA_PROVIDER)
 #include "uirgpu.h"
 #endif
 
@@ -68,6 +77,9 @@ typedef struct {
 #ifdef PAC_CUDA
     size_t capacity;  /* events the scale buffer holds */
     double *scales;   /* the alpha_s scale of each event */
+#endif
+#ifdef PAC_CUDA_PROVIDER
+    int *error;       /* the sticky error flag (mapped pinned): a failing event's code */
 #endif
 } Instance;
 
@@ -99,12 +111,19 @@ static bool const supported_outputs[UMAMI_OUTPUT_KEY_COUNT] = {
     [UMAMI_OUT_MATRIX_ELEMENT] = true,
     [UMAMI_OUT_COLOR_INDEX] = true,
     [UMAMI_OUT_HELICITY_INDEX] = true,
+#ifdef PAC_CUDA_PROVIDER
+    [UMAMI_OUT_GPU_STREAM] = true,
+#endif
 };
 
 PAC_EXPORT UmamiStatus umami_get_meta(UmamiMetaKey key, void *result) {
     if (result == NULL) return UMAMI_ERROR;
     switch (key) {
+#ifdef PAC_CUDA_PROVIDER
+    case UMAMI_META_DEVICE: *(UmamiDevice *)result = UMAMI_DEVICE_CUDA; break;
+#else
     case UMAMI_META_DEVICE: *(UmamiDevice *)result = UMAMI_DEVICE_CPU; break;
+#endif
     case UMAMI_META_PARTICLE_COUNT: *(int *)result = PAC_PARTICLES; break;
     case UMAMI_META_HELICITY_COUNT: *(int *)result = PAC_HELICITY_COUNT; break;
     case UMAMI_META_COLOR_COUNT: *(int *)result = PAC_COLOR_COUNT; break;
@@ -138,7 +157,10 @@ PAC_EXPORT UmamiStatus umami_initialize(UmamiHandle *handle, char const *param_c
     if (handle == NULL) return UMAMI_ERROR;
     Instance *instance = calloc(1, sizeof(*instance));
     if (instance == NULL) return UMAMI_ERROR;
-#ifndef PAC_CUDA
+#if defined(PAC_CUDA_PROVIDER)
+    instance->error = pac_gpu_error_flag();
+    if (instance->error == NULL) { free(instance); return UMAMI_ERROR; }
+#elif !defined(PAC_CUDA)
     instance->arena = calloc(RUNNER_ARENA_SIZE, sizeof(double));
     if (instance->arena == NULL) { free(instance); return UMAMI_ERROR; }
 #endif
@@ -158,6 +180,21 @@ static bool close_to(double x, double y) {
 }
 
 static bool alpha_s_warned = false;   /* the unknown-power refusal is reported once */
+
+#ifdef PAC_CUDA_PROVIDER
+/* an earlier call's failing event (the sticky flag), printed; true: there is one */
+static bool report_error(Instance *instance) {
+    int code = *(volatile int *)instance->error;
+    if (code == 0) return false;
+    static char const *const what[] = {"", "a flavour index other than 0", "a random number outside [0, 1)",
+        "a helicity index outside the exported ones", "an alpha_s it cannot take (non-finite, negative, or "
+        "another than the exported one without a proven power)", "a non-finite momentum",
+        "a failing kernel", "a non-finite matrix element"};
+    fprintf(stderr, "umami (%s %s): an event of an earlier call had %s\n", RUNNER_PROCESS, RUNNER_COLOUR,
+            code > 0 && code < (int)(sizeof(what) / sizeof(what[0])) ? what[code] : "an unknown failure");
+    return true;
+}
+#endif
 
 PAC_EXPORT UmamiStatus umami_set_parameter(UmamiHandle handle, char const *name,
                                            double real, double imaginary) {
@@ -189,6 +226,10 @@ PAC_EXPORT UmamiStatus umami_matrix_element(UmamiHandle handle, size_t count, si
         (output_count && (output_keys == NULL || outputs == NULL))) return UMAMI_ERROR;
     void const *in[UMAMI_INPUT_KEY_COUNT] = {0};
     void *out[UMAMI_OUTPUT_KEY_COUNT] = {0};
+#ifdef PAC_CUDA_PROVIDER
+    bool has_stream = false;
+    void *stream = NULL;
+#endif
     for (size_t i = 0; i < input_count; ++i) {
         int key = input_keys[i];
         if (key < 0 || key >= UMAMI_INPUT_KEY_COUNT || !supported_inputs[key])
@@ -200,12 +241,36 @@ PAC_EXPORT UmamiStatus umami_matrix_element(UmamiHandle handle, size_t count, si
         int key = output_keys[i];
         if (key < 0 || key >= UMAMI_OUTPUT_KEY_COUNT || !supported_outputs[key])
             return UMAMI_ERROR_UNSUPPORTED_OUTPUT;
+#ifdef PAC_CUDA_PROVIDER
+        if (key == UMAMI_OUT_GPU_STREAM) {   /* a cudaStream_t: NULL is the default stream */
+            if (has_stream) return UMAMI_ERROR;
+            has_stream = true;
+            stream = outputs[i];
+            continue;
+        }
+#endif
         if (outputs[i] == NULL || out[key] != NULL) return UMAMI_ERROR;
         out[key] = outputs[i];
     }
     if (count == 0) return UMAMI_SUCCESS;
     if (in[UMAMI_IN_MOMENTA] == NULL) return UMAMI_ERROR_MISSING_INPUT;
     Instance *instance = handle;
+#ifdef PAC_CUDA_PROVIDER
+    /* device pointers: everything happens on the stream; an earlier call's failing event first */
+    if (report_error(instance)) return UMAMI_ERROR;
+    uirgpu_call call = {
+        (double const *)in[UMAMI_IN_MOMENTA] + offset, stride,
+        in[UMAMI_IN_ALPHA_S] ? (double const *)in[UMAMI_IN_ALPHA_S] + offset : NULL,
+        in[UMAMI_IN_FLAVOR_INDEX] ? (int const *)in[UMAMI_IN_FLAVOR_INDEX] + offset : NULL,
+        in[UMAMI_IN_RANDOM_HELICITY] ? (double const *)in[UMAMI_IN_RANDOM_HELICITY] + offset : NULL,
+        in[UMAMI_IN_HELICITY_INDEX] ? (int const *)in[UMAMI_IN_HELICITY_INDEX] + offset : NULL,
+        out[UMAMI_OUT_MATRIX_ELEMENT] ? (double *)out[UMAMI_OUT_MATRIX_ELEMENT] + offset : NULL,
+        out[UMAMI_OUT_HELICITY_INDEX] ? (int *)out[UMAMI_OUT_HELICITY_INDEX] + offset : NULL,
+        out[UMAMI_OUT_COLOR_INDEX] ? (int *)out[UMAMI_OUT_COLOR_INDEX] + offset : NULL,
+        out[UMAMI_OUT_HELICITY_INDEX] != NULL && in[UMAMI_IN_HELICITY_INDEX] == NULL,
+    };
+    return pac_gpu_provider(&call, count, stream, instance->error) == 0 ? UMAMI_SUCCESS : UMAMI_ERROR;
+#else
     double const *momenta = in[UMAMI_IN_MOMENTA];
     size_t const n = PAC_PARTICLES;
     bool const draw = out[UMAMI_OUT_HELICITY_INDEX] != NULL && in[UMAMI_IN_HELICITY_INDEX] == NULL;
@@ -277,11 +342,16 @@ PAC_EXPORT UmamiStatus umami_matrix_element(UmamiHandle handle, size_t count, si
     (void)n;
 #endif
     return UMAMI_SUCCESS;
+#endif   /* PAC_CUDA_PROVIDER */
 }
 
 PAC_EXPORT UmamiStatus umami_free(UmamiHandle handle) {
     if (handle == NULL) return UMAMI_SUCCESS;
     Instance *instance = handle;
+#ifdef PAC_CUDA_PROVIDER
+    report_error(instance);
+    pac_gpu_free_error_flag(instance->error);
+#endif
 #ifdef PAC_CUDA
     free(instance->scales);
 #endif

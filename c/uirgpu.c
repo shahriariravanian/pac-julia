@@ -11,11 +11,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include "uirgpu.h"
+#ifndef UIRGPU_PROVIDER
 #include "pool.h"
 #ifndef PACPOOL_EXTERNAL
 #include "pool.cu"
 #endif
-#ifdef UIRGPU_UMAMI
+#endif
+#if defined(UIRGPU_UMAMI) || defined(UIRGPU_PROVIDER)
 #include "umami_finish.h"
 #endif
 
@@ -63,6 +65,7 @@ static size_t uirgpu_arena_bytes(size_t points)
         }                                                                                          \
     } while (0)
 
+#ifndef UIRGPU_PROVIDER   /* the slot pool's entries (the CPU provider, the tests) */
 __global__ static void uirgpu_points(const double *momenta, double *out, double *forms, pac_amp *amplitudes,
                                      pac_real *planes, size_t points, int *status)
 {
@@ -153,7 +156,7 @@ __global__ static void uirgpu_umami_points(const double *momenta, double *values
         }
     uir_arena a = {forms, amplitudes, planes, points, i};
     /* MadSpace's layout: leg step 1, component step n (rows n k + p, ld = the launch's points) */
-    int s = uir_run_layout(&program, &a, momenta + i, 1, UIRGPU_LEGS, values + i);
+    int s = uir_run_layout(&program, &a, momenta + i, points, (size_t)UIRGPU_LEGS * points, values + i);
     if (s != 0) {
         *status = s;
         return;
@@ -273,3 +276,124 @@ int run_gpu(double *out, const double *momenta, size_t points)
     free(o);
     return status;
 }
+#endif   /* !UIRGPU_PROVIDER */
+
+#ifdef UIRGPU_PROVIDER
+/* ---- the CUDA provider: MadSpace's device pointers and stream ------------------------------- */
+
+PAC_FINISH_FN int uirgpu_close_to(double x, double y)
+{
+    return x == y || fabs(x - y) <= 1e-12 * fmax(fabs(x), fabs(y));
+}
+
+/* one event of a call: the checks, the program, pac_finish, the outputs; a failure's code in *error
+ * (UIRGPU_E_*), the event's outputs then unwritten */
+__global__ static void uirgpu_provider_points(uirgpu_call c, size_t first, double *values, double *forms,
+                                              pac_amp *amplitudes, pac_real *planes, size_t points, int *error)
+{
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= points) return;
+    size_t e = first + i;   /* the event, from the call's first */
+    if (c.flavor && c.flavor[e] != 0) { *error = UIRGPU_E_FLAVOR; return; }
+    double random = c.random ? c.random[e] : 0.5;
+    if (!isfinite(random) || random < 0.0 || random >= 1.0) { *error = UIRGPU_E_RANDOM; return; }
+    int fixed = c.fixed ? c.fixed[e] : -1;
+    if (c.fixed && (fixed < 0 || fixed >= PAC_EXPORTED_HELICITY_COUNT)) { *error = UIRGPU_E_HELICITY; return; }
+    double scale = 1.0;
+    int scaled = 0;
+    if (c.alpha_s) {
+        double alpha_s = c.alpha_s[e];
+        if (!isfinite(alpha_s) || alpha_s < 0.0) { *error = UIRGPU_E_ALPHA_S; return; }
+        if (alpha_s != PAC_ALPHA_S0) {
+            if (PAC_ALPHA_S_SCALES) {
+                scale = pow(alpha_s / PAC_ALPHA_S0, (double)PAC_ALPHA_S_POWER);
+                scaled = 1;
+            } else if (!uirgpu_close_to(alpha_s, PAC_ALPHA_S0)) {
+                *error = UIRGPU_E_ALPHA_S;
+                return;
+            }
+        }
+    }
+    const double *m = c.momenta + e;
+    for (size_t r = 0; r < 4 * (size_t)UIRGPU_LEGS; r++)
+        if (!isfinite(m[r * c.stride])) { *error = UIRGPU_E_MOMENTA; return; }
+    uir_arena a = {forms, amplitudes, planes, points, i};
+    /* the caller's layout in place: component k of particle p at [stride (n k + p) + event] */
+    int s = uir_run_layout(&program, &a, m, c.stride, (size_t)UIRGPU_LEGS * c.stride, values + i);
+    if (s != 0) { *error = UIRGPU_E_KERNEL; return; }
+    double me;
+    int label;
+    if (pac_finish(values + i, points, scaled, scale, fixed, random, c.draw, &me, &label) != 0) {
+        *error = UIRGPU_E_RESULT;
+        return;
+    }
+    if (c.me) c.me[e] = me;
+    if (c.label) c.label[e] = label;
+    if (c.colour) c.colour[e] = PAC_COLOR_INDEX;
+}
+
+#define UIRGPU_TRY(x)                                                                              \
+    do {                                                                                           \
+        cudaError_t e_ = (x);                                                                      \
+        if (e_ != cudaSuccess) {                                                                   \
+            fprintf(stderr, "uirgpu (%s %s): %s: %s\n", RUNNER_PROCESS, RUNNER_COLOUR, #x,          \
+                    cudaGetErrorString(e_));                                                       \
+            return -1;                                                                             \
+        }                                                                                          \
+    } while (0)
+
+int *pac_gpu_error_flag(void)
+{
+    int *flag = NULL;
+    if (cudaHostAlloc((void **)&flag, sizeof(int), cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) return NULL;
+    *flag = 0;
+    return flag;
+}
+
+void pac_gpu_free_error_flag(int *flag)
+{
+    if (flag) cudaFreeHost(flag);
+}
+
+int pac_gpu_provider(const uirgpu_call *call, size_t count, void *stream_, int *error)
+{
+    if (count == 0) return 0;
+    cudaStream_t stream = (cudaStream_t)stream_;
+    int device;
+    UIRGPU_TRY(cudaStreamGetDevice(stream, &device));   /* the caller's GPU, whatever ours is */
+    UIRGPU_TRY(cudaSetDevice(device));
+    int *error_device;
+    UIRGPU_TRY(cudaHostGetDevicePointer((void **)&error_device, error, 0));
+    /* the workspace of up to `chunk` events, within the budget: values, forms, amplitudes, planes */
+    size_t per_point = 0;
+    for (int r = 1; r < UIRGPU_REGIONS; r++) per_point += uirgpu_per_point[r];
+    size_t slack = UIRGPU_REGIONS * UIRGPU_ALIGN, budget = UIRGPU_SLOT_BYTES;
+    size_t most = budget > slack ? (budget - slack) / per_point : 0;
+    if (most == 0) {
+        fprintf(stderr, "uirgpu (%s %s): %zu bytes hold no event (%zu bytes each)\n", RUNNER_PROCESS, RUNNER_COLOUR,
+                budget, per_point);
+        return -1;
+    }
+    size_t chunk = count < most ? count : most, bytes = 0;
+    for (int r = 1; r < UIRGPU_REGIONS; r++) bytes += uirgpu_aligned(uirgpu_per_point[r] * chunk);
+    char *workspace;
+    UIRGPU_TRY(cudaMallocAsync((void **)&workspace, bytes, stream));
+    void *region[UIRGPU_REGIONS];
+    char *p = workspace;
+    for (int r = 1; r < UIRGPU_REGIONS; r++) {
+        region[r] = p;
+        p += uirgpu_aligned(uirgpu_per_point[r] * chunk);
+    }
+    for (size_t first = 0; first < count; first += chunk) {
+        size_t q = count - first < chunk ? count - first : chunk;   /* this launch's points: the arena's ld */
+        UIRGPU_TRY(cudaMemsetAsync(region[3], 0, uirgpu_per_point[3] * q, stream));
+        UIRGPU_TRY(cudaMemsetAsync(region[4], 0, uirgpu_per_point[4] * q, stream));
+        uirgpu_provider_points<<<(unsigned)((q + 127) / 128), 128, 0, stream>>>(
+            *call, first, (double *)region[1], (double *)region[2], (pac_amp *)region[3], (pac_real *)region[4], q,
+            error_device);
+        UIRGPU_TRY(cudaGetLastError());
+    }
+    UIRGPU_TRY(cudaFreeAsync(workspace, stream));
+    return 0;
+}
+#endif
