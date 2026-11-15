@@ -3,7 +3,8 @@
 Plan 2026-11-14, decisions 2026-11-15, implementation on branch `metal` (2026-11-15). Status:
 **checked on Linux (phases 1–2); on the Mac (M4) the sources compile as MSL and the GPU's f32 and
 df64 operations are the CPU shim's bits (phase 0, 2026-11-15); the programs on the GPU are the
-shim's bits (phase 3, 2026-11-15); phases 4–5 to do**. The Claude instance on the Mac starts from
+shim's bits (phase 3), and mg7 runs on them agree with stock and are faster (phase 4,
+2026-11-15); phase 5 (tuning) to do**. The Claude instance on the Mac starts from
 `c/metal/CLAUDE.md`.
 
 **Goal.** PacRunner's UIR programs on Apple-silicon GPUs through Metal, as UMAMI libraries MadSpace
@@ -86,6 +87,7 @@ test/     metal_shim_ops.cpp, metal_shim_run.cpp, test_metal_shim.jl (Linux and 
           test_metal.jl (macOS: GPU), test_umami.jl check(...; metal = true), mg7_run.py --device metal
           metal_compile.m (macOS: Metal's diagnostics of a .metal file),
           metal_probe.mm + metal_probe_body.metal (macOS: f32 and df64 operations, GPU vs shim)
+          mg7_bench.py (an mg7 output on stock, cpu and metal: σ, wall, phases, matrix-element time)
 ```
 
 The `.metal` files are copies of `c/pacops.c` and `c/uirvm.c`, modified: a fix in one belongs in the
@@ -104,8 +106,8 @@ one inlined complex square root; no math-library calls).
 | 1. df64 and pacops on the CPU (shim) | Linux | done: df64 ops ≤ 1.8e-14 relative, wavefunctions 7e-14, f32 vertices and propagators 4.4e-7 |
 | 2. Interpreter and kernels on the CPU (shim) | Linux | done: 629 programs (test data + the 4 mg7 processes), see below |
 | 3. On the GPU: test_metal.jl (GPU vs f64 vs shim) | Mac | done 2026-11-15: 653 programs bit for bit with the shim, see "Results on the Mac" |
-| 4. UMAMI: test_umami (metal), mg7 runs vs stock and our CPU | Mac | **to do** |
-| 5. Speed: chunk size, slots, threads, profile | Mac | **to do** |
+| 4. UMAMI: test_umami (metal), mg7 runs vs stock and our CPU | Mac | done 2026-11-15: five processes, see "Results on the Mac" |
+| 5. Speed: chunk size, slots, threads, profile | Mac | baseline measured (phase 4's table, default knobs); tuning to do |
 
 Phase 2 on Linux (2026-11-15, `julia --project test/test_metal_shim.jl EXPORTS`): matrix element
 relative to f64 at the reference points (or 16 RAMBO points):
@@ -170,6 +172,40 @@ flow:2,3,5,4,1, point 16), with 5.3e-5 (program 289, point 6) the only two of 70
 four above 1e-5. The GPU is the shim's bits there, so it is the mixed split's arithmetic; CUDA mixed
 on the same export and points (not runnable here: c/uirvm.c's PAC_MIXED is nvcc's) should show
 whether it is the f32 currents' cancellation (expected) or something of df64.
+
+Phase 4 (2026-11-15). `test/mg7_bench.py`: the five processes generated here (g g > g g g and
+the four of section 4, MadGraph7 PR #452), 100k events, batches of 64000, seed 7, fixed scales, LC,
+MadSpace on 10 threads; per mode a warm-up run, then the timed one. Wall: the whole generate_events
+process without timers (survey + generate + combine within 0.2–0.9 s of it); ME: umami_timer.c in
+front of every library (the stock one too), seconds summed over the threads, in a second pass
+(the same runs: same σ, same points). PacRunner's CPU f64 is the stock σ to ≤ 1e-13, the same points.
+
+| Process | Libraries | Mode | σ vs CPU f64 | Wall s | µs / point (wall) | ME µs / event (thread time) | Wall vs stock | ME vs stock |
+|---|---|---|---|---|---|---|---|---|
+| g g > g g g | 1 / 4 | stock | | 12.3 | 1.55 | 13.5 | 1× | 1× |
+| | | cpu | | 3.5 | 0.44 | 2.39 | 3.5× | 5.6× |
+| | | metal | −1.6e-7 | 2.5 | 0.31 | 1.00 | 5.0× | 13.5× |
+| g g > t t~ g g | 1 / 12 | stock | | 64.5 | 5.16 | 49.0 | 1× | 1× |
+| | | cpu | | 13.2 | 1.06 | 8.18 | 4.9× | 6.0× |
+| | | metal | +1.3e-4 (0.12σ) | 9.2 | 0.74 | 5.06 | 7.0× | 9.7× |
+| u u~ > z g g g g | 1 / 1 | stock | | 150.2 | 2.73 | 49.2 | 1× | 1× |
+| | | cpu | | 58.0 | 1.05 | 15.8 | 2.6× | 3.1× |
+| | | metal | −1.1e-3 (1.25σ) | 23.3 | 0.43 | 4.13 | 6.4× | 11.9× |
+| p p > z j j | 1 / 156 | stock | | 46.4 | 3.09 | 25.7 | 1× | 1× |
+| | | cpu | | 7.4 | 0.50 | 1.51 | 6.2× | 17.0× |
+| | | metal | −5.4e-8 | 6.2 | 0.41 | 0.87 | 7.5× | 29.6× |
+| p p > j j j | 1 / 53 | stock | | 206.6 | 1.18 | 15.8 | 1× | 1× |
+| | | cpu | | 47.0 | 0.27 | 1.19 | 4.4× | 13.2× |
+| | | metal | −4.5e-6 | 46.1 | 0.26 | 0.81 | 4.5× | 19.5× |
+
+σ: where the Metal run samples the CPU run's points (g g > g g g, p p > z j j; p p > j j j but two
+points), it is within 1e-6 (p p > j j j 4.5e-6). Elsewhere MadSpace's adaptation, fed values that
+differ by ~1e-7, takes other points (u u~ > z g g g g: 54.0M against 55.1M), and σ agrees within
+the statistical error (0.12σ, 1.25σ): the Metal libraries cannot be held to 1e-6 on σ there, only
+to their matrix elements (phase 3). Speed: Metal is fastest everywhere, by most where the matrix
+element dominates (u u~ > z g g g g: 2.5× our CPU, 6.4× stock); on p p > j j j the matrix element
+is a fifth of the thread time and the rest MadSpace's, so the wall barely moves. The stock
+library spends some seconds in each run's survey (p p > z j j 4.9 s, ours 0.0–0.1 s).
 
 ## 5. Risks
 

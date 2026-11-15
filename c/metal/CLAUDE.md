@@ -86,6 +86,11 @@ kernels into `runner.metal` by `src/compile_metal.jl`); `uirmetal.m` (host: comp
   ulp here and there. To find such a difference: run uir_points on the GPU and through the shim with
   the same buffers, compare forms, amplitudes and planes, and bisect on the number of rows.
 - GPU runs from the Bash sandbox may need it disabled.
+- Timing mg7 runs: `test/mg7_bench.py OUTPUT` (stock, cpu, metal; a warm-up run each). The timer
+  shims (PAC_UMAMI_TIMER) are built per library at the run's start: with 156 libraries that adds
+  ~40 s to the process's wall, so take wall times from `--no-timer` runs and the matrix element's
+  from timed ones. A Metal run may sample other points than the CPU one (MadSpace adapts on values
+  ~1e-7 apart): compare σ within errors there, not to 1e-6.
 
 ## Machine notes
 
