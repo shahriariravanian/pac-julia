@@ -1,8 +1,9 @@
 # pac-julia on Apple GPUs (Metal)
 
 Plan 2026-11-14, decisions 2026-11-15, implementation on branch `metal` (2026-11-15). Status:
-**written and checked on Linux (phases 1–2); not yet compiled or run on a Mac (phases 0, 3–5)**. The
-Claude instance on the Mac starts from `c/metal/CLAUDE.md`.
+**checked on Linux (phases 1–2); on the Mac (M4) the sources compile as MSL and the GPU's f32 and
+df64 operations are the CPU shim's bits (phase 0, 2026-11-15); not yet run as programs on the GPU
+(phases 3–5)**. The Claude instance on the Mac starts from `c/metal/CLAUDE.md`.
 
 **Goal.** PacRunner's UIR programs on Apple-silicon GPUs through Metal, as UMAMI libraries MadSpace
 loads on macOS, in one precision mode: CUDA's `mixed` split with every f64 part in df64 (a pair of
@@ -82,6 +83,8 @@ src/      kernel_c.jl     the mixed kernels' renderers now take a language (:c, 
           umami.jl        device = :metal (build_umami_metal, build_metal_runtime)
 test/     metal_shim_ops.cpp, metal_shim_run.cpp, test_metal_shim.jl (Linux and macOS: CPU)
           test_metal.jl (macOS: GPU), test_umami.jl check(...; metal = true), mg7_run.py --device metal
+          metal_compile.m (macOS: Metal's diagnostics of a .metal file),
+          metal_probe.mm + metal_probe_body.metal (macOS: f32 and df64 operations, GPU vs shim)
 ```
 
 The `.metal` files are copies of `c/pacops.c` and `c/uirvm.c`, modified: a fix in one belongs in the
@@ -96,7 +99,7 @@ one inlined complex square root; no math-library calls).
 
 | Phase | Where | Status |
 |---|---|---|
-| 0. MSL probes: the sources compile with newLibraryWithSource; df64 exact on the GPU | Mac | **to do** (CLAUDE.md step 1) |
+| 0. MSL probes: the sources compile with newLibraryWithSource; df64 exact on the GPU | Mac | done 2026-11-15 (M4), see "Results on the Mac" |
 | 1. df64 and pacops on the CPU (shim) | Linux | done: df64 ops ≤ 1.8e-14 relative, wavefunctions 7e-14, f32 vertices and propagators 4.4e-7 |
 | 2. Interpreter and kernels on the CPU (shim) | Linux | done: 629 programs (test data + the 4 mg7 processes), see below |
 | 3. On the GPU: test_metal.jl (GPU vs f64 vs shim) | Mac | **to do** |
@@ -116,6 +119,34 @@ relative to f64 at the reference points (or 16 RAMBO points):
 | uū → Z+4g | 24 | 2.6e-7 | 8.4e-7 |
 
 The same as CUDA mixed (median ~1e-7, worst ~1e-5).
+
+## 4b. Results on the Mac
+
+**Apple M4 (10 GPU cores), macOS 26.6.2, Apple clang 17, 2026-11-15.**
+
+Phase 0. The test data's 13 programs (zggg_union, pp_3j's 12) compile with newLibraryWithSource
+(MTLMathModeSafe, precise functions) in about 0.2 s each (0.00 s from Metal's cache), without
+warnings, once two errors in `df64.h` were fixed: `operator+=` returned a `df64 &` (MSL needs the
+address space: `thread df64 &`), and `dd_rint` named a variable `half` (an MSL type). The suspects of
+section 5 were all fine. The host (`make`: librunner_metal.dylib) builds without warnings.
+`test/metal_probe.mm` runs f32 + − × ÷ fma sqrt and df64 + − × ÷ sqrt floor rint fma, two_prod and
+two_sum on 2^20 inputs (2^±60, cancellations, values near 2^-120) on the GPU and through the shim:
+**all bit for bit**. Its controls: the CPU without flush-to-zero differs on every operation (on
+0.6–5 % of the inputs), the GPU with MTLMathModeFast on ÷ and every df64 operation (up to 98 %).
+So `msl_shim_flush_denormals` now sets FPCR.FZ on arm64 too (it only set FTZ + DAZ on x86-64), or the
+shim on a Mac would not be the GPU's bits.
+
+The shim (test_metal_shim.jl) on the Mac, Apple clang and Homebrew g++ 16 alike (the same bits):
+df64 and pacops as on Linux; pp_3j ME error median 1.6e-7, max 5.4e-6 (one point of
+p_p_to_j_j_j_16 flow:3,1,4,2,5; the Linux row above says 6.8e-7: to be checked there), zggg_union
+2.2e-7 / 6.7e-7 as on Linux.
+
+Phase 3, first look (test/runtests.jl runs test_metal.jl on macOS, 2026-11-15): the programs run on
+the GPU within the target, pp_3j ME error median 1.4e-7, max 2.7e-6; zggg_union 2.4e-7, 8.9e-7.
+**But not bit for bit with the shim**: 95 of pp_3j's 96 points differ (up to 1.4e-6 relative) and
+zggg_union's 4 (up to 1.6e-7), although every operation of the probe is. To find: something of the
+whole program differs (the compiler's contraction or reassociation across df64.h's functions in
+a large kernel, a library function, the order of a sum), not the f32 arithmetic itself.
 
 ## 5. Risks
 

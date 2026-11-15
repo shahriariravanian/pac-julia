@@ -7,9 +7,9 @@
 // df64 in the launch layout the Metal host uses (row 4 leg + j, points per row), the outputs read
 // back as hi + lo. Returns the status (0, or a failing kernel's).
 
+#include <vector>       // before msl_shim.h: its MSL keywords (thread, device, ...) are empty macros
 #include "msl_shim.h"
 #include "runner.metal"
-#include <vector>
 
 extern "C" int shim_run(const unsigned char *program, const double *momenta, size_t points, double *out)
 {

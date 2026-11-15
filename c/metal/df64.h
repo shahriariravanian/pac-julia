@@ -78,7 +78,7 @@ static inline df64 operator/(df64 x, df64 y)          /* DWDivDW2 */
     return fast_two_sum(th, delta / y.hi);
 }
 
-static inline df64 &operator+=(thread df64 &x, df64 y) { x = x + y; return x; }
+static inline thread df64 &operator+=(thread df64 &x, df64 y) { x = x + y; return x; }
 
 /* a × b + c (the kernels' fused multiply-add: two df64 roundings, not one) */
 static inline df64 dd_fma(df64 a, df64 b, df64 c) { return a * b + c; }
@@ -139,8 +139,8 @@ static inline df64 dd_rint(df64 x)
     df64 f = dd_floor(x), d = x - f;
     if (d < dd_f(0.5f)) return f;
     if (d > dd_f(0.5f)) return f + dd_f(1.0f);
-    df64 half = dd_floor(f * dd_f(0.5f));                 /* a tie: the even neighbour */
-    return half * dd_f(2.0f) == f ? f : f + dd_f(1.0f);
+    df64 halved = dd_floor(f * dd_f(0.5f));               /* a tie: the even neighbour */
+    return halved * dd_f(2.0f) == f ? f : f + dd_f(1.0f);
 }
 
 /* ---- the kernels' bit operations (kernel_msl.jl): componentwise on (hi, lo) ----

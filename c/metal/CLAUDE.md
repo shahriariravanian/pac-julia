@@ -85,4 +85,15 @@ kernels into `runner.metal` by `src/compile_metal.jl`); `uirmetal.m` (host: comp
 
 ## Machine notes
 
-(none yet: add this Mac's specifics here, marked with the machine, e.g. "M4, 10 GPU cores, macOS 15")
+**Apple M4 (10 cores, 16 GB), macOS 26.6.2, Command Line Tools (Apple clang 17), Julia 1.13.4** (2026-11-15):
+- MadGraph7 is beside this repository (`../MadGraph7`), on a local branch `pr452` (MadGraphTeam/MadGraph7
+  PR #452, the recurrence export). MadSpace and pyAmpliCol are built from source in it
+  (`python3 madspace/install.py --source -y --no-cuda --no-hip --no-simd`; `python3 pyamplicol/install.py
+  --source -y`). pyAmpliCol reports 0.2.1: MadGraph7's version label on upstream pyAmpliCol 1.0.3's code.
+- The python is `~/rust/.venv` (3.13); cmake and ninja come from pip there (no Homebrew cmake), and
+  juliacall (for `test/mg7_example.py`) too.
+- clang's `-Wall` flags the generated C's self-moves and unused kernel helpers, which gcc does not:
+  `test/compile_common.jl` silences those two warnings.
+- Homebrew's `g++-16` needs `SDKROOT=$(xcrun --show-sdk-path)`; with it the shim gives the same bits
+  as Apple clang.
+- `test/runtests.jl` runs the Metal GPU testset on macOS (it fails until phase 0 is done).
