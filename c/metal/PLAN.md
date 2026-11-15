@@ -3,7 +3,7 @@
 Plan 2026-11-14, decisions 2026-11-15, implementation on branch `metal` (2026-11-15). Status:
 **checked on Linux (phases 1–2); on the Mac (M4) the sources compile as MSL and the GPU's f32 and
 df64 operations are the CPU shim's bits (phase 0, 2026-11-15); the programs on the GPU are the
-shim's bits (phase 3, in progress); phases 4–5 to do**. The Claude instance on the Mac starts from
+shim's bits (phase 3, 2026-11-15); phases 4–5 to do**. The Claude instance on the Mac starts from
 `c/metal/CLAUDE.md`.
 
 **Goal.** PacRunner's UIR programs on Apple-silicon GPUs through Metal, as UMAMI libraries MadSpace
@@ -103,7 +103,7 @@ one inlined complex square root; no math-library calls).
 | 0. MSL probes: the sources compile with newLibraryWithSource; df64 exact on the GPU | Mac | done 2026-11-15 (M4), see "Results on the Mac" |
 | 1. df64 and pacops on the CPU (shim) | Linux | done: df64 ops ≤ 1.8e-14 relative, wavefunctions 7e-14, f32 vertices and propagators 4.4e-7 |
 | 2. Interpreter and kernels on the CPU (shim) | Linux | done: 629 programs (test data + the 4 mg7 processes), see below |
-| 3. On the GPU: test_metal.jl (GPU vs f64 vs shim) | Mac | test data and g g > g g g done (bit for bit with the shim), mg7 processes running |
+| 3. On the GPU: test_metal.jl (GPU vs f64 vs shim) | Mac | done 2026-11-15: 653 programs bit for bit with the shim, see "Results on the Mac" |
 | 4. UMAMI: test_umami (metal), mg7 runs vs stock and our CPU | Mac | **to do** |
 | 5. Speed: chunk size, slots, threads, profile | Mac | **to do** |
 
@@ -155,8 +155,21 @@ the shim:
 | test/data pp_3j | 12 | 96 | 1.6e-7 | 5.4e-6 | bit for bit |
 | test/data zggg_union | 1 | 4 | 2.2e-7 | 6.7e-7 | bit for bit |
 | g g > g g g (mg7, this Mac) | 24 | 384 | 1.7e-7 | 1.7e-6 | bit for bit |
+| g g > t t~ g g (mg7) | 24 | 384 | 4.0e-7 | 1.6e-6 | bit for bit |
+| p p > j j j (mg7) | 440 | 7040 | 2.6e-7 | 7.5e-5 | bit for bit |
+| u u~ > z g g g g (mg7) | 24 | 384 | 1.9e-7 | 1.8e-6 | bit for bit |
+| p p > z j j (mg7) | 128 | 2048 | 2.1e-7 | 8.5e-6 | bit for bit |
 
 and the UMAMI libraries (test_umami's check, metal = true) of the test data as expected.
+
+The mg7 processes were generated and exported here (MadGraph7 PR #452, ~/mg7-pr452-runs/NAME, 16
+RAMBO points per program). Two things to check on Linux: (1) here p p > j j j has 440 programs and
+p p > z j j 128, the reverse of the Linux table's labels in section 4 (the labels there are probably
+swapped); (2) p p > j j j's worst point, 7.5e-5 (program 244, mp0_mp0_to_mp0_mp0_mp0_76
+flow:2,3,5,4,1, point 16), with 5.3e-5 (program 289, point 6) the only two of 7040 above 3e-5 and
+four above 1e-5. The GPU is the shim's bits there, so it is the mixed split's arithmetic; CUDA mixed
+on the same export and points (not runnable here: c/uirvm.c's PAC_MIXED is nvcc's) should show
+whether it is the f32 currents' cancellation (expected) or something of df64.
 
 ## 5. Risks
 
