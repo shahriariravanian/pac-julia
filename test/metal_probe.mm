@@ -63,7 +63,7 @@ int main(int argc, char **argv)
         for (uint i = 0; i < n; i++) probe_one(i, in.data(), cpu.data());
         // the GPU
         NSString *dir = @(argv[1]);
-        NSString *src = [NSString stringWithFormat:@"#include <metal_stdlib>\nusing namespace metal;\n%@\n%@\n",
+        NSString *src = [NSString stringWithFormat:@"#include <metal_stdlib>\nusing namespace metal;\n#pragma METAL fp contract(off)\n%@\n%@\n",
                          slurp([[dir stringByAppendingPathComponent:@"df64.h"] UTF8String]), slurp(argv[2])];
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         MTLCompileOptions *o = [MTLCompileOptions new];

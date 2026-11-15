@@ -73,7 +73,8 @@ static void uirmetal_init(void)
         NSString *source = [[NSString alloc] initWithBytes:uir_metal_source length:uir_metal_source_size
                                                   encoding:NSUTF8StringEncoding];
         MTLCompileOptions *options = [MTLCompileOptions new];
-        /* IEEE f32: no fast math, no contraction, no reassociation (df64.h needs them) */
+        /* IEEE f32: no fast math, no reassociation (df64.h needs them); no contraction comes from
+         * the source's `#pragma METAL fp contract(off)` (compile_metal): Safe alone contracts */
         if (@available(macOS 15.0, *)) {
             options.mathMode = MTLMathModeSafe;
             options.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;

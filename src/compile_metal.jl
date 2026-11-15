@@ -126,6 +126,9 @@ function metal_source(prog::Lowered)::String
     println(out, "#ifndef MSL_SHIM_H")
     println(out, "#include <metal_stdlib>")
     println(out, "using namespace metal;")
+    # no fma contraction (MTLMathModeSafe alone still contracts a * b + c): the C sources and the
+    # shim are compiled with -ffp-contract=off, and the GPU gives their bits only with this
+    println(out, "#pragma METAL fp contract(off)")
     println(out, "#endif")
     for f in METAL_SOURCES
         println(out, "\n// ---- c/metal/$f ----")

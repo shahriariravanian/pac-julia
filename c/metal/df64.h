@@ -5,9 +5,10 @@
  * (Alg. 12), / DWDivDW2 (Alg. 17) with DWTimesFP3 (Alg. 9). Relative error about 2^-46 or better.
  *
  * They need correctly rounded f32 operations without contraction or reassociation (Metal:
- * MTLMathModeSafe; measured on the M4: f32 +, -, x, /, fma and sqrt are the CPU's bits) and a real
- * fma. Apple GPUs flush f32 denormals to zero: a low part below 2^-126 is lost (a relative error of
- * 2^-126 / |x|, only for values near the f32 range's bottom), and the range is f32's (~1e-38..3e38).
+ * MTLMathModeSafe and `#pragma METAL fp contract(off)`, which Safe does not imply; measured on the
+ * M4: f32 +, -, x, /, fma and sqrt are the CPU's bits) and a real fma. Apple GPUs flush f32
+ * denormals to zero: a low part below 2^-126 is lost (a relative error of 2^-126 / |x|, only for
+ * values near the f32 range's bottom), and the range is f32's (~1e-38..3e38).
  *
  * Plain C++ over float: the same source is MSL (with <metal_stdlib>) and C++ on the CPU (with
  * msl_shim.h), so the Linux tests run these very functions. The `df64` struct is not a float2 on

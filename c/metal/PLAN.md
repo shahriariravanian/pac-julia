@@ -2,8 +2,9 @@
 
 Plan 2026-11-14, decisions 2026-11-15, implementation on branch `metal` (2026-11-15). Status:
 **checked on Linux (phases 1–2); on the Mac (M4) the sources compile as MSL and the GPU's f32 and
-df64 operations are the CPU shim's bits (phase 0, 2026-11-15); not yet run as programs on the GPU
-(phases 3–5)**. The Claude instance on the Mac starts from `c/metal/CLAUDE.md`.
+df64 operations are the CPU shim's bits (phase 0, 2026-11-15); the programs on the GPU are the
+shim's bits (phase 3, in progress); phases 4–5 to do**. The Claude instance on the Mac starts from
+`c/metal/CLAUDE.md`.
 
 **Goal.** PacRunner's UIR programs on Apple-silicon GPUs through Metal, as UMAMI libraries MadSpace
 loads on macOS, in one precision mode: CUDA's `mixed` split with every f64 part in df64 (a pair of
@@ -102,7 +103,7 @@ one inlined complex square root; no math-library calls).
 | 0. MSL probes: the sources compile with newLibraryWithSource; df64 exact on the GPU | Mac | done 2026-11-15 (M4), see "Results on the Mac" |
 | 1. df64 and pacops on the CPU (shim) | Linux | done: df64 ops ≤ 1.8e-14 relative, wavefunctions 7e-14, f32 vertices and propagators 4.4e-7 |
 | 2. Interpreter and kernels on the CPU (shim) | Linux | done: 629 programs (test data + the 4 mg7 processes), see below |
-| 3. On the GPU: test_metal.jl (GPU vs f64 vs shim) | Mac | **to do** |
+| 3. On the GPU: test_metal.jl (GPU vs f64 vs shim) | Mac | test data and g g > g g g done (bit for bit with the shim), mg7 processes running |
 | 4. UMAMI: test_umami (metal), mg7 runs vs stock and our CPU | Mac | **to do** |
 | 5. Speed: chunk size, slots, threads, profile | Mac | **to do** |
 
@@ -141,12 +142,21 @@ df64 and pacops as on Linux; pp_3j ME error median 1.6e-7, max 5.4e-6 (one point
 p_p_to_j_j_j_16 flow:3,1,4,2,5; the Linux row above says 6.8e-7: to be checked there), zggg_union
 2.2e-7 / 6.7e-7 as on Linux.
 
-Phase 3, first look (test/runtests.jl runs test_metal.jl on macOS, 2026-11-15): the programs run on
-the GPU within the target, pp_3j ME error median 1.4e-7, max 2.7e-6; zggg_union 2.4e-7, 8.9e-7.
-**But not bit for bit with the shim**: 95 of pp_3j's 96 points differ (up to 1.4e-6 relative) and
-zggg_union's 4 (up to 1.6e-7), although every operation of the probe is. To find: something of the
-whole program differs (the compiler's contraction or reassociation across df64.h's functions in
-a large kernel, a library function, the order of a sum), not the f32 arithmetic itself.
+Phase 3 (2026-11-15). The first run had the programs within the target but **not bit for bit with
+the shim** (95 of pp_3j's 96 points, up to 1.4e-6), although every operation of the probe was. A
+driver running uir_points on the GPU and through the shim with the same buffers found forms and
+amplitudes equal, planes differing from the 23rd row of zggg_union (a vertex: one f32 ulp);
+**MTLMathModeSafe still contracts a * b + c into fma**. With `#pragma METAL fp contract(off)` in
+runner.metal's prelude (compile_metal) every buffer is equal. test_metal.jl, the GPU vs f64 and vs
+the shim:
+
+| Export | Programs | Points | ME error median | max | GPU vs shim |
+|---|---|---|---|---|---|
+| test/data pp_3j | 12 | 96 | 1.6e-7 | 5.4e-6 | bit for bit |
+| test/data zggg_union | 1 | 4 | 2.2e-7 | 6.7e-7 | bit for bit |
+| g g > g g g (mg7, this Mac) | 24 | 384 | 1.7e-7 | 1.7e-6 | bit for bit |
+
+and the UMAMI libraries (test_umami's check, metal = true) of the test data as expected.
 
 ## 5. Risks
 

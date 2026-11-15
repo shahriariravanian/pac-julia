@@ -81,6 +81,10 @@ kernels into `runner.metal` by `src/compile_metal.jl`); `uirmetal.m` (host: comp
   41 MB source took 22 s + 100 s of pipeline builds), later runs fast. Time warm runs only.
 - f32 denormals are flushed to zero on the GPU (the shim does the same).
 - f32 +, −, ×, ÷, fma, sqrt were the CPU's bits under `MTLMathModeSafe`; df64 depends on that.
+- `MTLMathModeSafe` does **not** stop fma contraction (found on the M4, 2026-11-15): runner.metal's
+  prelude has `#pragma METAL fp contract(off)`, without which the GPU differs from the shim by an
+  ulp here and there. To find such a difference: run uir_points on the GPU and through the shim with
+  the same buffers, compare forms, amplitudes and planes, and bisect on the number of rows.
 - GPU runs from the Bash sandbox may need it disabled.
 
 ## Machine notes
