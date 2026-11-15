@@ -58,6 +58,11 @@ optional alpha_s rescaling by the export's power. The flavours are MadSpace's to
 `dir/umami_pac.json` gives, per channel, each flavour's library, for an integrand with one
 differential cross section per library (`flavor_diff_xs_indices`, `flavor_remap = 0`).
 
+`device` picks where the programs run: `:cpu` (the default), `:cuda` (the UIR interpreter on a CUDA
+GPU, `c/cuda/`, still a CPU provider; `precision = :f64` bit for bit or `:mixed`), `:cuda_provider`
+(a CUDA provider for MadSpace's GPU runtime), `:metal` (macOS: an Apple GPU through Metal, `c/metal/`,
+always mixed f32/df64, a CPU provider; see `c/metal/PLAN.md`).
+
 `test/umami_check.py` runs them in MadSpace against the stock pyAmpliCol library, flavour by flavour:
 on eight 1.0.2 artifacts (355 flavours; pp > jjj: 325 flavours on 53 libraries) the LC pass (ME,
 colour and helicity indices) and the fixed-helicity pass are bit for bit. A plain helicity sum (no
@@ -166,7 +171,9 @@ against RustiCol's outputs, and, with a C compiler (`CC`, default `cc`), the com
 are C (`kernel_c`), so every program's folder builds and passes `make test`, and every program runs
 in Julia with kernel libraries built from that C. With symjit-utils' `sjb2obj`, the tests also build
 the kernels' native libraries: Julia and C against them bit for bit, and each kernel's C against its
-library. With nvcc and a GPU, the interpreter's GPU build against its CPU build. With
+library. With nvcc and a GPU, the interpreter's GPU build against its CPU build. With a C++
+compiler, the Metal runner's sources on the CPU (`c/metal/msl_shim.h`) against the f64 runner; on
+macOS with a Metal GPU, the Metal runner itself (`test/test_metal.jl`). With
 `PACRUNNER_ARTIFACT` an LC artifact and pac2json installed, its capture:
 
 ```sh

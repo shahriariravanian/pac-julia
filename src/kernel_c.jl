@@ -242,7 +242,7 @@ end
 
 kernel_c(name::String, path::AbstractString) = kernel_c(name, read_sjb(path; lowered = true))
 
-# ---- the mixed-precision kernel (PAC_MIXED, pacops.h) ----------------------------------------
+# ---- the mixed-precision kernel (PAC_MIXED, pacops.h; Metal, kernel_msl.jl) ------------------
 #
 # kernel_c_mixed(name, app): the same kernel with each value an f32 or an f64, as sjb2ptx's
 # `--mixed need` (symjit-utils src/ptx/mixed.rs) that pacuda's mixed kernels used: the divisions and
@@ -251,11 +251,15 @@ kernel_c(name::String, path::AbstractString) = kernel_c(name, read_sjb(path; low
 # masks, sign) stay f64 on their exact operands; every other value is f32. mem stays double: an
 # input is rounded where an f32 value loads it, an output widened where it is saved.
 #
-# The kernel is first a list of steps (one value each: a C expression of its operands, rendered in
-# the step's type); a register or stack slot `x` has a double `x` and a float `x_f`, and the
+# The kernel is first a list of steps (one value each: an expression of its operands, rendered in
+# the step's type); a register or stack slot `x` has a wide `x` and a float `x_f`, and the
 # current type of each name is followed through the straight-line code. The analysis does not
 # follow control flow: before every label, jump, funclet call and return, the f32 values are
-# widened (exactly) into their doubles, and after them every value is f64.
+# widened (exactly) into their wide values, and after them every value is wide.
+#
+# The language (`lang`): :c writes C, the wide type double (kernel_c_mixed); :msl writes the Metal
+# Shading Language, the wide type df64 (c/metal/df64.h; kernel_msl.jl), straight-line only (its
+# funclets inlined first: MSL has no goto).
 
 struct MixedStep
     dst::String                       # the name it defines ("" for none: a store to mem, control)
@@ -263,33 +267,79 @@ struct MixedStep
     kind::Symbol                      # :arith (f32 unless needed), :f64 (always), :move (its source's type unless needed),
                                       # :select (f64 when a branch is; its condition a mask, f64), :load (from mem),
                                       # :save (to mem), :ctrl (control: raw C)
-    render::Function                  # (operand expressions, type) -> the C expression (or, :ctrl, the C)
+    render::Function                  # (operand expressions, type) -> the expression (or, :ctrl, the C)
     seeds::Vector{String}             # the operands it needs in f64 (a divisor)
 end
 
-mfn(t, f) = t == :f32 ? f * "f" : f            # sqrt → sqrtf
-mlit(t, x::Float64) = t == :f32 ? "((float)$(const_c(x)))" : const_c(x)
+# ---- the spellings of the two languages: t is :f32 or :f64 (the wide type)
 
-# the unary operations that follow their value's type, and the fused multiply-adds: (operands, type) -> C
-const MIXED_UNI = Dict{Symbol,Function}(
-    :Neg => (a, t) -> "-$(a[1])", :Abs => (a, t) -> "$(mfn(t, "fabs"))($(a[1]))", :Abs2 => (a, t) -> "$(a[1]) * $(a[1])",
-    :Root => (a, t) -> "$(mfn(t, "sqrt"))($(a[1]))", :RealRoot => (a, t) -> "$(mfn(t, "sqrt"))($(a[1]))",
-    :Round => (a, t) -> "$(mfn(t, "nearbyint"))($(a[1]))", :Floor => (a, t) -> "$(mfn(t, "floor"))($(a[1]))",
-    :Ceiling => (a, t) -> "$(mfn(t, "ceil"))($(a[1]))", :Trunc => (a, t) -> "$(mfn(t, "trunc"))($(a[1]))",
-    :Half => (a, t) -> "$(a[1]) * $(mlit(t, 0.5))")
-const MIXED_FUSED = Dict{Symbol,Function}(
-    :MulAdd => (a, t) -> "$(mfn(t, "fma"))($(a[1]), $(a[2]), $(a[3]))",
-    :MulSub => (a, t) -> "$(mfn(t, "fma"))($(a[1]), $(a[2]), -$(a[3]))",
-    :NegMulAdd => (a, t) -> "$(mfn(t, "fma"))(-$(a[1]), $(a[2]), $(a[3]))",
-    :NegMulSub => (a, t) -> "$(mfn(t, "fma"))(-$(a[1]), $(a[2]), -$(a[3]))")
+# a math function of type t: C sqrtf / sqrt; MSL sqrt / dd_sqrt (nearbyint is MSL's rint)
+const MSL_WIDE_FN = Dict("sqrt" => "dd_sqrt", "fabs" => "dd_abs", "fma" => "dd_fma", "nearbyint" => "dd_rint",
+                         "floor" => "dd_floor", "ceil" => "dd_ceil", "trunc" => "dd_trunc")
+mfn(lang::Symbol, t, f) = lang == :c ? (t == :f32 ? f * "f" : f) :
+                          t == :f32 ? (f == "nearbyint" ? "rint" : f) : MSL_WIDE_FN[f]
+
+# a float as an MSL literal that reads back exactly
+function f32_msl(x::Float32)::String
+    isnan(x) && return "as_type<float>(0x$(string(reinterpret(UInt32, x); base = 16))u)"
+    isinf(x) && return x > 0 ? "INFINITY" : "(-INFINITY)"
+    (m, e) = split(repr(x), "f")            # the shortest form that reads back: "0.5f0", "1.0f-8"
+    return "$(m)e$(e)f"
+end
+
+# a double in type t: C ((float)lit) / lit; MSL a float literal / a df64 (hi, lo) of the double
+function mlit(lang::Symbol, t, x::Float64)::String
+    lang == :c && return t == :f32 ? "((float)$(const_c(x)))" : const_c(x)
+    t == :f32 && return f32_msl(Float32(x))
+    hi = Float32(x)
+    lo = isfinite(hi) ? Float32(x - Float64(hi)) : 0.0f0
+    return "dd($(f32_msl(hi)), $(f32_msl(lo)))"
+end
+
+wide_type(lang::Symbol) = lang == :c ? "double" : "df64"
+widen(lang::Symbol, e) = lang == :c ? "(double)$e" : "dd_f($e)"        # exact
+narrow(lang::Symbol, e) = lang == :c ? "(float)$e" : "dd_to_f($e)"     # rounded
+recip(lang::Symbol, e) = lang == :c ? "1.0 / $e" : "dd_f(1.0f) / $e"
+condition(lang::Symbol, e) = lang == :c ? "$e != 0.0" : "dd_true($e)"
+
+# the f64 operations on their exact operands: comparisons and masks (C: BI_C, UNI_C)
+const BI_MSL = Dict(
+    :GreaterThan => (a, b) -> "dd_mask($a > $b)", :GreaterThanEqual => (a, b) -> "dd_mask($a >= $b)",
+    :LittleThan => (a, b) -> "dd_mask($a < $b)", :LittleThanEqual => (a, b) -> "dd_mask($a <= $b)",
+    :Equal => (a, b) -> "dd_mask($a == $b)", :NotEqual => (a, b) -> "dd_mask($a != $b)",
+    :And => (a, b) -> "dd_and($a, $b)", :AndNot => (a, b) -> "dd_andnot($a, $b)",
+    :Or => (a, b) -> "dd_or($a, $b)", :Xor => (a, b) -> "dd_xor($a, $b)",
+)
+const UNI_MSL = Dict(
+    :Not => x -> "dd_not($x)", :IsZero => x -> "dd_mask(dd_is_zero($x))", :IsNotZero => x -> "dd_mask(!dd_is_zero($x))",
+    :Sign => x -> "dd_sign($x)",
+)
+bi_wide(lang::Symbol, op) = lang == :c ? get(BI_C, op, nothing) : get(BI_MSL, op, nothing)
+uni_wide(lang::Symbol, op) = lang == :c ? get(UNI_C, op, nothing) : get(UNI_MSL, op, nothing)
+
+# the unary operations that follow their value's type, and the fused multiply-adds: (operands, type) -> expression
+mixed_uni(lang::Symbol) = Dict{Symbol,Function}(
+    :Neg => (a, t) -> "-$(a[1])", :Abs => (a, t) -> "$(mfn(lang, t, "fabs"))($(a[1]))", :Abs2 => (a, t) -> "$(a[1]) * $(a[1])",
+    :Root => (a, t) -> "$(mfn(lang, t, "sqrt"))($(a[1]))", :RealRoot => (a, t) -> "$(mfn(lang, t, "sqrt"))($(a[1]))",
+    :Round => (a, t) -> "$(mfn(lang, t, "nearbyint"))($(a[1]))", :Floor => (a, t) -> "$(mfn(lang, t, "floor"))($(a[1]))",
+    :Ceiling => (a, t) -> "$(mfn(lang, t, "ceil"))($(a[1]))", :Trunc => (a, t) -> "$(mfn(lang, t, "trunc"))($(a[1]))",
+    :Half => (a, t) -> "$(a[1]) * $(mlit(lang, t, 0.5))")
+mixed_fused(lang::Symbol) = Dict{Symbol,Function}(
+    :MulAdd => (a, t) -> "$(mfn(lang, t, "fma"))($(a[1]), $(a[2]), $(a[3]))",
+    :MulSub => (a, t) -> "$(mfn(lang, t, "fma"))($(a[1]), $(a[2]), -$(a[3]))",
+    :NegMulAdd => (a, t) -> "$(mfn(lang, t, "fma"))(-$(a[1]), $(a[2]), $(a[3]))",
+    :NegMulSub => (a, t) -> "$(mfn(lang, t, "fma"))(-$(a[1]), $(a[2]), -$(a[3]))")
 const MIXED_COPY = (a, _) -> a[1]
 
 # what mixed_steps collects: the steps, and the funclets as KernelWriter does
 mutable struct MixedWriter
     name::String
+    lang::Symbol
     mir::MIR
     complex::Bool
     labels::Set{String}
+    uni::Dict{Symbol,Function}
+    fused::Dict{Symbol,Function}
     steps::Vector{MixedStep}
     returns::Int
     has_ret::Bool
@@ -300,12 +350,13 @@ step!(m::MixedWriter, dst, args, kind::Symbol, render; seeds = String[]) =
 arith!(m::MixedWriter, dst, args, render) = step!(m, dst, args, :arith, render)
 move!(m::MixedWriter, dst, src) = step!(m, dst, [src], :move, MIXED_COPY)
 ctrl!(m::MixedWriter, c::String) = step!(m, "", String[], :ctrl, (_, _) -> c)
-const_step!(m::MixedWriter, dst, x::Float64) = arith!(m, dst, String[], (_, t) -> mlit(t, x))
+const_step!(m::MixedWriter, dst, x::Float64) = (lang = m.lang; arith!(m, dst, String[], (_, t) -> mlit(lang, t, x)))
 
-# a load from / a save to a location: mem is double (rounded or widened there); a stack slot is a name
+# a load from / a save to a location: mem is wide (rounded or widened there); a stack slot is a name
 function load!(m::MixedWriter, dst, l::Loc, offset = 0)
     n = loc_c(l, offset)
-    l.kind == LOC_MEM ? step!(m, dst, String[], :load, (_, t) -> t == :f32 ? "(float)$n" : n) : move!(m, dst, n)
+    lang = m.lang
+    l.kind == LOC_MEM ? step!(m, dst, String[], :load, (_, t) -> t == :f32 ? narrow(lang, n) : n) : move!(m, dst, n)
 end
 
 function save!(m::MixedWriter, src, l::Loc, offset = 0)
@@ -314,7 +365,7 @@ function save!(m::MixedWriter, src, l::Loc, offset = 0)
 end
 
 # a real binary operation: the division f64 with its divisor a seed, +, -, × following their value's
-# type, the others (comparisons, masks: BI_C's) f64 on their exact operands
+# type, the others (comparisons, masks) f64 on their exact operands
 function bi!(m::MixedWriter, op::Symbol, dst, s1, s2)
     if op == :Divide
         step!(m, dst, [s1, s2], :f64, (a, _) -> "$(a[1]) / $(a[2])"; seeds = [s2])
@@ -322,7 +373,7 @@ function bi!(m::MixedWriter, op::Symbol, dst, s1, s2)
         o = op == :Plus ? "+" : op == :Minus ? "-" : "*"
         arith!(m, dst, [s1, s2], (a, _) -> "$(a[1]) $o $(a[2])")
     else
-        f = get(BI_C, op, nothing)
+        f = bi_wide(m.lang, op)
         f === nothing && refuse("$(m.name): the operation $op")
         step!(m, dst, [s1, s2], :f64, (a, _) -> f(a[1], a[2]))
     end
@@ -335,23 +386,24 @@ step_c!(m::MixedWriter, i::Instruction) = refuse("$(m.name): the instruction $i"
 
 function step_c!(m::MixedWriter, i::Uni)
     d, s = reg_c(i.dst), reg_c(i.s1)
+    lang = m.lang
     if i.op == :Recip
-        step!(m, d, [s], :f64, (a, _) -> "1.0 / $(a[1])"; seeds = [s])
+        step!(m, d, [s], :f64, (a, _) -> recip(lang, a[1]); seeds = [s])
     elseif i.op in (:Real, :Conjugate)
         move!(m, d, s)
     elseif i.op == :Imaginary
         const_step!(m, d, 0.0)
-    elseif haskey(MIXED_UNI, i.op)
-        arith!(m, d, [s], MIXED_UNI[i.op])
+    elseif haskey(m.uni, i.op)
+        arith!(m, d, [s], m.uni[i.op])
     else
-        f = get(UNI_C, i.op, nothing)
+        f = uni_wide(lang, i.op)
         f === nothing && refuse("$(m.name): the operation $(i.op)")
         step!(m, d, [s], :f64, (a, _) -> f(a[1]))
     end
 end
 
 step_c!(m::MixedWriter, i::Bi) = bi!(m, i.op, reg_c(i.dst), reg_c(i.s1), reg_c(i.s2))
-step_c!(m::MixedWriter, i::Fused) = arith!(m, reg_c(i.dst), reg_c.([i.a, i.b, i.c]), MIXED_FUSED[i.op])
+step_c!(m::MixedWriter, i::Fused) = arith!(m, reg_c(i.dst), reg_c.([i.a, i.b, i.c]), m.fused[i.op])
 step_c!(m::MixedWriter, i::Mov) = move!(m, reg_c(i.dst), reg_c(i.s1))
 step_c!(m::MixedWriter, i::Load) = load!(m, reg_c(i.dst), i.loc)
 step_c!(m::MixedWriter, i::Save) = save!(m, reg_c(i.src), i.loc)
@@ -372,20 +424,22 @@ function step_c!(m::MixedWriter, i::ComplexBi)
     if i.op == :Plus || i.op == :Minus
         bi!(m, i.op, xd, x1, x2); bi!(m, i.op, yd, y1, y2)
     elseif i.op == :Times
-        bi!(m, :Times, xt, y1, y2); arith!(m, xt, [x1, x2, xt], MIXED_FUSED[:MulSub]); bi!(m, :Times, yt, x1, y2)
-        arith!(m, yd, [x2, y1, yt], MIXED_FUSED[:MulAdd]); move!(m, xd, xt)
+        bi!(m, :Times, xt, y1, y2); arith!(m, xt, [x1, x2, xt], m.fused[:MulSub]); bi!(m, :Times, yt, x1, y2)
+        arith!(m, yd, [x2, y1, yt], m.fused[:MulAdd]); move!(m, xd, xt)
     elseif i.op == :Divide
-        bi!(m, :Times, xt, y1, y2); arith!(m, xt, [x1, x2, xt], MIXED_FUSED[:MulAdd]); bi!(m, :Times, yt, x1, y2)
-        arith!(m, yt, [x2, y1, yt], MIXED_FUSED[:MulSub]); bi!(m, :Times, t, x2, x2); arith!(m, t, [y2, y2, t], MIXED_FUSED[:MulAdd])
+        bi!(m, :Times, xt, y1, y2); arith!(m, xt, [x1, x2, xt], m.fused[:MulAdd]); bi!(m, :Times, yt, x1, y2)
+        arith!(m, yt, [x2, y1, yt], m.fused[:MulSub]); bi!(m, :Times, t, x2, x2); arith!(m, t, [y2, y2, t], m.fused[:MulAdd])
         bi!(m, :Divide, xd, xt, t); bi!(m, :Divide, yd, yt, t)
     else
         refuse("$(m.name): the complex operation $(i.op)")
     end
 end
 
-step_c!(m::MixedWriter, i::IfElse) =
+function step_c!(m::MixedWriter, i::IfElse)
+    lang = m.lang
     step!(m, reg_c(i.dst), [reg_c(i.true_val), reg_c(i.false_val), loc_c(i.cond, 0)], :select,
-          (a, _) -> "$(a[3]) != 0.0 ? $(a[1]) : $(a[2])")
+          (a, _) -> "$(condition(lang, a[3])) ? $(a[1]) : $(a[2])")
+end
 step_c!(m::MixedWriter, i::Label) = ctrl!(m, "$(label_c(i.label)):;")
 
 function step_c!(m::MixedWriter, i::Branch)
@@ -410,8 +464,9 @@ function step_c!(m::MixedWriter, i::Call)
 end
 
 # the steps of the kernel, with its funclet return points and whether a funclet returns
-function mixed_steps(name::String, app::SavedApplication)
-    m = MixedWriter(name, app.mir, is_complex(app.config), Set(i.label for i in app.mir.code if i isa Label), MixedStep[], 0, false)
+function mixed_steps(name::String, app::SavedApplication; lang::Symbol = :c, mir::MIR = app.mir)
+    m = MixedWriter(name, lang, mir, is_complex(app.config), Set(i.label for i in mir.code if i isa Label),
+                    mixed_uni(lang), mixed_fused(lang), MixedStep[], 0, false)
     foreach(i -> step_c!(m, i), m.mir.code)
     return (m.steps, m.returns, m.has_ret)
 end
@@ -433,8 +488,9 @@ function needed_steps(steps::Vector{MixedStep})::BitVector
 end
 
 # What the forward pass keeps: each name's current type (absent: f64, as declared), the names
-# declared as double and as float, the C lines, and the counts for the kernel's comment.
+# declared as wide and as float, the lines, and the counts for the kernel's comment.
 struct MixedBody
+    lang::Symbol
     cur::Dict{String,Symbol}
     doubles::Set{String}
     floats::Set{String}
@@ -442,24 +498,29 @@ struct MixedBody
     counts::Dict{Symbol,Int}
 end
 
-MixedBody() = MixedBody(Dict{String,Symbol}(), Set{String}(), Set{String}(), String[], Dict(:f64 => 0, :f32 => 0, :conversions => 0))
+MixedBody(lang::Symbol = :c) =
+    MixedBody(lang, Dict{String,Symbol}(), Set{String}(), Set{String}(), String[], Dict(:f64 => 0, :f32 => 0, :conversions => 0))
 
 current_type(b::MixedBody, n::String)::Symbol = get(b.cur, n, :f64)
 
 # the name `n` read as type `t`: its variable of its current type, converted when that differs
 function ref!(b::MixedBody, n::String, t::Symbol)::String
-    startswith(n, "mem[") && return t == :f32 ? "(float)$n" : n
+    startswith(n, "mem[") && return t == :f32 ? narrow(b.lang, n) : n
     have = current_type(b, n)
     have == :f32 ? push!(b.floats, n) : push!(b.doubles, n)
     have == t && return have == :f32 ? "$(n)_f" : n
-    return t == :f64 ? "(double)$(n)_f" : "(float)$n"
+    return t == :f64 ? widen(b.lang, "$(n)_f") : narrow(b.lang, n)
 end
 
-# before control flow: every f32 value widened (exactly) into its double; after it all are f64
+# a conversion in an operand (counted)
+is_conversion(lang::Symbol, r::String) =
+    lang == :c ? startswith(r, "(double)") || startswith(r, "(float)") : startswith(r, "dd_f(") || startswith(r, "dd_to_f(")
+
+# before control flow: every f32 value widened (exactly) into its wide value; after it all are f64
 function sync!(b::MixedBody)
     for (n, t) in sort(collect(b.cur))
         t == :f32 || continue
-        push!(b.body, "$n = (double)$(n)_f;"); push!(b.doubles, n)
+        push!(b.body, "$n = $(widen(b.lang, "$(n)_f"));"); push!(b.doubles, n)
         b.counts[:conversions] += 1
     end
     empty!(b.cur)
@@ -472,9 +533,10 @@ step_type(b::MixedBody, s::MixedStep, needed::Bool)::Symbol =
     s.kind == :select ? (any(a -> current_type(b, a) == :f64, s.args[1:2]) ? :f64 : :f32) :
     s.kind == :save ? :f64 : :f32
 
-# one step as C: its operands converted where their current type differs from the step's
+# one step: its operands converted where their current type differs from the step's
 function emit_step!(b::MixedBody, s::MixedStep, needed::Bool)
     if s.kind == :ctrl
+        b.lang == :c || refuse("control flow in an MSL kernel (only straight-line kernels and inlined funclets)")
         sync!(b)
         push!(b.body, s.render([ref!(b, a, :f64) for a in s.args], :f64))
         return
@@ -484,7 +546,7 @@ function emit_step!(b::MixedBody, s::MixedStep, needed::Bool)
     for (j, a) in enumerate(s.args)
         want = s.kind == :select && j == 3 ? :f64 : t      # the condition: a mask (f64)
         r = ref!(b, a, want)
-        (startswith(r, "(double)") || startswith(r, "(float)")) && (b.counts[:conversions] += 1)
+        is_conversion(b.lang, r) && (b.counts[:conversions] += 1)
         push!(operands, r)
     end
     s.kind == :load && t == :f32 && (b.counts[:conversions] += 1)
@@ -502,19 +564,26 @@ function emit_step!(b::MixedBody, s::MixedStep, needed::Bool)
     end
 end
 
+# the typed body of a kernel in `lang`: (declarations, body, counts)
+function mixed_body(name::String, app::SavedApplication; lang::Symbol = :c, mir::MIR = app.mir)
+    (steps, returns, has_ret) = mixed_steps(name, app; lang, mir)
+    need = needed_steps(steps)
+    b = MixedBody(lang)
+    foreach(k -> emit_step!(b, steps[k], need[k]), eachindex(steps))
+    declarations = String[]
+    zero = lang == :c ? "0.0" : "dd_f(0.0f)"
+    isempty(b.doubles) || push!(declarations, wide_type(lang) * " " * join(("$n = $zero" for n in declared(b.doubles)), ", ") * ";")
+    isempty(b.floats) || push!(declarations, "float " * join(("$(n)_f = 0.0f" for n in declared(b.floats)), ", ") * ";")
+    return (declarations, b.body, b.counts, returns, has_ret)
+end
+
 # the kernel `name` of `app` in mixed precision (KERNEL_PRELUDE before it); same prototype as kernel_c's
 function kernel_c_mixed(name::String, app::SavedApplication)::String
     check_kernel(name, app)
-    (steps, returns, has_ret) = mixed_steps(name, app)
-    need = needed_steps(steps)
-    b = MixedBody()
-    foreach(k -> emit_step!(b, steps[k], need[k]), eachindex(steps))
-    declarations = String[]
-    isempty(b.doubles) || push!(declarations, "double " * join(("$n = 0.0" for n in declared(b.doubles)), ", ") * ";")
-    isempty(b.floats) || push!(declarations, "float " * join(("$(n)_f = 0.0f" for n in declared(b.floats)), ", ") * ";")
+    (declarations, body, counts, returns, has_ret) = mixed_body(name, app)
     comment = "/* the symjit kernel $name in mixed precision (kernel_c.jl's kernel_c_mixed): " *
-              "$(b.counts[:f32]) f32 and $(b.counts[:f64]) f64 operations, $(b.counts[:conversions]) conversions */"
-    return kernel_function(name, comment, declarations, b.body, returns, has_ret)
+              "$(counts[:f32]) f32 and $(counts[:f64]) f64 operations, $(counts[:conversions]) conversions */"
+    return kernel_function(name, comment, declarations, body, returns, has_ret)
 end
 
 kernel_c_mixed(name::String, path::AbstractString) = kernel_c_mixed(name, read_sjb(path; lowered = true))
