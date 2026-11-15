@@ -15,7 +15,7 @@
 # flavour and subprocess ids). MadSpace splits each batch by flavour itself; a library never sees
 # another flavour's events.
 #
-# device = :cuda: the program runs on a CUDA GPU (the UIR interpreter, c/uirgpu.c, built by nvcc);
+# device = :cuda: the program runs on a CUDA GPU (the UIR interpreter, c/cuda/uirgpu.c, built by nvcc);
 # the library still identifies as a CPU provider (host pointers, MadSpace's CPU threads).
 # device = :cuda_provider: the library identifies as CUDA, for MadSpace's GPU runtime (its device
 # pointers and stream; asynchronous, umami_pac.c).
@@ -102,8 +102,8 @@ const UMAMI_PRECISIONS = (:f64, :mixed)   # device = :cuda: :mixed is pacops.h's
 find_nvcc() = (c = get(ENV, "NVCC", something(Sys.which("nvcc"), "/usr/local/cuda/bin/nvcc"));
                Sys.which(c) !== nothing || isfile(c) ? c : nothing)
 
-const POOL_CU = joinpath(dirname(@__DIR__), "c", "pool.cu")
-const POOL_H = joinpath(dirname(@__DIR__), "c", "pool.h")
+const POOL_CU = joinpath(dirname(@__DIR__), "c", "cuda", "pool.cu")
+const POOL_H = joinpath(dirname(@__DIR__), "c", "cuda", "pool.h")
 
 # the CUDA runtime library's file next to nvcc (libcudart.so.N, its soname)
 function find_cudart(nvcc::String)::String

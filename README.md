@@ -147,6 +147,8 @@ and the kernels is then a device function too (`PAC_FN`), and the tables are `__
 | `src/v1/` | the earlier path, pac2json's `main.json` (pyAmpliCol 0.2.x): `types.jl` (`Program`), `program.jl` (the loader), `arena.jl`, `operations.jl`, `progeval.jl` (`evaluate(::Program)`), `lower.jl` (`lower(p)`), `compile.jl` (`compile(dir, p::Program)`), `install.jl` (`install`, `capture`: pac2json, built with cargo), `alpha_s.jl` (`alpha_s_power`) |
 | `c/pacops.c`, `c/pacops.h` | the sources and instructions in C, copied next to each `runner.c` |
 | `src/compile_vm.jl`, `c/uirvm.c`, `c/uirvm.h` | `compile(dir, p; interpreter = true)`: the program as tables for the UIR interpreter, in portable C (one source for the CPU and the GPU) |
+| `c/cuda/` | the CUDA runner of the interpreter: `uirgpu.c` (shared part) and its entries `uirgpu_pool.c`, `uirgpu_umami.c`, `uirgpu_provider.c`; the slot pool `pool.cu`, `pool.h` |
+| `c/metal/` | the Metal runner (Apple GPUs; mixed f32/df64): see `c/metal/PLAN.md` |
 | `CONVENTIONS.md` | the meaning of main.json's fields and instructions (pac2json's legend) |
 | `test/runtests.jl` | the short tests |
 | `test/test_*.jl` | the longer comparisons, one script each (usage at the top of each); `test_lower.jl` reads every lowered row back to its operation and runs `evaluate(::Lowered)` against `evaluate(::Program)`, plain and after each pass |
