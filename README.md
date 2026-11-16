@@ -65,12 +65,15 @@ import madspace as ms
 from libraries import load_libraries            # pac-julia/utils on sys.path
 context = ms.Context(ms.cpu_device(), 1)
 libs = load_libraries(context, out)             # out: umami_libraries' folder
-rt = libs.runtime(channel=0)                    # all the channel's flavours
+rt = libs.runtime(channel=0)                    # a madspace.FunctionRuntime: all the channel's flavours
 (me,) = rt.call([momenta, flavours])            # momenta[event, particle, (E, px, py, pz)]
+me = me.numpy()
 ```
 
-`rt.call` splits a batch of mixed flavours over the flavours' libraries and returns the outputs in
-the events' order; `libs.matrix_elements(channel)` and `libs.flavor_arguments(channel)` are the
+`libs.runtime` is one MadSpace function that splits a batch of mixed flavours over the flavours'
+libraries (each with flavour 0) and merges the outputs back in the events' order, as MadSpace's
+`Integrand` does, so it runs where the context runs: for `:cuda_provider` libraries a CUDA context
+(MadSpace's CUDA build) and device arrays (e.g. CuPy) as inputs; `libs.matrix_elements(channel)` and `libs.flavor_arguments(channel)` are the
 pieces for an `Integrand` of your own, and `libs.parameters` the exported model parameters (to load
 the stock library at the same point). `test/test_libraries.py` checks it against the stock library.
 

@@ -10,33 +10,36 @@ madspace.Context and hides that layout:
 
     context = ms.Context(ms.cpu_device(), 1)
     libs = load_libraries(context, OUT)           # OUT: umami_libraries' folder (or its umami_pac.json)
-    rt = libs.runtime(channel=0)                  # inputs momenta, flavour; output the matrix element
+    rt = libs.runtime(channel=0)                  # a madspace.FunctionRuntime: momenta, flavour -> ME
     (me,) = rt.call([momenta, flavours])          # flavours: the provider's flavour of each event
 
-`rt.call` takes the inputs in order (MadSpace's: momenta[event, particle, (E, px, py, pz)], flavour
-per event, ...; the channel is the runtime's) and returns numpy arrays in the same event order: it
-splits the batch by flavour, runs each flavour's library with flavour 0, and puts the outputs back,
-as MadSpace's Integrand does with these libraries. Other inputs and outputs (random helicity,
-helicity index, alpha_s; colour and helicity indices) as for any UMAMI matrix element:
+The runtime is one MadSpace function over all the channel's flavours, built as MadSpace's Integrand
+builds its flavour splitting: each event's flavour is looked up to its library
+(flavor_diff_xs_indices), the batch is split by library (batch_split_by_index), each part runs its
+library's matrix element with flavour 0 (flavor_remap), and the outputs are merged back into the
+events' order (batch_merge_by_index). So the splitting runs where the context runs: on the GPU for
+a CUDA context and :cuda_provider libraries, on the CPU otherwise. `call` takes and returns what any
+FunctionRuntime of that context does (numpy arrays on the CPU; CuPy or other DLPack device arrays
+on a CUDA device). Other inputs and outputs (random helicity, helicity index, alpha_s; colour and
+helicity indices) as for any UMAMI matrix element:
 
     ME = ms.MatrixElement
     rt = libs.runtime(0, inputs=[ME.momenta_in, ME.flavor_in, ME.random_helicity_in],
                       outputs=[ME.matrix_element_out, ME.color_index_out, ME.helicity_index_out])
 
-For an Integrand of your own: libs.matrix_elements(channel, ...) gives one ms.MatrixElement per
-library of the channel, and libs.flavor_arguments(channel) its flavor_remap and
-flavor_diff_xs_indices (one differential cross section per library; every library sees flavour 0),
-as test/mg7_run.py builds them for MadGraph7.
+libs.function(channel, ...) is the same as a madspace.Function, to build into a larger one. For an
+Integrand of your own: libs.matrix_elements(channel, ...) gives one ms.MatrixElement per library of
+the channel, and libs.flavor_arguments(channel) its flavor_remap and flavor_diff_xs_indices, as
+test/mg7_run.py passes them to MadGraph7's Integrand.
 
 The device: libraries built for :cpu, :cuda and :metal are CPU providers (a CPU context, host
-memory); :cuda_provider libraries need MadSpace's CUDA build and a CUDA context (libs.device says
-which). The libraries take their model parameters from the export: `parameters` may be empty, and
-a parameter given must be the exported value (or the library refuses it)."""
+memory); :cuda_provider libraries are CUDA providers (MadSpace's CUDA build, a CUDA context:
+ms.Context(ms.cuda_device(), 1)); libs.device says which. The libraries take their model parameters
+from the export: `parameters` may be empty, and a parameter given must be the exported value (or the
+library refuses it); libs.parameters holds the exported values."""
 
 import json
 import os
-
-import numpy as np
 
 import madspace as ms
 
@@ -114,9 +117,33 @@ class PacLibraries:
         return {"flavor_remap": [0] * len(ch["flavor_libraries"]),
                 "flavor_diff_xs_indices": [libs.index(k) for k in ch["flavor_libraries"]]}
 
+    def function(self, channel=0, inputs=DEFAULT_INPUTS, outputs=DEFAULT_OUTPUTS, me_frame=(), incoming_count=2):
+        """`channel`'s matrix element over all its flavours as one ms.Function: the arguments are
+        `inputs` but channel_in (the channel is fixed), the results `outputs`, events in order"""
+        mes = self.matrix_elements(channel, inputs, outputs, me_frame=me_frame, incoming_count=incoming_count)
+        first = mes[0].function()
+        fb = ms.FunctionBuilder(ms.NamedTypes([(f"input{i}", v.type) for i, v in enumerate(first.inputs)]),
+                                ms.NamedTypes([(f"output{i}", v.type) for i, v in enumerate(first.outputs)]))
+        args = [fb.input(i) for i in range(len(first.inputs))]
+        flavour = [i for i in inputs if i != ME.channel_in].index(ME.flavor_in)
+        tables = self.flavor_arguments(channel)
+        # each event's library (its position among the channel's), the batch split by it
+        position = fb.gather_int(args[flavour], ms.Value(tables["flavor_diff_xs_indices"]))
+        parts = fb.batch_split_by_index(position, ms.Value(len(mes)))
+        merged = [[] for _ in first.outputs]
+        for me, indices in zip(mes, parts):
+            part = [fb.batch_gather(indices, a) for a in args]
+            part[flavour] = fb.gather_int(part[flavour], ms.Value(tables["flavor_remap"]))   # every flavour: 0
+            for j, value in enumerate(me.build_function(fb, part).values()):
+                merged[j] += [value, indices]
+        for j, values in enumerate(merged):
+            fb.output(j, fb.batch_merge_by_index(values))
+        return fb.function()
+
     def runtime(self, channel=0, inputs=DEFAULT_INPUTS, outputs=DEFAULT_OUTPUTS, me_frame=(), incoming_count=2):
-        """a runtime of `channel` over all its flavours (PacRuntime: call(args) as a FunctionRuntime's)"""
-        return PacRuntime(self, channel, inputs, outputs, me_frame, incoming_count)
+        """`channel`'s matrix element over all its flavours (function()) as an ms.FunctionRuntime of
+        the context: call([momenta, flavours, ...]) -> the outputs, as any FunctionRuntime's"""
+        return ms.FunctionRuntime(self.function(channel, inputs, outputs, me_frame, incoming_count), self.context)
 
 
 def exported_parameters(export_path, artifact=None):
@@ -139,46 +166,3 @@ def _with_channel(inputs):
     if ME.momenta_in not in inputs or ME.flavor_in not in inputs:
         raise ValueError("the inputs need momenta_in and flavor_in")
     return inputs if ME.channel_in in inputs else inputs + [ME.channel_in]
-
-
-class PacRuntime:
-    """A channel's matrix element over the provider's flavours: one FunctionRuntime per library;
-    call(args) splits the events by flavour, runs each library on its own events with flavour 0, and
-    returns the outputs (numpy arrays) in the events' order."""
-
-    def __init__(self, libs, channel, inputs, outputs, me_frame=(), incoming_count=2):
-        self.libs = libs
-        self.channel = channel
-        self.inputs = [i for i in inputs if i != ME.channel_in]   # the call's arguments, in order
-        self.outputs = list(outputs)
-        self.flavour_arg = self.inputs.index(ME.flavor_in)
-        ch = libs._channel(channel)
-        self.flavor_libraries = np.asarray(ch["flavor_libraries"], dtype=np.int64)
-        self.runtimes = {}
-        for k, me in zip(ch["libraries"], libs.matrix_elements(channel, self.inputs, self.outputs,
-                                                               me_frame=me_frame, incoming_count=incoming_count)):
-            self.runtimes[k] = ms.FunctionRuntime(me.function(), libs.context)
-
-    def call(self, args):
-        """the outputs for `args` (one per input, events first), as numpy arrays in event order"""
-        if len(args) != len(self.inputs):
-            raise ValueError(f"{len(args)} arguments for {len(self.inputs)} inputs")
-        args = [np.asarray(a) for a in args]
-        flavours = args[self.flavour_arg].astype(np.int64)
-        events = len(flavours)
-        if events and (flavours.min() < 0 or flavours.max() >= len(self.flavor_libraries)):
-            raise ValueError(f"a flavour outside 0..{len(self.flavor_libraries) - 1} (UMAMI channel {self.channel})")
-        library = self.flavor_libraries[flavours]
-        results = [None] * len(self.outputs)
-        for k, rt in self.runtimes.items():
-            idx = np.nonzero(library == k)[0]
-            if len(idx) == 0:
-                continue
-            sub = [a[idx] for a in args]
-            sub[self.flavour_arg] = np.zeros(len(idx), dtype=np.int32)   # each library: flavour 0
-            for j, r in enumerate(rt.call(sub)):
-                r = np.asarray(r.numpy())
-                if results[j] is None:
-                    results[j] = np.zeros((events,) + r.shape[1:], dtype=r.dtype)
-                results[j][idx] = r
-        return [r if r is not None else np.zeros(0) for r in results]   # an empty batch: empty outputs
