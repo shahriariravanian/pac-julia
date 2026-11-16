@@ -75,13 +75,25 @@ to the GPU with CuPy). `lib.matrix_elements(channel)` and `lib.flavor_arguments(
 pieces for an `Integrand` of your own; `lib.parameters` the exported model parameters.
 `test/python/test_runtime.py` checks it against the stock library.
 
-For a whole MadGraph7 run (event generation to the cross section), `pacrunner._madgraph` (soon
-`MadLibrary.run`) runs `generate_events` with the subprocess's stock library replaced by the PacRunner
-libraries:
+For a MadGraph7 output (`generate ... [amplicol]`, `output mg7 OUTPUT`), `MadOutput` compiles its
+pyAmpliCol subprocesses at the param card's parameters and runs `generate_events` (event generation to
+the cross section) with their stock libraries replaced by PacRunner's:
 
-```sh
-python -m pacrunner._madgraph OUTPUT/lib/pacrunner/A1_pp_jjj_p0 OUTPUT/SubProcesses/A1_pp_jjj/lc -f
+```python
+out = pacrunner.MadOutput("OUTPUT")              # out.names: one per stock library lib/libamplicol_<name>.so
+m = out.artifact("A1_pp_zj_p0")                  # a MadArtifact: m.runtime(c) is the stock library
+lib = m.compile(device="cpu")                    # MadLibrary in OUTPUT/lib/pacrunner/A1_pp_zj_p0
+r = lib.run()                                    # this subprocess on PacRunner, the others stock
+r = out.run(device="cpu")                        # all of them (compiled when needed)
+r.cross_section, r.error, r.events, r.run_dir
 ```
+
+A run is a process of its own (the output's python runs `python -m pacrunner._madgraph`;
+`in_process=True` runs it in this one, once per process) with the output's cards: `cuda_provider`
+libraries need `run.device = ["cuda"]` and MadSpace's CUDA build. The cross section and the weights are
+the stock run's bit for bit; in a channel whose flavours are on several libraries an event's sampled
+helicity (its LHE spins) may differ, drawn from the same distribution. `lib.integrand_inputs(c)` gives
+the matrix elements and flavour tables for a `madspace.Integrand` of your own.
 
 `test/umami_check.py` runs them in MadSpace against the stock pyAmpliCol library, flavour by flavour:
 on eight 1.0.2 artifacts (355 flavours; pp > jjj: 325 flavours on 53 libraries) the LC pass (ME,

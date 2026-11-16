@@ -63,15 +63,7 @@ class PacArtifact:
         self.id = self.manifest["artifact_id"]
         self.producer = self.manifest.get("producer", {})
         self.processes = self.manifest.get("processes", [])
-        umami = self.path / "API" / "umami"
-        if not (umami / "metadata.json").is_file():
-            raise _env.PacRunnerError(f"{self.path}: no UMAMI bundle (API/umami/metadata.json): generate with the API "
-                                      "bundle (pyamplicol generate --emit-api-bundle)")
-        index = _read(umami / "metadata.json")
-        if index.get("kind") == "pyamplicol-umami-provider-index":
-            entries = {str(p.get("id", p.get("provider"))): umami / p["metadata"] for p in index["providers"]}
-        else:
-            entries = {str(index["provider"].get("id")): umami / "metadata.json"}
+        entries = self.provider_metadata(self.path)
         self.providers = list(entries)
         if provider is None:
             if len(entries) != 1:
@@ -96,6 +88,18 @@ class PacArtifact:
         self.parameters = {k: float(v[0] if isinstance(v, list) else v) for k, v in _read(params)["parameters"].items()} \
             if params.is_file() else {}
         self._stock_apis = {}
+
+    @staticmethod
+    def provider_metadata(path):
+        """{provider id: its UMAMI metadata path} of the artifact at `path`"""
+        umami = Path(path) / "API" / "umami"
+        if not (umami / "metadata.json").is_file():
+            raise _env.PacRunnerError(f"{path}: no UMAMI bundle (API/umami/metadata.json): generate with the API "
+                                      "bundle (pyamplicol generate --emit-api-bundle)")
+        index = _read(umami / "metadata.json")
+        if index.get("kind") == "pyamplicol-umami-provider-index":
+            return {str(p.get("id", p.get("provider"))): umami / p["metadata"] for p in index["providers"]}
+        return {str(index["provider"].get("id")): umami / "metadata.json"}
 
     def __repr__(self):
         names = ", ".join(p.get("expression") or p["id"] for p in self.processes[:3])

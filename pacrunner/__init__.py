@@ -3,8 +3,9 @@
 pyAmpliCol's leading-colour recurrence programs, compiled by PacRunner into UMAMI libraries (CPU, CUDA)
 for MadGraph7 and MadSpace. Two layers:
 
-  - the high-level API: PacLibrary and MadLibrary (umami_libraries' folders) and their Runtime, the one
-    callable for any UMAMI matrix element and PacArtifact (a pyAmpliCol artifact; MadArtifact, MadOutput: to come);
+  - the high-level API: PacArtifact (a pyAmpliCol artifact), MadOutput and MadArtifact (a MadGraph7
+    output and its pyAmpliCol subprocesses), PacLibrary and MadLibrary (their compiled libraries, and
+    MadLibrary.run: generate_events on them) and Runtime, the one callable for any UMAMI matrix element;
   - the low-level API, pacrunner.lowlevel: PacRunner.jl's exported functions through juliacall.
 
 Setup: Julia installed (`julia` on the PATH, or PACRUNNER_JULIA), this repository cloned and installed
@@ -23,7 +24,7 @@ __version__ = "0.1.0"
 
 # imported on first use: `python -m pacrunner._madgraph` runs in MadGraph7's python, which may have
 # no numpy; the low-level layer starts nothing until one of its functions is called
-_LAZY = {"PacArtifact": "._artifacts", "PacLibrary": "._libraries", "MadLibrary": "._libraries", "load_libraries": "._libraries",
+_LAZY = {"MadOutput": "._mad", "MadArtifact": "._mad", "RunResult": "._mgrun", "PacArtifact": "._artifacts", "PacLibrary": "._libraries", "MadLibrary": "._libraries", "load_libraries": "._libraries",
          "Runtime": "._runtime", "RuntimeResult": "._runtime", "lowlevel": None}
 
 
@@ -37,5 +38,5 @@ def __getattr__(name):
     raise AttributeError(f"module 'pacrunner' has no attribute {name!r}")
 
 
-__all__ = ["CONFIG", "Config", "PacRunnerError", "configure", "repository", "lowlevel", "PacArtifact", "PacLibrary", "MadLibrary",
+__all__ = ["CONFIG", "Config", "PacRunnerError", "configure", "repository", "lowlevel", "MadOutput", "MadArtifact", "RunResult", "PacArtifact", "PacLibrary", "MadLibrary",
            "Runtime", "RuntimeResult", "load_libraries", "__version__"]

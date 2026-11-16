@@ -207,6 +207,30 @@ class MadLibrary(PacLibrary):
         self.output = output
         self.name = self.folder.name
 
+    def mad_artifact(self):
+        """the MadArtifact these libraries were compiled from"""
+        from ._mad import MadArtifact
+        return MadArtifact(self.output, self.name)
+
+    def run(self, args=None, in_process=False, log=None):
+        """an end-to-end MadGraph7 run (generate_events: the survey, the events, the cross section) with
+        this subprocess on these libraries and the output's other subprocesses on their stock ones.
+        In a process of its own by default, the output's python (in_process=True: in this one, once per
+        process); `args` generate_events' arguments (default -f); `log` a file for its output (default:
+        this process's). The cards are the output's (Cards/run_card.toml: cuda_provider libraries need
+        run.device = ["cuda"]). Returns a RunResult (cross_section, error, events, run_dir, output,
+        wall_seconds)."""
+        from . import _mgrun
+        return _mgrun.run_libraries(self.output, [self], args=args, in_process=in_process, log=log)
+
+    def integrand_inputs(self, channel, inputs=None, outputs=None, context=None, me_frame=(), incoming_count=2):
+        """the pieces of a madspace.Integrand of your own for `channel`: (matrix_elements, flavour
+        arguments), matrix_elements one madspace.MatrixElement per library (sampling its random inputs,
+        as the Integrand needs), the arguments {flavor_remap, flavor_diff_xs_indices} to pass with them"""
+        return (self.matrix_elements(channel, inputs, outputs, context, sample_random_inputs=True, me_frame=me_frame,
+                                     incoming_count=incoming_count),
+                self.flavor_arguments(channel))
+
 
 class _ContextLibraries:
     """load_libraries' result (the earlier utils/libraries.py API, for code written against it): a

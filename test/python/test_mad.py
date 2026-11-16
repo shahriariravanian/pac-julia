@@ -1,0 +1,144 @@
+"""pacrunner.MadOutput, MadArtifact and MadLibrary.run on a MadGraph7 output of several subprocesses.
+
+    PACRUNNER_MADGRAPH7=~/MadGraph7 PACRUNNER_TEST_MG7_MULTI=OUTPUT python -m unittest discover -s test/python
+
+PACRUNNER_TEST_MG7_MULTI: an mg7 output of two pyAmpliCol processes with color_accuracy = "lc" and
+run.device = ["cpu"], e.g. `generate p p > z j [amplicol]`, `add process p p > z j j [amplicol]`,
+`output mg7 OUTPUT`. The tests compile its libraries (lib/pacrunner/, ~20 s the first time) and add
+runs to its Events/ (a stock one, then on PacRunner: each a few seconds for this process). The
+param-card reader's test needs nothing."""
+
+import json
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+
+import pacrunner
+from pacrunner import _mad, _mgrun
+
+OUTPUT = os.environ.get("PACRUNNER_TEST_MG7_MULTI")
+
+CARD = """\
+######################################################################
+BLOCK MASS #
+      5 4.700000e+00 # mb
+      23 9.118800e+01 # mz
+BLOCK SMINPUTS #
+      1 1.325070e+02 # aewm1
+      3 1.300027e-01 # as
+Block yukawa
+    6 1.73d+02 # ymt
+DECAY 23 2.441404e+00 # wz
+DECAY 25 6.382339e-03
+BLOCK QNUMBERS 9000001 # gh
+      1 0 # 3 times electric charge
+"""
+
+
+class ParamCard(unittest.TestCase):
+    def test_the_card_as_madgraph_reads_it(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".dat", delete=False) as f:
+            f.write(CARD)
+        refs = {"MZ": ["MASS", [23]], "aS": ["SMINPUTS", [3]], "ymt": ["YUKAWA", [6]], "WZ": ["DECAY", [23]],
+                "WH": ["DECAY", [25]], "MT": ["MASS", [6]]}
+        self.assertEqual(_mad.card_parameters(f.name, refs),
+                         {"MZ": 91.188, "aS": 0.1300027, "ymt": 173.0, "WZ": 2.441404, "WH": 0.006382339})
+        os.unlink(f.name)
+
+    def test_folder_names(self):
+        self.assertEqual([_mad.library_folder_name(*v) for v in (("cpu", "f64"), ("cuda", "f64"), ("cuda", "mixed"),
+                                                                 ("cuda_provider", "mixed"))],
+                         ["pacrunner", "pacrunner-cuda", "pacrunner-cuda-mixed", "pacrunner-cuda_provider-mixed"])
+
+
+def stock_run(output):
+    """generate_events of the output as it is (its stock libraries): (cross section, events.npy)"""
+    output = Path(output)
+    env = dict(os.environ, XDG_RUNTIME_DIR=os.environ.get("XDG_RUNTIME_DIR", os.path.expanduser("~/.cache/xdg-runtime")))
+    subprocess.run([_mgrun.output_python(output), "bin/generate_events", "-f"], cwd=output, env=env, check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    run = max((output / "Events").glob("run_*"), key=lambda d: int(d.name.rsplit("_", 1)[1]))
+    with open(run / "info.json") as f:
+        return float(json.load(f)["process"]["mean"]), np.load(run / "events.npy")
+
+
+@unittest.skipUnless(OUTPUT, "PACRUNNER_TEST_MG7_MULTI not set")
+class Output(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.out = pacrunner.MadOutput(OUTPUT)
+        cls.libs = cls.out.compile(device="cpu")
+        cls.stock_xs, cls.stock_events = stock_run(OUTPUT)
+
+    def test_layout(self):
+        out = self.out
+        self.assertGreaterEqual(len(out.names), 2)
+        with open(out.path / "SubProcesses" / "subprocesses.json") as f:
+            entries = [e for e in json.load(f) if e.get("backend") == "amplicol"]
+        self.assertEqual(sum(a.channels for a in out.artifacts()), len(entries))
+        for a, lib in zip(out.artifacts(), self.libs):
+            self.assertEqual((lib.name, lib.output, lib.channels), (a.name, out.path, a.channels))
+            self.assertEqual(lib.mad_artifact().name, a.name)
+            self.assertTrue(a.stock_library_path.is_file())
+            self.assertIn("aS", a.parameters)
+            with open(lib.folder / "pacrunner-build.json") as f:
+                self.assertEqual(json.load(f)["parameters"], dict(sorted(a.parameters.items())))
+
+    def test_compile_is_the_stock_library(self):
+        rng = np.random.default_rng(3)
+        for a, lib in zip(self.out.artifacts(), self.libs):
+            momenta = np.stack([p for _, p in a.artifact.validation_points()])
+            for c in range(a.channels):
+                flavours = rng.integers(0, a.flavours(c), len(momenta))
+                r = rng.random(len(momenta))
+                s = a.runtime(c)(momenta, flavours, random_helicity=r)
+                o = lib.runtime(c, threads=1)(momenta, flavours, random_helicity=r)
+                for name in ("matrix_element", "color_index", "helicity_index"):
+                    self.assertTrue(np.array_equal(getattr(s, name).view(np.uint64) if name == "matrix_element"
+                                                   else getattr(s, name),
+                                                   getattr(o, name).view(np.uint64) if name == "matrix_element"
+                                                   else getattr(o, name)), f"{a.name} channel {c}: {name}")
+
+    def test_integrand_inputs(self):
+        lib = self.libs[0]
+        mes, tables = lib.integrand_inputs(0)
+        self.assertEqual(len(mes), len(lib._channel(0)["libraries"]))
+        self.assertEqual(len(tables["flavor_remap"]), lib.flavours(0))
+
+    def check_events(self, result, ours):
+        """the run's events: the stock run's but for the spins of the subprocesses on PacRunner"""
+        events = np.load(result.run_dir / "events.npy")
+        stock = self.stock_events
+        self.assertEqual(len(events), len(stock))
+        particles = stock["part5_pdg_id"] != 0   # the larger process's events
+        for name in stock.dtype.names:
+            same = stock[name] == events[name]
+            if name.endswith("_spin"):
+                # the helicity draw of a split channel: its subprocess's events only
+                self.assertTrue(same[~ours(particles)].all(), name)
+            else:
+                self.assertTrue(same.all(), name)
+
+    def test_run_all_on_pacrunner(self):
+        r = self.out.run(device="cpu", log=tempfile.mktemp(suffix=".log"))
+        self.assertEqual(r.cross_section, self.stock_xs)
+        self.check_events(r, lambda larger: np.ones_like(larger))
+
+    def test_run_the_first_subprocess_on_pacrunner(self):
+        # subprocess 0 on PacRunner, the others stock: the event layout is subprocess 0's
+        r = self.libs[0].run(log=tempfile.mktemp(suffix=".log"))
+        self.assertEqual(r.cross_section, self.stock_xs)
+        self.check_events(r, lambda larger: ~larger)
+
+    def test_run_the_last_subprocess_on_pacrunner(self):
+        r = self.libs[-1].run(log=tempfile.mktemp(suffix=".log"))
+        self.assertEqual(r.cross_section, self.stock_xs)
+        self.check_events(r, lambda larger: larger)
+
+
+if __name__ == "__main__":
+    unittest.main()
