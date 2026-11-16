@@ -127,6 +127,12 @@ class PacLibraries:
         args = [fb.input(i) for i in range(len(first.inputs))]
         flavour = [i for i in inputs if i != ME.channel_in].index(ME.flavor_in)
         tables = self.flavor_arguments(channel)
+        if len(mes) == 1:
+            # one library: no split (its gathers and merges cost as much as a fast matrix element)
+            args[flavour] = fb.gather_int(args[flavour], ms.Value(tables["flavor_remap"]))   # every flavour: 0
+            for j, value in enumerate(mes[0].build_function(fb, args).values()):
+                fb.output(j, value)
+            return fb.function()
         # each event's library (its position among the channel's), the batch split by it
         position = fb.gather_int(args[flavour], ms.Value(tables["flavor_diff_xs_indices"]))
         parts = fb.batch_split_by_index(position, ms.Value(len(mes)))
