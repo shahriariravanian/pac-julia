@@ -189,7 +189,22 @@ python -m pip install -e .
 python -m unittest discover -s test/python      # PACRUNNER_MADGRAPH7=... for the MadSpace test
 ```
 
-The first use starts Julia through juliacall with this repository's project (no Julia REPL needed).
+The first use starts Julia through juliacall; `pacrunner/juliapkg.json` puts PacRunner (this clone,
+developed in place) in juliacall's environment, so juliapkg installs its dependencies then (no Julia
+REPL needed). From an artifact to its libraries:
+
+```python
+import pacrunner
+a = pacrunner.PacArtifact("artifacts/zgg")       # pyamplicol generate ... --emit-api-bundle
+stock = a.runtime(channel=0)                     # the stock UMAMI library (built once)
+lib = a.compile(device="cpu")                    # export-recurrence + umami_libraries -> PacLibrary
+process, momenta = a.validation_points()[0]
+lib.runtime(0)(momenta[None], 0).matrix_element
+```
+
+The export and the stock library use the pyAmpliCol that produced the artifact (its revision in
+`artifact.json`): MadGraph7's for an mg7 artifact, else `pacrunner.configure(pyamplicol=...)` or
+`PACRUNNER_PYAMPLICOL` (a python, or an install folder).
 The low-level layer, `pacrunner.lowlevel`, is PacRunner.jl's exported functions (but the deprecated v1
 path), with strings for the keywords Julia types as a Symbol:
 

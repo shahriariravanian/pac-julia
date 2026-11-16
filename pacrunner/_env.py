@@ -30,17 +30,20 @@ class Config:
     julia: str | None = None            # the julia executable
     madgraph7: str | None = None        # a MadGraph7 checkout (madspace/, pyamplicol/)
     cuda: bool | None = None            # MadSpace's CUDA build (None: when MadGraph7 has one)
+    pyamplicol: str | None = None       # a pyAmpliCol installation: a python or an install folder
 
 
 CONFIG = Config()
 
 
-def configure(julia=None, madgraph7=None, cuda=None):
+def configure(julia=None, madgraph7=None, cuda=None, pyamplicol=None):
     """Where pacrunner's tools are, for this process: `julia` (the executable; default PACRUNNER_JULIA,
     else `julia` on the PATH), `madgraph7` (a MadGraph7 checkout with MadSpace and pyAmpliCol installed;
     default PACRUNNER_MADGRAPH7, or an mg7 output's own), `cuda` (True: MadSpace's CUDA build, False: the
-    CPU build; default: the CUDA build when MadGraph7 has one). Julia and MadSpace are loaded once per
-    process: configure them before their first use. Returns the configuration."""
+    CPU build; default: the CUDA build when MadGraph7 has one), `pyamplicol` (a pyAmpliCol installation
+    for artifacts it produced: a python that imports pyamplicol, or an install folder such as
+    MADGRAPH7/pyamplicol/install; default PACRUNNER_PYAMPLICOL, else found). Julia and MadSpace are loaded
+    once per process: configure them before their first use. Returns the configuration."""
     from . import _julia
     if julia is not None:
         if _julia.booted():
@@ -54,6 +57,8 @@ def configure(julia=None, madgraph7=None, cuda=None):
             CONFIG.madgraph7 = os.fspath(Path(madgraph7).expanduser().resolve())
         if cuda is not None:
             CONFIG.cuda = bool(cuda)
+    if pyamplicol is not None:
+        CONFIG.pyamplicol = os.fspath(Path(pyamplicol).expanduser())
     return CONFIG
 
 

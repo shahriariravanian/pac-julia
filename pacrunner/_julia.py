@@ -1,5 +1,6 @@
-"""Julia in this process, through juliacall: the first call starts it with this repository's Julia
-project (activated, instantiated: no Julia REPL needed) and loads PacRunner. Only the low-level API
+"""Julia in this process, through juliacall: the first call starts it and loads PacRunner, which
+pacrunner/juliapkg.json puts in juliacall's environment (this repository, developed in place; juliapkg
+installs its dependencies at the first start: no Julia REPL needed). Only the low-level API
 and building libraries need it; loading and running libraries does not."""
 
 import os
@@ -31,9 +32,9 @@ def pacrunner():
             except ImportError as e:
                 raise PacRunnerError("juliacall is missing: `python -m pip install -e .` in the pac-julia "
                                      f"repository installs it ({e})") from e
-            jl.seval("import Pkg")
-            jl.Pkg.activate(os.fspath(repository()), io=jl.devnull)
-            jl.Pkg.instantiate()
+            # PacRunner is in juliacall's own environment (pacrunner/juliapkg.json: this repository,
+            # developed in place), resolved with juliacall's packages: one set of versions
+            repository()
             jl.seval("using PacRunner")
             _pacrunner = jl.PacRunner
     return _pacrunner
