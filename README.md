@@ -183,6 +183,27 @@ and the kernels is then a device function too (`PAC_FN`), and the tables are `__
 | `test/bench_compile.jl` | timing of the compiled C (straight-line and interpreted) against the Julia runner |
 | `test/data/` | the test cases (`test/data/README.md`) |
 
+## Python: the `pacrunner` package
+
+`pacrunner` (in progress: phase 1 of `plans/pacrunner-python/DESIGN.md` in the development notes) is the
+Python interface. Install Julia (`julia` on the PATH, or `PACRUNNER_JULIA`), clone this repository and,
+in it:
+
+```sh
+python -m pip install -e .
+python -m unittest discover -s test/python      # PACRUNNER_MADGRAPH7=... for the MadSpace test
+```
+
+The first use starts Julia through juliacall with this repository's project (no Julia REPL needed).
+The low-level layer, `pacrunner.lowlevel`, is PacRunner.jl's exported functions (but the deprecated v1
+path), with strings for the keywords Julia types as a Symbol:
+
+```python
+from pacrunner import lowlevel as pr
+programs = pr.load_recurrence_export("export.json")
+pr.umami_libraries("export.json", "metadata.json", "out", device="cuda", precision="mixed")
+```
+
 ## Tests
 
 ```sh
