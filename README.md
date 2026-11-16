@@ -58,6 +58,22 @@ optional alpha_s rescaling by the export's power. The flavours are MadSpace's to
 `dir/umami_pac.json` gives, per channel, each flavour's library, for an integrand with one
 differential cross section per library (`flavor_diff_xs_indices`, `flavor_remap = 0`).
 
+In Python, `utils/libraries.py` loads the libraries into a MadSpace context and hides their layout:
+
+```python
+import madspace as ms
+from libraries import load_libraries            # pac-julia/utils on sys.path
+context = ms.Context(ms.cpu_device(), 1)
+libs = load_libraries(context, out)             # out: umami_libraries' folder
+rt = libs.runtime(channel=0)                    # all the channel's flavours
+(me,) = rt.call([momenta, flavours])            # momenta[event, particle, (E, px, py, pz)]
+```
+
+`rt.call` splits a batch of mixed flavours over the flavours' libraries and returns the outputs in
+the events' order; `libs.matrix_elements(channel)` and `libs.flavor_arguments(channel)` are the
+pieces for an `Integrand` of your own, and `libs.parameters` the exported model parameters (to load
+the stock library at the same point). `test/test_libraries.py` checks it against the stock library.
+
 `test/umami_check.py` runs them in MadSpace against the stock pyAmpliCol library, flavour by flavour:
 on eight 1.0.2 artifacts (355 flavours; pp > jjj: 325 flavours on 53 libraries) the LC pass (ME,
 colour and helicity indices) and the fixed-helicity pass are bit for bit. A plain helicity sum (no
