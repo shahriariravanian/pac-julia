@@ -7,14 +7,15 @@ matrix element per library, MadSpace splitting each batch by flavour (every libr
 MadGraph7 does the rest as usual (phase space, PDFs, scales, cuts, the survey, unweighting, the
 event files), and `run` returns the cross section:
 
-    import sys; sys.path.insert(0, "pac-julia/utils")
-    from madgraph_run import run
+    from pacrunner._madgraph import run              # MadLibrary.run (to come) wraps it
     result = run("OUTPUT/lib/pacrunner/A1_pp_jjj_p0", "OUTPUT/SubProcesses/A1_pp_jjj/lc")
     print(result["cross_section"], "+-", result["error"], "pb;", result["events"])
 
 or from the shell, with the python of the mg7 output (the shebang of OUTPUT/bin/generate_events):
 
-    python pac-julia/utils/madgraph_run.py LIBRARIES ARTIFACT [generate_events arguments, default -f]
+    python -m pacrunner._madgraph LIBRARIES ARTIFACT [generate_events arguments, default -f]
+
+(the repository on PYTHONPATH when pacrunner is not installed in that python)
 
 Several (libraries, artifact) pairs of one output: run([(LIBRARIES, ARTIFACT), ...]); a subprocess
 without a pair keeps its stock library.

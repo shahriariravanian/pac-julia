@@ -80,6 +80,37 @@ def madgraph7(required=True) -> Path | None:
     return path
 
 
+def mg7_output_of(path) -> Path | None:
+    """the mg7 output holding `path` (the first folder, `path` or above, with bin/generate_events)"""
+    d = Path(path).expanduser().resolve()
+    for p in (d, *d.parents):
+        if (p / "bin" / "generate_events").is_file():
+            return p
+    return None
+
+
+def madgraph7_of_output(output) -> Path:
+    """the MadGraph7 checkout an mg7 output was made with (its bin/generate_events' sys.path line)"""
+    import re
+    text = (Path(output) / "bin" / "generate_events").read_text()
+    m = re.search(r"sys\.path\.append\('([^']*)'\)", text)
+    if m is None:
+        raise PacRunnerError(f"{output}: bin/generate_events names no MadGraph7 folder")
+    return Path(m.group(1)).resolve()
+
+
+def madgraph7_for(path=None) -> Path:
+    """the MadGraph7 checkout for something at `path`: the configured one, else the one of the mg7 output
+    holding `path`"""
+    mg7 = madgraph7(required=False)
+    if mg7 is not None:
+        return mg7
+    output = mg7_output_of(path) if path is not None else None
+    if output is not None:
+        return madgraph7_of_output(output)
+    return madgraph7()   # the error: none configured
+
+
 def madspace_dir(mg7: Path) -> Path:
     """the MadSpace build to import: install-cuda (configure(cuda=True), or by default when it exists:
     it has the CPU device too), else install"""

@@ -58,35 +58,30 @@ optional alpha_s rescaling by the export's power. The flavours are MadSpace's to
 `dir/umami_pac.json` gives, per channel, each flavour's library, for an integrand with one
 differential cross section per library (`flavor_diff_xs_indices`, `flavor_remap = 0`).
 
-In Python, `utils/libraries.py` loads the libraries into a MadSpace context and hides their layout:
+In Python, `pacrunner` (below) loads the libraries into MadSpace and hides their layout:
 
 ```python
-import madspace as ms
-from libraries import load_libraries            # pac-julia/utils on sys.path
-context = ms.Context(ms.cpu_device(), 1)
-libs = load_libraries(context, out)             # out: umami_libraries' folder
-rt = libs.runtime(channel=0)                    # a madspace.FunctionRuntime: all the channel's flavours
-(me,) = rt.call([momenta, flavours])            # momenta[event, particle, (E, px, py, pz)]
-me = me.numpy()
+import pacrunner
+lib = pacrunner.MadLibrary("OUTPUT/lib/pacrunner/A1_pp_jjj_p0")   # or PacLibrary(folder)
+rt = lib.runtime(channel=0)                     # all the channel's flavours, on the libraries' device
+out = rt(momenta, flavours, random_helicity=r)  # momenta[event, particle, (E, px, py, pz)]
+out.matrix_element, out.color_index, out.helicity_index
 ```
 
-`libs.runtime` is one MadSpace function that splits a batch of mixed flavours over the flavours'
-libraries (each with flavour 0) and merges the outputs back in the events' order, as MadSpace's
-`Integrand` does, so it runs where the context runs: for `:cuda_provider` libraries a CUDA context
-(MadSpace's CUDA build) and device arrays (e.g. CuPy) as inputs; `libs.matrix_elements(channel)` and `libs.flavor_arguments(channel)` are the
-pieces for an `Integrand` of your own, and `libs.parameters` the exported model parameters (to load
-the stock library at the same point). `test/test_libraries.py` checks it against the stock library.
+A runtime is one MadSpace function that splits a batch of mixed flavours over the flavours' libraries
+(each with flavour 0) and merges the outputs back in the events' order, as MadSpace's `Integrand`
+does, so it runs where its context does (a CUDA context for `:cuda_provider` libraries: numpy is moved
+to the GPU with CuPy). `lib.matrix_elements(channel)` and `lib.flavor_arguments(channel)` are the
+pieces for an `Integrand` of your own; `lib.parameters` the exported model parameters.
+`test/python/test_runtime.py` checks it against the stock library.
 
-For a whole MadGraph7 run (event generation to the cross section), `utils/madgraph_run.py` takes a
-prepared pac-julia folder and its pyAmpliCol artifact (inside an mg7 output) and runs
-`generate_events` with that subprocess's stock library replaced by the PacRunner libraries:
+For a whole MadGraph7 run (event generation to the cross section), `pacrunner._madgraph` (soon
+`MadLibrary.run`) runs `generate_events` with the subprocess's stock library replaced by the PacRunner
+libraries:
 
 ```sh
-python utils/madgraph_run.py OUTPUT/lib/pacrunner/A1_pp_jjj_p0 OUTPUT/SubProcesses/A1_pp_jjj/lc -f
+python -m pacrunner._madgraph OUTPUT/lib/pacrunner/A1_pp_jjj_p0 OUTPUT/SubProcesses/A1_pp_jjj/lc -f
 ```
-
-(the python of the mg7 output; from Python, `run(libraries, artifact)` returns the cross section,
-its error and the run's folder).
 
 `test/umami_check.py` runs them in MadSpace against the stock pyAmpliCol library, flavour by flavour:
 on eight 1.0.2 artifacts (355 flavours; pp > jjj: 325 flavours on 53 libraries) the LC pass (ME,

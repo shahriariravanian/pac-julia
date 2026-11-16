@@ -65,6 +65,14 @@ class MadGraph7(unittest.TestCase):
             self.assertEqual(_env.madspace_dir(mg7), mg7 / "madspace" / "install")
 
 
+class Imports(unittest.TestCase):
+    def test_madgraph_run_needs_no_numpy(self):
+        # `python -m pacrunner._madgraph` runs in MadGraph7's python, which may have no numpy
+        code = "import sys; sys.modules['numpy'] = None\nimport pacrunner, pacrunner._madgraph\nprint('ok')"
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "ok", r.stderr)
+
+
 MG7 = os.environ.get("PACRUNNER_MADGRAPH7")
 
 
