@@ -202,6 +202,17 @@ libraries (each with flavour 0) and merges the outputs back in the events' order
 pieces for an `Integrand` of your own, and `libs.parameters` the exported model parameters (to load
 the stock library at the same point). `test/test_libraries.py` checks it against the stock library.
 
+For a whole MadGraph7 run (event generation to the cross section), `utils/madgraph_run.py` takes a
+prepared pac-julia folder and its pyAmpliCol artifact (inside an mg7 output) and runs
+`generate_events` with that subprocess's stock library replaced by the PacRunner libraries:
+
+```sh
+python utils/madgraph_run.py OUTPUT/lib/pacrunner/A1_pp_jjj_p0 OUTPUT/SubProcesses/A1_pp_jjj/lc -f
+```
+
+(the python of the mg7 output; from Python, `run(libraries, artifact)` returns the cross section,
+its error and the run's folder).
+
 `test/umami_check.py` runs them in MadSpace against the stock pyAmpliCol library, flavour by flavour:
 on eight 1.0.2 artifacts (355 flavours; pp > jjj: 325 flavours on 53 libraries) the LC pass (ME,
 colour and helicity indices) and the fixed-helicity pass are bit for bit. A plain helicity sum (no
