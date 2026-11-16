@@ -1,0 +1,1277 @@
+{
+  "aliases": [],
+  "channels": [
+    {
+      "phasespace_order": [
+        1,
+        3,
+        4,
+        0,
+        2
+      ],
+      "processes": [
+        {
+          "color_flows": 0,
+          "color_order": 0,
+          "helicities": [
+            [
+              0
+            ],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ],
+            [
+              6
+            ],
+            [
+              7
+            ],
+            [
+              8
+            ],
+            [
+              9
+            ],
+            [
+              10
+            ],
+            [
+              11
+            ],
+            [
+              12
+            ],
+            [
+              13
+            ],
+            [
+              14
+            ],
+            [
+              15
+            ],
+            [
+              16
+            ],
+            [
+              17
+            ],
+            [
+              18
+            ],
+            [
+              19
+            ],
+            [
+              20
+            ],
+            [
+              21
+            ],
+            [
+              22
+            ],
+            [
+              23
+            ],
+            [
+              24
+            ],
+            [
+              25
+            ],
+            [
+              26
+            ],
+            [
+              27
+            ],
+            [
+              28
+            ],
+            [
+              29
+            ],
+            [
+              30
+            ],
+            [
+              31
+            ],
+            [
+              32
+            ],
+            [
+              33
+            ],
+            [
+              34
+            ],
+            [
+              35
+            ],
+            [
+              36
+            ],
+            [
+              37
+            ],
+            [
+              38
+            ],
+            [
+              39
+            ],
+            [
+              40
+            ],
+            [
+              41
+            ],
+            [
+              42
+            ],
+            [
+              43
+            ],
+            [
+              44
+            ],
+            [
+              45
+            ],
+            [
+              46
+            ],
+            [
+              47
+            ]
+          ],
+          "helicity_mappings": [
+            {
+              "coefficient": 0.0,
+              "helicity": 0,
+              "representative_id": "h:-1,-1,-1,-1,-1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 1,
+              "representative_id": "h:-1,-1,-1,-1,+1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 2,
+              "representative_id": "h:-1,-1,-1,+1,-1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 3,
+              "representative_id": "h:-1,-1,-1,+1,+1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 4,
+              "representative_id": "h:-1,-1,+0,-1,-1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 5,
+              "representative_id": "h:-1,-1,+0,-1,+1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 6,
+              "representative_id": "h:-1,-1,+0,+1,-1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 7,
+              "representative_id": "h:-1,-1,+0,+1,+1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 8,
+              "representative_id": "h:-1,-1,+1,-1,-1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 9,
+              "representative_id": "h:-1,-1,+1,-1,+1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 10,
+              "representative_id": "h:-1,-1,+1,+1,-1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 11,
+              "representative_id": "h:-1,-1,+1,+1,+1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 12,
+              "representative_id": "h:-1,+1,-1,-1,-1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 13,
+              "representative_id": "h:-1,+1,-1,-1,+1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 14,
+              "representative_id": "h:-1,+1,-1,+1,-1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 15,
+              "representative_id": "h:-1,+1,-1,+1,+1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 16,
+              "representative_id": "h:-1,+1,+0,-1,-1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 17,
+              "representative_id": "h:-1,+1,+0,-1,+1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 18,
+              "representative_id": "h:-1,+1,+0,+1,-1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 19,
+              "representative_id": "h:-1,+1,+0,+1,+1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 20,
+              "representative_id": "h:-1,+1,+1,-1,-1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 21,
+              "representative_id": "h:-1,+1,+1,-1,+1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 22,
+              "representative_id": "h:-1,+1,+1,+1,-1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 23,
+              "representative_id": "h:-1,+1,+1,+1,+1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 24,
+              "representative_id": "h:+1,-1,-1,-1,-1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 25,
+              "representative_id": "h:+1,-1,-1,-1,+1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 26,
+              "representative_id": "h:+1,-1,-1,+1,-1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 27,
+              "representative_id": "h:+1,-1,-1,+1,+1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 28,
+              "representative_id": "h:+1,-1,+0,-1,-1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 29,
+              "representative_id": "h:+1,-1,+0,-1,+1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 30,
+              "representative_id": "h:+1,-1,+0,+1,-1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 31,
+              "representative_id": "h:+1,-1,+0,+1,+1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 32,
+              "representative_id": "h:+1,-1,+1,-1,-1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 33,
+              "representative_id": "h:+1,-1,+1,-1,+1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 34,
+              "representative_id": "h:+1,-1,+1,+1,-1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 1.0,
+              "helicity": 35,
+              "representative_id": "h:+1,-1,+1,+1,+1",
+              "structural_zero": false
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 36,
+              "representative_id": "h:+1,+1,-1,-1,-1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 37,
+              "representative_id": "h:+1,+1,-1,-1,+1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 38,
+              "representative_id": "h:+1,+1,-1,+1,-1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 39,
+              "representative_id": "h:+1,+1,-1,+1,+1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 40,
+              "representative_id": "h:+1,+1,+0,-1,-1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 41,
+              "representative_id": "h:+1,+1,+0,-1,+1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 42,
+              "representative_id": "h:+1,+1,+0,+1,-1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 43,
+              "representative_id": "h:+1,+1,+0,+1,+1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 44,
+              "representative_id": "h:+1,+1,+1,-1,-1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 45,
+              "representative_id": "h:+1,+1,+1,-1,+1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 46,
+              "representative_id": "h:+1,+1,+1,+1,-1",
+              "structural_zero": true
+            },
+            {
+              "coefficient": 0.0,
+              "helicity": 47,
+              "representative_id": "h:+1,+1,+1,+1,+1",
+              "structural_zero": true
+            }
+          ],
+          "matrix_elements": [
+            {
+              "factor": 2.0,
+              "pdg_ids": 0
+            }
+          ],
+          "members": [
+            {
+              "color_flows": 0,
+              "color_id": "flow:2,4,5,1",
+              "factor": 1.0,
+              "pdgs": [
+                2,
+                -2,
+                23,
+                21,
+                21
+              ],
+              "process_id": "u_ubar_to_z_g_g",
+              "runtime": {
+                "color_id": "flow:2,4,5,1",
+                "color_index": 0,
+                "factor": 1.0,
+                "helicity_export": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8,
+                  9,
+                  10,
+                  11,
+                  12,
+                  13,
+                  14,
+                  15,
+                  16,
+                  17,
+                  18,
+                  19,
+                  20,
+                  21,
+                  22,
+                  23,
+                  24,
+                  25,
+                  26,
+                  27,
+                  28,
+                  29,
+                  30,
+                  31,
+                  32,
+                  33,
+                  34,
+                  35,
+                  36,
+                  37,
+                  38,
+                  39,
+                  40,
+                  41,
+                  42,
+                  43,
+                  44,
+                  45,
+                  46,
+                  47
+                ],
+                "permutation": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4
+                ],
+                "process_id": "u_ubar_to_z_g_g",
+                "process_index": 0
+              }
+            },
+            {
+              "color_flows": 1,
+              "color_id": "flow:2,5,4,1",
+              "factor": 1.0,
+              "pdgs": [
+                2,
+                -2,
+                23,
+                21,
+                21
+              ],
+              "process_id": "u_ubar_to_z_g_g",
+              "runtime": {
+                "color_id": "flow:2,4,5,1",
+                "color_index": 0,
+                "factor": 1.0,
+                "helicity_export": [
+                  0,
+                  2,
+                  1,
+                  3,
+                  4,
+                  6,
+                  5,
+                  7,
+                  8,
+                  10,
+                  9,
+                  11,
+                  12,
+                  14,
+                  13,
+                  15,
+                  16,
+                  18,
+                  17,
+                  19,
+                  20,
+                  22,
+                  21,
+                  23,
+                  24,
+                  26,
+                  25,
+                  27,
+                  28,
+                  30,
+                  29,
+                  31,
+                  32,
+                  34,
+                  33,
+                  35,
+                  36,
+                  38,
+                  37,
+                  39,
+                  40,
+                  42,
+                  41,
+                  43,
+                  44,
+                  46,
+                  45,
+                  47
+                ],
+                "permutation": [
+                  0,
+                  1,
+                  2,
+                  4,
+                  3
+                ],
+                "process_id": "u_ubar_to_z_g_g",
+                "process_index": 0
+              }
+            }
+          ],
+          "multichannels": [
+            0
+          ],
+          "runtime": {
+            "color_id": "flow:2,4,5,1",
+            "color_index": 0,
+            "factor": 1.0,
+            "helicity_export": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47
+            ],
+            "permutation": [
+              0,
+              1,
+              2,
+              3,
+              4
+            ],
+            "process_id": "u_ubar_to_z_g_g",
+            "process_index": 0
+          }
+        }
+      ]
+    }
+  ],
+  "color_flows": [
+    [
+      [
+        503,
+        0
+      ],
+      [
+        0,
+        501
+      ],
+      [
+        0,
+        0
+      ],
+      [
+        502,
+        501
+      ],
+      [
+        503,
+        502
+      ]
+    ],
+    [
+      [
+        503,
+        0
+      ],
+      [
+        0,
+        501
+      ],
+      [
+        0,
+        0
+      ],
+      [
+        503,
+        502
+      ],
+      [
+        502,
+        501
+      ]
+    ]
+  ],
+  "color_orders": [
+    [
+      1,
+      3,
+      4,
+      0,
+      2
+    ]
+  ],
+  "grouping": {
+    "assumptions": [
+      "identical-final-particle permutation-invariant observables and cuts",
+      "final-state flavour-blind observables and cuts"
+    ],
+    "exported_contributions": 1,
+    "physical_contributions": 2
+  },
+  "helicities": [
+    [
+      -1,
+      -1,
+      -1,
+      -1,
+      -1
+    ],
+    [
+      -1,
+      -1,
+      -1,
+      -1,
+      1
+    ],
+    [
+      -1,
+      -1,
+      -1,
+      1,
+      -1
+    ],
+    [
+      -1,
+      -1,
+      -1,
+      1,
+      1
+    ],
+    [
+      -1,
+      -1,
+      0,
+      -1,
+      -1
+    ],
+    [
+      -1,
+      -1,
+      0,
+      -1,
+      1
+    ],
+    [
+      -1,
+      -1,
+      0,
+      1,
+      -1
+    ],
+    [
+      -1,
+      -1,
+      0,
+      1,
+      1
+    ],
+    [
+      -1,
+      -1,
+      1,
+      -1,
+      -1
+    ],
+    [
+      -1,
+      -1,
+      1,
+      -1,
+      1
+    ],
+    [
+      -1,
+      -1,
+      1,
+      1,
+      -1
+    ],
+    [
+      -1,
+      -1,
+      1,
+      1,
+      1
+    ],
+    [
+      -1,
+      1,
+      -1,
+      -1,
+      -1
+    ],
+    [
+      -1,
+      1,
+      -1,
+      -1,
+      1
+    ],
+    [
+      -1,
+      1,
+      -1,
+      1,
+      -1
+    ],
+    [
+      -1,
+      1,
+      -1,
+      1,
+      1
+    ],
+    [
+      -1,
+      1,
+      0,
+      -1,
+      -1
+    ],
+    [
+      -1,
+      1,
+      0,
+      -1,
+      1
+    ],
+    [
+      -1,
+      1,
+      0,
+      1,
+      -1
+    ],
+    [
+      -1,
+      1,
+      0,
+      1,
+      1
+    ],
+    [
+      -1,
+      1,
+      1,
+      -1,
+      -1
+    ],
+    [
+      -1,
+      1,
+      1,
+      -1,
+      1
+    ],
+    [
+      -1,
+      1,
+      1,
+      1,
+      -1
+    ],
+    [
+      -1,
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      -1,
+      -1,
+      -1,
+      -1
+    ],
+    [
+      1,
+      -1,
+      -1,
+      -1,
+      1
+    ],
+    [
+      1,
+      -1,
+      -1,
+      1,
+      -1
+    ],
+    [
+      1,
+      -1,
+      -1,
+      1,
+      1
+    ],
+    [
+      1,
+      -1,
+      0,
+      -1,
+      -1
+    ],
+    [
+      1,
+      -1,
+      0,
+      -1,
+      1
+    ],
+    [
+      1,
+      -1,
+      0,
+      1,
+      -1
+    ],
+    [
+      1,
+      -1,
+      0,
+      1,
+      1
+    ],
+    [
+      1,
+      -1,
+      1,
+      -1,
+      -1
+    ],
+    [
+      1,
+      -1,
+      1,
+      -1,
+      1
+    ],
+    [
+      1,
+      -1,
+      1,
+      1,
+      -1
+    ],
+    [
+      1,
+      -1,
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      -1,
+      -1,
+      -1
+    ],
+    [
+      1,
+      1,
+      -1,
+      -1,
+      1
+    ],
+    [
+      1,
+      1,
+      -1,
+      1,
+      -1
+    ],
+    [
+      1,
+      1,
+      -1,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      0,
+      -1,
+      -1
+    ],
+    [
+      1,
+      1,
+      0,
+      -1,
+      1
+    ],
+    [
+      1,
+      1,
+      0,
+      1,
+      -1
+    ],
+    [
+      1,
+      1,
+      0,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      -1,
+      -1
+    ],
+    [
+      1,
+      1,
+      1,
+      -1,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      1,
+      -1
+    ],
+    [
+      1,
+      1,
+      1,
+      1,
+      1
+    ]
+  ],
+  "kind": "pyamplicol-umami-metadata",
+  "pdg_ids": [
+    [
+      2,
+      -2,
+      23,
+      21,
+      21
+    ]
+  ],
+  "provider": {
+    "alpha_s_parameter": null,
+    "artifact_id": "d2800389720ee621819d5075d5a2c7faca577a9b047423ab87ad8dfcf70de48b",
+    "color_accuracy": "lc",
+    "color_count": 2,
+    "helicity_count": 48,
+    "id": "p0",
+    "incoming_count": 2,
+    "library": "libumami.so",
+    "mass_parameters": [
+      "0",
+      "0",
+      "mass_23",
+      "0",
+      "0"
+    ],
+    "masses": [
+      0.0,
+      0.0,
+      91.188,
+      0.0,
+      0.0
+    ],
+    "particle_count": 5,
+    "supports_alpha_s": false
+  },
+  "runtime_processes": [
+    {
+      "alpha_s_parameter": null,
+      "color_accuracy": "lc",
+      "coverage": {
+        "color": "complete",
+        "color_kind": "physical-lc-flows",
+        "helicities": "complete",
+        "structural_zero_helicity_count": 24
+      },
+      "expression": "u u~ > z g g",
+      "helicity_ids": [
+        "h:-1,-1,-1,-1,-1",
+        "h:-1,-1,-1,-1,+1",
+        "h:-1,-1,-1,+1,-1",
+        "h:-1,-1,-1,+1,+1",
+        "h:-1,-1,+0,-1,-1",
+        "h:-1,-1,+0,-1,+1",
+        "h:-1,-1,+0,+1,-1",
+        "h:-1,-1,+0,+1,+1",
+        "h:-1,-1,+1,-1,-1",
+        "h:-1,-1,+1,-1,+1",
+        "h:-1,-1,+1,+1,-1",
+        "h:-1,-1,+1,+1,+1",
+        "h:-1,+1,-1,-1,-1",
+        "h:-1,+1,-1,-1,+1",
+        "h:-1,+1,-1,+1,-1",
+        "h:-1,+1,-1,+1,+1",
+        "h:-1,+1,+0,-1,-1",
+        "h:-1,+1,+0,-1,+1",
+        "h:-1,+1,+0,+1,-1",
+        "h:-1,+1,+0,+1,+1",
+        "h:-1,+1,+1,-1,-1",
+        "h:-1,+1,+1,-1,+1",
+        "h:-1,+1,+1,+1,-1",
+        "h:-1,+1,+1,+1,+1",
+        "h:+1,-1,-1,-1,-1",
+        "h:+1,-1,-1,-1,+1",
+        "h:+1,-1,-1,+1,-1",
+        "h:+1,-1,-1,+1,+1",
+        "h:+1,-1,+0,-1,-1",
+        "h:+1,-1,+0,-1,+1",
+        "h:+1,-1,+0,+1,-1",
+        "h:+1,-1,+0,+1,+1",
+        "h:+1,-1,+1,-1,-1",
+        "h:+1,-1,+1,-1,+1",
+        "h:+1,-1,+1,+1,-1",
+        "h:+1,-1,+1,+1,+1",
+        "h:+1,+1,-1,-1,-1",
+        "h:+1,+1,-1,-1,+1",
+        "h:+1,+1,-1,+1,-1",
+        "h:+1,+1,-1,+1,+1",
+        "h:+1,+1,+0,-1,-1",
+        "h:+1,+1,+0,-1,+1",
+        "h:+1,+1,+0,+1,-1",
+        "h:+1,+1,+0,+1,+1",
+        "h:+1,+1,+1,-1,-1",
+        "h:+1,+1,+1,-1,+1",
+        "h:+1,+1,+1,+1,-1",
+        "h:+1,+1,+1,+1,+1"
+      ],
+      "id": "u_ubar_to_z_g_g",
+      "parameters": [
+        {
+          "default_imaginary": 0.0,
+          "default_real": 0.0075467711139788835,
+          "is_complex": false,
+          "kind": "normalization",
+          "mutable": true,
+          "name": "normalization.alpha_ew"
+        },
+        {
+          "default_imaginary": 0.0,
+          "default_real": 0.118,
+          "is_complex": false,
+          "kind": "normalization",
+          "mutable": true,
+          "name": "normalization.alpha_s_me_check"
+        },
+        {
+          "default_imaginary": 0.0,
+          "default_real": 91.188,
+          "is_complex": false,
+          "kind": "external",
+          "mutable": true,
+          "name": "particle.23.mass"
+        },
+        {
+          "default_imaginary": 0.0,
+          "default_real": 2.441404,
+          "is_complex": false,
+          "kind": "external",
+          "mutable": true,
+          "name": "particle.23.width"
+        },
+        {
+          "default_imaginary": 0.0,
+          "default_real": 80.41900244575616,
+          "is_complex": false,
+          "kind": "external",
+          "mutable": true,
+          "name": "particle.24.mass"
+        },
+        {
+          "default_imaginary": 0.0,
+          "default_real": 2.0476,
+          "is_complex": false,
+          "kind": "external",
+          "mutable": true,
+          "name": "particle.24.width"
+        },
+        {
+          "default_imaginary": 0.0,
+          "default_real": 125.0,
+          "is_complex": false,
+          "kind": "external",
+          "mutable": true,
+          "name": "particle.25.mass"
+        },
+        {
+          "default_imaginary": 0.0,
+          "default_real": 0.006382339,
+          "is_complex": false,
+          "kind": "external",
+          "mutable": true,
+          "name": "particle.25.width"
+        },
+        {
+          "default_imaginary": 0.0,
+          "default_real": 173.0,
+          "is_complex": false,
+          "kind": "external",
+          "mutable": true,
+          "name": "particle.6.mass"
+        },
+        {
+          "default_imaginary": 0.0,
+          "default_real": 1.4915,
+          "is_complex": false,
+          "kind": "external",
+          "mutable": true,
+          "name": "particle.6.width"
+        }
+      ],
+      "pdgs": [
+        2,
+        -2,
+        23,
+        21,
+        21
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "xml_header": "<generator name=\"pyAmpliCol\">UMAMI artifact provider</generator>"
+}

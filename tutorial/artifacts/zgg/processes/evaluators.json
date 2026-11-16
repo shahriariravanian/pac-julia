@@ -1,0 +1,18 @@
+{
+  "kind": "pyamplicol-runtime-execution-set",
+  "processes": [
+    {
+      "manifest_path": "u_ubar_to_z_g_g/execution.json",
+      "process_id": "u_ubar_to_z_g_g",
+      "required_runtime_capabilities": [
+        "rusticol.recurrence-color.lc.v1",
+        "rusticol.recurrence-direct-arena.complex-f64.v1"
+      ]
+    }
+  ],
+  "required_runtime_capabilities": [
+    "rusticol.recurrence-color.lc.v1",
+    "rusticol.recurrence-direct-arena.complex-f64.v1"
+  ],
+  "schema_version": 3
+}
