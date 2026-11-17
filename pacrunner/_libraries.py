@@ -123,7 +123,7 @@ class PacLibrary:
 
     def context(self, threads=None):
         """the madspace.Context for these libraries (made once per process and thread count)"""
-        return _runtime.context(self.context_device, threads, _env.madgraph7_for(self.folder))
+        return _runtime.context(self.context_device, threads, _env.madgraph7_for(self.folder, required=False))
 
     def apis(self, context, parameters=None, param_card=""):
         """every library loaded into `context` (once per context): [MatrixElementApi]. The libraries do

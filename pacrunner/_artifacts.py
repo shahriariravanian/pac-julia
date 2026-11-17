@@ -177,7 +177,7 @@ class PacArtifact:
         if not 0 <= channel < self.channels:
             raise IndexError(f"UMAMI channel {channel}: there are {self.channels}")
         lib = self.build_stock_library()
-        context = _runtime.context("cpu", threads, _env.madgraph7_for(self.path))
+        context = _runtime.context("cpu", threads, _env.madgraph7_for(self.path, required=False))
         key = (id(context), json.dumps(parameters or {}, sort_keys=True))
         if key not in self._stock_apis:
             self._stock_apis[key] = context.load_matrix_element(os.fspath(lib), os.fspath(self.path),

@@ -142,7 +142,7 @@ print("CUDA", lib.precision, "ok" if ok else "DIFFERENT")
 class CudaLibrary(unittest.TestCase):
     def test_cuda_provider_runtime_is_the_stock_library(self):
         # a process of its own: MadSpace's CUDA build (configure(cuda=True)), CuPy
-        env = dict(os.environ, PACRUNNER_MADGRAPH7=os.environ.get("PACRUNNER_MADGRAPH7", ""))
+        env = dict(os.environ)
         r = subprocess.run([sys.executable, "-c", CUDA_SCRIPT, CUDA_OUTPUT, os.path.dirname(__file__)],
                            capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])

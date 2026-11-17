@@ -73,7 +73,7 @@ def julia() -> str:
 
 def madgraph7(required=True) -> Path | None:
     """the MadGraph7 checkout: configure(madgraph7=...) or PACRUNNER_MADGRAPH7"""
-    path = CONFIG.madgraph7 or os.environ.get("PACRUNNER_MADGRAPH7")
+    path = CONFIG.madgraph7 or os.environ.get("PACRUNNER_MADGRAPH7") or None   # an empty variable: unset
     if path is None:
         if required:
             raise PacRunnerError("no MadGraph7: pacrunner.configure(madgraph7=...) or PACRUNNER_MADGRAPH7 (a MadGraph7 "
@@ -104,16 +104,16 @@ def madgraph7_of_output(output) -> Path:
     return Path(m.group(1)).resolve()
 
 
-def madgraph7_for(path=None) -> Path:
+def madgraph7_for(path=None, required=True) -> Path | None:
     """the MadGraph7 checkout for something at `path`: the configured one, else the one of the mg7 output
-    holding `path`"""
+    holding `path` (none: None, or the error when `required`)"""
     mg7 = madgraph7(required=False)
     if mg7 is not None:
         return mg7
     output = mg7_output_of(path) if path is not None else None
     if output is not None:
         return madgraph7_of_output(output)
-    return madgraph7()   # the error: none configured
+    return madgraph7(required=required)   # none configured: None or the error
 
 
 def madspace_dir(mg7: Path) -> Path:
@@ -129,13 +129,22 @@ def madspace_dir(mg7: Path) -> Path:
 
 
 def import_madspace(mg7: Path | None = None):
-    """MadSpace, imported once for this process from the MadGraph7 checkout (`mg7`, or the configured
-    one); Symbolica's lock folder defaulted (XDG_RUNTIME_DIR) for pyAmpliCol's libraries"""
+    """MadSpace, imported once for this process: from the MadGraph7 checkout (`mg7`, or the configured
+    one), else the one installed in this python (`import madspace`); Symbolica's lock folder defaulted
+    (XDG_RUNTIME_DIR) for pyAmpliCol's libraries"""
     if "madspace" in sys.modules:
         return sys.modules["madspace"]
-    mg7 = mg7 or madgraph7()
+    mg7 = mg7 or madgraph7(required=False)
     os.environ.setdefault("XDG_RUNTIME_DIR", os.path.expanduser("~/.cache/xdg-runtime"))
     os.makedirs(os.environ["XDG_RUNTIME_DIR"], exist_ok=True)
-    sys.path.insert(0, os.fspath(madspace_dir(mg7)))
-    import madspace
+    if mg7 is not None:
+        sys.path.insert(0, os.fspath(madspace_dir(mg7)))
+    try:
+        import madspace
+    except ImportError as e:
+        if mg7 is not None:
+            raise
+        raise PacRunnerError("no MadSpace: install it in this python, or point pacrunner at a MadGraph7 checkout with "
+                             "MadSpace installed (pacrunner.configure(madgraph7=...) or PACRUNNER_MADGRAPH7; "
+                             "`install madspace` in its bin/madgraph)") from e
     return madspace
