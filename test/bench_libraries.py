@@ -1,4 +1,4 @@
-"""Timing of utils/libraries.py's runtime: does load_libraries cost anything? For every UMAMI channel
+"""Timing of pacrunner.load_libraries' runtime: does load_libraries cost anything? For every UMAMI channel
 of an umami_libraries output, a batch of EVENTS events of mixed flavours (random on-shell momenta,
 a random flavour of the channel per event, random helicity numbers; the LC pass: ME, colour and
 helicity indices out), timed three ways:
@@ -23,10 +23,10 @@ import time
 
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "utils"))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # pacrunner, from the clone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import madspace as ms  # noqa: E402
-from libraries import load_libraries  # noqa: E402
+from pacrunner import load_libraries  # noqa: E402
 from test_libraries import momenta, stock_runtime  # noqa: E402
 
 ME = ms.MatrixElement

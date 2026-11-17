@@ -183,35 +183,42 @@ optional alpha_s rescaling by the export's power. The flavours are MadSpace's to
 `dir/umami_pac.json` gives, per channel, each flavour's library, for an integrand with one
 differential cross section per library (`flavor_diff_xs_indices`, `flavor_remap = 0`).
 
-In Python, `utils/libraries.py` loads the libraries into a MadSpace context and hides their layout:
+In Python, `pacrunner` (below) loads the libraries into MadSpace and hides their layout:
 
 ```python
-import madspace as ms
-from libraries import load_libraries            # pac-julia/utils on sys.path
-context = ms.Context(ms.cpu_device(), 1)
-libs = load_libraries(context, out)             # out: umami_libraries' folder
-rt = libs.runtime(channel=0)                    # a madspace.FunctionRuntime: all the channel's flavours
-(me,) = rt.call([momenta, flavours])            # momenta[event, particle, (E, px, py, pz)]
-me = me.numpy()
+import pacrunner
+lib = pacrunner.MadLibrary("OUTPUT/lib/pacrunner/A1_pp_jjj_p0")   # or PacLibrary(folder)
+rt = lib.runtime(channel=0)                     # all the channel's flavours, on the libraries' device
+out = rt(momenta, flavours, random_helicity=r)  # momenta[event, particle, (E, px, py, pz)]
+out.matrix_element, out.color_index, out.helicity_index
 ```
 
-`libs.runtime` is one MadSpace function that splits a batch of mixed flavours over the flavours'
-libraries (each with flavour 0) and merges the outputs back in the events' order, as MadSpace's
-`Integrand` does, so it runs where the context runs: for `:cuda_provider` libraries a CUDA context
-(MadSpace's CUDA build) and device arrays (e.g. CuPy) as inputs; `libs.matrix_elements(channel)` and `libs.flavor_arguments(channel)` are the
-pieces for an `Integrand` of your own, and `libs.parameters` the exported model parameters (to load
-the stock library at the same point). `test/test_libraries.py` checks it against the stock library.
+A runtime is one MadSpace function that splits a batch of mixed flavours over the flavours' libraries
+(each with flavour 0) and merges the outputs back in the events' order, as MadSpace's `Integrand`
+does, so it runs where its context does (a CUDA context for `:cuda_provider` libraries: numpy is moved
+to the GPU with CuPy). `lib.matrix_elements(channel)` and `lib.flavor_arguments(channel)` are the
+pieces for an `Integrand` of your own; `lib.parameters` the exported model parameters.
+`test/python/test_runtime.py` checks it against the stock library.
 
-For a whole MadGraph7 run (event generation to the cross section), `utils/madgraph_run.py` takes a
-prepared pac-julia folder and its pyAmpliCol artifact (inside an mg7 output) and runs
-`generate_events` with that subprocess's stock library replaced by the PacRunner libraries:
+For a MadGraph7 output (`generate ... [amplicol]`, `output mg7 OUTPUT`), `MadOutput` compiles its
+pyAmpliCol subprocesses at the param card's parameters and runs `generate_events` (event generation to
+the cross section) with their stock libraries replaced by PacRunner's:
 
-```sh
-python utils/madgraph_run.py OUTPUT/lib/pacrunner/A1_pp_jjj_p0 OUTPUT/SubProcesses/A1_pp_jjj/lc -f
+```python
+out = pacrunner.MadOutput("OUTPUT")              # out.names: one per stock library lib/libamplicol_<name>.so
+m = out.artifact("A1_pp_zj_p0")                  # a MadArtifact: m.runtime(c) is the stock library
+lib = m.compile(device="cpu")                    # MadLibrary in OUTPUT/lib/pacrunner/A1_pp_zj_p0
+r = lib.run()                                    # this subprocess on PacRunner, the others stock
+r = out.run(device="cpu")                        # all of them (compiled when needed)
+r.cross_section, r.error, r.events, r.run_dir
 ```
 
-(the python of the mg7 output; from Python, `run(libraries, artifact)` returns the cross section,
-its error and the run's folder).
+A run is a process of its own (the output's python runs `python -m pacrunner._madgraph`;
+`in_process=True` runs it in this one, once per process) with the output's cards: `cuda_provider`
+libraries need `run.device = ["cuda"]` and MadSpace's CUDA build. The cross section and the weights are
+the stock run's bit for bit; in a channel whose flavours are on several libraries an event's sampled
+helicity (its LHE spins) may differ, drawn from the same distribution. `lib.integrand_inputs(c)` gives
+the matrix elements and flavour tables for a `madspace.Integrand` of your own.
 
 `test/umami_check.py` runs them in MadSpace against the stock pyAmpliCol library, flavour by flavour:
 on eight 1.0.2 artifacts (355 flavours; pp > jjj: 325 flavours on 53 libraries) the LC pass (ME,
@@ -307,6 +314,42 @@ and the kernels is then a device function too (`PAC_FN`), and the tables are `__
 | `test/test_*.jl` | the longer comparisons, one script each (usage at the top of each); `test_lower.jl` reads every lowered row back to its operation and runs `evaluate(::Lowered)` against `evaluate(::Program)`, plain and after each pass |
 | `test/bench_compile.jl` | timing of the compiled C (straight-line and interpreted) against the Julia runner |
 | `test/data/` | the test cases (`test/data/README.md`) |
+
+## Python: the `pacrunner` package
+
+`pacrunner` (in progress: phase 1 of `plans/pacrunner-python/DESIGN.md` in the development notes) is the
+Python interface. Install Julia (`julia` on the PATH, or `PACRUNNER_JULIA`), clone this repository and,
+in it:
+
+```sh
+python -m pip install -e .
+python -m unittest discover -s test/python      # PACRUNNER_MADGRAPH7=... for the MadSpace test
+```
+
+The first use starts Julia through juliacall; `pacrunner/juliapkg.json` puts PacRunner (this clone,
+developed in place) in juliacall's environment, so juliapkg installs its dependencies then (no Julia
+REPL needed). From an artifact to its libraries:
+
+```python
+import pacrunner
+a = pacrunner.PacArtifact("artifacts/zgg")       # pyamplicol generate ... --emit-api-bundle
+stock = a.runtime(channel=0)                     # the stock UMAMI library (built once)
+lib = a.compile(device="cpu")                    # export-recurrence + umami_libraries -> PacLibrary
+process, momenta = a.validation_points()[0]
+lib.runtime(0)(momenta[None], 0).matrix_element
+```
+
+The export and the stock library use the pyAmpliCol that produced the artifact (its revision in
+`artifact.json`): MadGraph7's for an mg7 artifact, else `pacrunner.configure(pyamplicol=...)` or
+`PACRUNNER_PYAMPLICOL` (a python, or an install folder).
+The low-level layer, `pacrunner.lowlevel`, is PacRunner.jl's exported functions (but the deprecated v1
+path), with strings for the keywords Julia types as a Symbol:
+
+```python
+from pacrunner import lowlevel as pr
+programs = pr.load_recurrence_export("export.json")
+pr.umami_libraries("export.json", "metadata.json", "out", device="cuda", precision="mixed")
+```
 
 ## Tests
 
