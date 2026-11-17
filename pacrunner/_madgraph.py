@@ -7,14 +7,15 @@ matrix element per library, MadSpace splitting each batch by flavour (every libr
 MadGraph7 does the rest as usual (phase space, PDFs, scales, cuts, the survey, unweighting, the
 event files), and `run` returns the cross section:
 
-    import sys; sys.path.insert(0, "pac-julia/utils")
-    from madgraph_run import run
+    from pacrunner._madgraph import run              # MadLibrary.run and MadOutput.run wrap it
     result = run("OUTPUT/lib/pacrunner/A1_pp_jjj_p0", "OUTPUT/SubProcesses/A1_pp_jjj/lc")
     print(result["cross_section"], "+-", result["error"], "pb;", result["events"])
 
 or from the shell, with the python of the mg7 output (the shebang of OUTPUT/bin/generate_events):
 
-    python pac-julia/utils/madgraph_run.py LIBRARIES ARTIFACT [generate_events arguments, default -f]
+    python -m pacrunner._madgraph LIBRARIES ARTIFACT [generate_events arguments, default -f]
+
+(the repository on PYTHONPATH when pacrunner is not installed in that python)
 
 Several (libraries, artifact) pairs of one output: run([(LIBRARIES, ARTIFACT), ...]); a subprocess
 without a pair keeps its stock library.
@@ -32,7 +33,11 @@ What it needs:
     the remapped flavour).
 
 The run is in this process (generate_events' main, with the subprocess class replaced), so call it
-once per process."""
+once per process (MadLibrary.run runs it in a process of its own).
+
+A channel whose flavours are on several libraries splits each batch by library, so its matrix
+elements draw the helicity choice's random numbers over their parts of the batch: the cross section
+and the weights are the stock run's, an event's sampled helicity (its LHE spins) may not be."""
 
 import glob
 import json
@@ -100,13 +105,16 @@ class Pair:
         return self.provider is None or stem.endswith("_" + str(self.provider))
 
 
-def install(pairs):
+def install(pairs, errors):
     """MadGraph7's AmplicolSubprocess replaced (in madgraph_process, which instantiates it) by
-    PacRunnerSubprocess: the subprocesses of `pairs` run on their PacRunner libraries"""
+    PacRunnerSubprocess: the subprocesses of `pairs` run on their PacRunner libraries; the exceptions of
+    generate_events appended to `errors`"""
     import madspace as ms
     import madgraph.mg7.madgraph_process as mp
     import madgraph.mg7.subprocess_madmatrix as smm
     from madgraph.mg7.subprocess_amplicol import AmplicolSubprocess, amplicol_parameters
+
+    layout = {"first": None}   # whether subprocess 0's integrands give their events a subprocess_index
 
     class PacRunnerSubprocess(AmplicolSubprocess):
         def pac_pair(self):
@@ -170,24 +178,38 @@ def install(pairs):
                     for api in self.pac_matrix_elements]
 
         def build_integrands(self, *args, **kwargs):
-            if self.pac_matrix_elements is None:
-                return super().build_integrands(*args, **kwargs)
+            ours = self.pac_matrix_elements is not None
             n = len(self.meta["flavors"])
-            remap = [0] * n
-            diff_xs = self.pac_diff_xs
-            subproc = [self.subproc_id] * n
-            per_subproc = list(range(n))
             stock_remap = [f["index"] for f in self.meta["flavors"]]
             real = ms.Integrand
 
             def integrand(*a, **kw):
                 a = list(a)
-                # positional flavor_remap, flavor_factors, flavor_mirror, flavor_diff_xs_indices,
-                # flavor_subproc_indices, flavor_per_subproc_remap (subprocess_madmatrix.build_integrands)
-                assert a[21] == stock_remap and a[24] == [] and a[25] == [] and a[26] == [], "Integrand layout"
-                a[21] = remap
-                if len(self.pac_matrix_elements) > 1:
-                    a[24], a[25], a[26] = diff_xs, subproc, per_subproc
+                # positional cross_sections (1), flavor_remap (21), flavor_diff_xs_indices (24),
+                # flavor_subproc_indices (25), flavor_per_subproc_remap (26) (subprocess_madmatrix.build_integrands)
+                if ours:
+                    assert a[21] == stock_remap and a[24] == [] and a[25] == [] and a[26] == [], "Integrand layout"
+                    a[21] = [0] * n
+                    if len(self.pac_matrix_elements) > 1:
+                        a[24], a[25], a[26] = self.pac_diff_xs, [self.subproc_id] * n, list(range(n))
+                # MadSpace writes every event with channel 0's layout (subprocess 0's integrand): an
+                # integrand of several cross sections gives its events a subprocess_index, one of a
+                # single cross section none, which the event writer then reads anyway (an index -1).
+                # When subprocess 0's has one, every other integrand of one cross section gets the same
+                # cross section twice, all its events on the first: its events carry their subprocess.
+                carries = len(a[1]) > 1
+                if self.subproc_id == 0:
+                    if layout["first"] is None:
+                        layout["first"] = carries
+                elif layout["first"] is None:
+                    raise RuntimeError(f"PacRunner: subprocess {self.subproc_id}'s integrands built before "
+                                       "subprocess 0's (the event layout is subprocess 0's)")
+                elif layout["first"] and not carries:
+                    if a[24] or a[25] or a[26]:
+                        raise RuntimeError(f"PacRunner: subprocess {self.subproc_id}: flavour tables without "
+                                           "several cross sections")
+                    a[1] = [a[1][0], a[1][0]]
+                    a[24], a[25], a[26] = [0] * n, [self.subproc_id] * n, list(range(n))
                 return real(*a, **kw)
 
             smm.ms.Integrand = integrand
@@ -197,6 +219,18 @@ def install(pairs):
                 smm.ms.Integrand = real
 
     mp.AmplicolSubprocess = PacRunnerSubprocess
+
+    # generate_events' errors: MadGraph7's command loop reports them and returns (exit code 0)
+    real_generate = mp.MadgraphProcess.generate_events
+
+    def generate_events(self, *a, **kw):
+        try:
+            return real_generate(self, *a, **kw)
+        except BaseException as e:
+            errors.append(e)
+            raise
+
+    mp.MadgraphProcess.generate_events = generate_events
 
 
 def latest_run(output):
@@ -227,7 +261,8 @@ def run(libraries, artifact=None, args=None):
         if not os.path.isdir(os.path.join(cuda, "madspace")):
             raise RuntimeError(f"cuda_provider libraries need a CUDA build of MadSpace in {cuda}")
         sys.path.insert(0, cuda)
-    install(pairs)
+    errors = []
+    install(pairs, errors)
     from madgraph.mg7.launch import main
     before = latest_run(output)
     cwd, argv = os.getcwd(), sys.argv
@@ -239,6 +274,9 @@ def run(libraries, artifact=None, args=None):
         os.chdir(cwd)
         sys.argv = argv
     folder = latest_run(output)
+    if errors:
+        raise RuntimeError(f"{output}: generate_events failed in {folder}: {type(errors[0]).__name__}: "
+                           f"{errors[0]}") from errors[0]
     if folder is None or folder == before:
         raise RuntimeError(f"{output}: generate_events made no new run")
     with open(os.path.join(folder, "info.json")) as f:
@@ -247,9 +285,33 @@ def run(libraries, artifact=None, args=None):
             "events": int(process["count_unweighted"]), "run": folder, "output": output}
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 3:
+def _result_json(result):
+    return {k: result[k] for k in ("cross_section", "error", "events", "run", "output")}
+
+
+def main(argv):
+    """python -m pacrunner._madgraph [--json FILE] LIBRARIES ARTIFACT [LIBRARIES ARTIFACT ...] [-- ARGS]
+    (without "--": LIBRARIES ARTIFACT [ARGS], the earlier form)"""
+    json_path = None
+    if argv[:1] == ["--json"]:
+        json_path, argv = argv[1], argv[2:]
+    if "--" in argv:
+        k = argv.index("--")
+        names, args = argv[:k], argv[k + 1:]
+    else:
+        names, args = argv[:2], argv[2:]
+    if len(names) < 2 or len(names) % 2:
         sys.exit(__doc__)
-    result = run(sys.argv[1], sys.argv[2], sys.argv[3:])
+    try:
+        result = run(list(zip(names[0::2], names[1::2])), args=args or None)
+    except RuntimeError as e:
+        sys.exit(f"PacRunner: {e}")
+    if json_path:
+        with open(json_path, "w") as f:
+            json.dump(_result_json(result), f)
     print(f"PacRunner: cross section {result['cross_section']!r} +- {result['error']:.4g} pb, "
           f"{result['events']} events in {result['run']}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

@@ -1,4 +1,4 @@
-"""utils/libraries.py (load_libraries) against the stock pyAmpliCol library, through MadSpace: for
+"""pacrunner.load_libraries against the stock pyAmpliCol library, through MadSpace: for
 every UMAMI channel, a batch of events of mixed flavours (random on-shell momenta, a random flavour
 of the channel per event, random helicity numbers) goes to the stock library (each event with its
 flavour) and to libs.runtime (one MadSpace function: the batch split by flavour over the PacRunner
@@ -26,9 +26,9 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "utils"))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # pacrunner, from the clone
 import madspace as ms  # noqa: E402
-from libraries import load_libraries  # noqa: E402
+from pacrunner import load_libraries  # noqa: E402
 
 ME = ms.MatrixElement
 MIXED_RTOL = 1e-4   # test_umami.jl's
