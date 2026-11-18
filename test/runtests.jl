@@ -98,6 +98,31 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         end
     end
 
+    @testset "ssa" begin
+        # to_ssa is sjb2ssa's conversion: register for register its .ssa files (data/ssa), pinned
+        # registers and kept definitions included (the ppjjj kernels' lowered complex funclets)
+        kept = 0
+        for case in CASES, path in kernel_files(case)
+            ssa_path = joinpath(@__DIR__, "data", "ssa", replace(basename(path), ".plane.symjit" => ".ssa"))
+            isfile(ssa_path) || continue
+            a = read_sjb(path; lowered = true)
+            (mir, stats) = to_ssa(a.mir)
+            ref = read_sjb(ssa_path)
+            @test mir.code == ref.mir.code && mir.consts == ref.mir.consts
+            @test stats.instructions == length(a.mir.code)
+            kept += stats.kept
+            (s, _) = to_ssa(a)
+            @test s.ssa && s.lowered && s.mir.code == ref.mir.code && s.count_obs == a.count_obs
+            # errors: SSA twice, a complex model not lowered, compression
+            @test_throws PacRunner.SsaError to_ssa(ref.mir)
+            @test_throws PacRunner.SsaError to_ssa(s)
+            @test_throws PacRunner.SsaError to_ssa(read_sjb(path))
+        end
+        @test kept > 0
+        compressed = MIR([PacRunner.LoadArgs([PacRunner.Loc(PacRunner.LOC_STACK, 0)], true, false)], Float64[])
+        @test_throws PacRunner.SsaError to_ssa(compressed)
+    end
+
     @testset "complexify" begin
         # each kernel lowers to real registers (symjit's ComplexBi kept), and the lowering runs
         # (mir_run.jl, symjit's interpreter); its values are the kernels' C's below and, against

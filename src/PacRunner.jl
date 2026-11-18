@@ -12,7 +12,8 @@
 # evaluators/operations.jl's, the sources evaluators/wavefunctions.jl's.
 #
 # The kernels: `read_sjb(path)` reads a saved symjit application (.sjb, .plane.symjit) and its MIR;
-# `read_sjb(path; lowered = true)` lowers a complex MIR to real operations (complexify.jl), and
+# `to_ssa(mir)` its SSA form (ssa.jl, the first pass of symjit's register allocator, as symjit-utils'
+# `sjb2ssa`); `read_sjb(path; lowered = true)` lowers a complex MIR to real operations (complexify.jl), and
 # kernel_c.jl writes it as C.
 #
 # v1/: the earlier path, pac2json's main.json (pyAmpliCol 0.2.x): `load_artifact`/`load_programs`
@@ -40,6 +41,7 @@ include("compile_vm.jl")
 # the kernels
 include("sjb.jl")
 include("complexify.jl")
+include("ssa.jl")
 include("kernel_c.jl")
 include("kernel_lib.jl")
 # RustiCol's recurrence export (pyAmpliCol 1.0.x)
@@ -64,7 +66,7 @@ export Lowered, LArena, evaluate, validate, sort_runs, fuse, reuse_planes, optim
 # the C
 export compile, ArenaIndex
 # the kernels
-export read_sjb, SavedApplication, MIR, complexify, listing, kernel_c
+export read_sjb, SavedApplication, MIR, complexify, to_ssa, listing, kernel_c
 # v1: main.json, pac2json
 export Program, Arena, read_main, load_artifact, load_programs, load_examples, lower, install, capture, alpha_s_power
 
