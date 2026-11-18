@@ -13,9 +13,10 @@ generators and [MadGraph](https://github.com/MadGraphTeam/MadGraph7) ecosystem.
 3. Install [pyAmpliCol](https://github.com/MadGraphTeam/pyamplicol). It shoud be on the path.
 4. Install Julia using juliaup: `curl -fsSL https://install.julialang.org | sh`. 
 5. Clone PacRunner, aka `pac-julia`, as `git clone https://github.com/shahriariravanian/pac-julia`.
-6. Test Julia installation: `cd pac-julia; julia --project=. -e \"using PacRunner;\"`.
-7. Install PacRunner's Python API: `python -m pip install .`.
-8. Set `export NVCC=path/to/nvcc`.
+6. `cd pac-julia`.
+7. Optional tests: `julia --project -e 'using Pkg; Pkg.test()'`.
+8. Install PacRunner's Python API: `python -m pip install .`.
+9. Set `export NVCC=path/to/nvcc`.
   
 ## Quick Start
 
