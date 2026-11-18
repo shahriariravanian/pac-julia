@@ -186,7 +186,8 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         mags = Dict(:three_vector => sqrt(0.5), :vector_wedge => 1.0, :tensor_vector => 0.5)
         @test all(i -> isapprox(abs(i.coefficient), mags[i.kind]; rtol = 1e-14), plan.interactions)
         @test all(c -> isapprox(c.coefficient, 1; rtol = 1e-14), plan.closures)
-        reports = CompareExport.compare(plan, joinpath(art, "export_recurrence.json"))
+        (reports, differences) = CompareExport.compare(plan, joinpath(art, "export_recurrence.json"))
+        @test isempty(differences)
         @test [r.flow for r in reports] == ["flow:1,2,3,4", "flow:1,3,2,4"]
         @test all(r -> (r.currents, r.interactions, r.propagators, r.closures) == (20, 22, 5, 3), reports)
         # the same plan from other probes
@@ -194,6 +195,47 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
               [i.coefficient for i in plan.interactions] rtol = 1e-13
         @test_throws PacRunner.CompiledPlanError read_compiled(joinpath(@__DIR__, "data"))   # not an artifact
         @test_throws PacRunner.CompiledPlanError read_compiled(art; process = "nope")
+    end
+
+    if HAVE_CC
+        @testset "model kernels" begin
+            # a prepared-model pack (data/planc_uuddg: the built-in SM's 49 plane kernels, the manifest
+            # reduced to their contracts)
+            ks = model_kernels(joinpath(@__DIR__, "data", "planc_uuddg", "model.pyamplicol-model"))
+            @test length(ks) == 49 && count(k -> k.contract === :vertex, ks) == 36
+            k27 = only(filter(k -> k.id == 27, ks))
+            @test [r[1:2] for r in k27.roles] == [(:left_current, 0), (:left_current, 1), (:right_current, 2), (:right_current, 3)]
+            @test k27.output_arity == 4 && startswith(k27.output_layout[1], "lorentz-vector")
+            # twins: kernels 27 and 28 are one plane kernel under two contracts
+            @test k27.sha == only(filter(k -> k.id == 28, ks)).sha
+            o = run_model_kernel(k27, Dict(:left_current => [1.0 + 0.5im, -0.25im], :right_current => [0.5 + 0im, 1im]), Dict(), Dict())
+            @test length(o) == 4 && all(isfinite, o) && any(!iszero, o)
+            mktempdir() do tmp
+                bad = joinpath(tmp, "not.pyamplicol-model")
+                write(bad, "not a zip")
+                @test_throws PacRunner.ModelKernelError model_kernels(bad)
+            end
+        end
+
+        @testset "compiled plan, quarks" begin
+            # u u~ > d d~ g (data/planc_uuddg): Weyl vertices and propagators (UIR), the model's kernels
+            # for Weyl × Weyl → vector and → the U(1) subtraction current, a Weyl × vector vertex with a
+            # kernel propagator; all equal to the export's rows, kernels by SHA-256 and orientation
+            art = joinpath(@__DIR__, "data", "planc_uuddg")
+            ex = read_compiled(art)
+            @test sort(unique(c.family for c in values(ex.currents))) == [:u1, :vector, :weyl]
+            bare = compiled_plan(ex)
+            @test length(bare.unmatched) == 12   # without the model's kernels
+            ks = model_kernels(joinpath(art, "model.pyamplicol-model"))
+            plan = compiled_plan(ex; kernels = ks)
+            @test isempty(plan.unmatched)
+            kinds = Set(i.kind === :kernel ? (:kernel, i.kernel) : i.kind for i in plan.interactions)
+            @test kinds == Set([:three_vector, :weyl_vector_a, :weyl_vector_b, (:kernel, 9), (:kernel, 13), (:kernel, 27)])
+            @test Set(values(plan.propagators)) == Set([:vector, :weyl_a, :weyl_b, 17])
+            (reports, differences) = CompareExport.compare(plan, joinpath(art, "export_recurrence.json"); kernels = ks)
+            @test length(reports) == 4 && isempty(differences)
+            @test [r.flow for r in reports] == ["flow:2,1,3,5,4", "flow:2,5,1,3,4", "flow:2,4,3,5,1", "flow:2,5,4,3,1"]
+        end
     end
 
     @testset "complexify" begin

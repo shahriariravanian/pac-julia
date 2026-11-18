@@ -43,6 +43,7 @@ include("sjb.jl")
 include("complexify.jl")
 include("ssa.jl")
 include("direct_cpp.jl")
+include("model_kernels.jl")
 include("compiled_plan.jl")
 include("kernel_c.jl")
 include("kernel_lib.jl")
@@ -70,7 +71,8 @@ export compile, ArenaIndex
 # the kernels
 export read_sjb, SavedApplication, MIR, complexify, to_ssa, listing, kernel_c
 export read_direct_cpp, DirectKernel, DirectNode, evaluate_direct, direct_library_call
-export read_compiled, compiled_plan, CompiledExecution, CompiledPlan, CompiledInteraction, CompiledClosure, CompiledCurrent
+export read_compiled, compiled_plan, CompiledExecution, CompiledPlan, CompiledInteraction, CompiledClosure, CompiledCurrent, CompiledTerm
+export model_kernels, ModelKernel, run_model_kernel
 # v1: main.json, pac2json
 export Program, Arena, read_main, load_artifact, load_programs, load_examples, lower, install, capture, alpha_s_power
 

@@ -53,3 +53,13 @@ from `pyamplicol generate "g g > g g" OUT --color-accuracy lc --execution-mode c
 (the leaves `read_compiled` reads, at their paths; the JSON written compact), and
 `export_recurrence.json`, the `pyamplicol export-recurrence` of the same process generated in recurrence
 mode. The "compiled plan" tests (`compiled_plan`, test/compare_export.jl).
+
+## `planc_uuddg/`
+
+u u~ > d d~ g, LC, pyAmpliCol 1.0.2, as `planc_gggg/` (compiled with `--backend cpp`, its
+`processes/uuddg/execution.json` reduced to `helicity_sum_execution`; `model/parameters.json`;
+`export_recurrence.json` from recurrence mode), and `model.pyamplicol-model`: the built-in SM's prepared
+kernels (`assets/prepared_models/built-in-sm-jit-o2-x86_64.pyamplicol-model`), its 49
+`kernels/<id>/application-1.plane.symjit` and the manifest reduced to the kernels' contracts (id, kind,
+input contracts, output arity and layout), written as a stored zip. The "model kernels" and
+"compiled plan, quarks" tests.

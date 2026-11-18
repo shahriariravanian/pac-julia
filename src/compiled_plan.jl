@@ -32,9 +32,12 @@ struct CompiledCurrent
     id::Int
     labels::Vector{Int}      # external labels, 1-based, sorted
     particle::Int            # PDG id
-    spin::Int                # a source's spin state (helicity); 0 otherwise
+    spin::Int                # a source's helicity (source_fill's source_helicity: the physical one; the slot's
+                             # spin_state is the crossed one for incoming fermions); 0 otherwise
     source::Bool
     tensor::Bool             # the antisymmetric tensor of the four-gluon contact (auxiliary_kind)
+    family::Symbol           # :vector, :tensor, :weyl, :u1 (the U(1) subtraction of a quark line's colour flow), :scalar, :other
+    chirality::Int           # a Weyl spinor's (+1, -1); 0 otherwise
     dimension::Int
     components::UnitRange{Int}  # in the value arena, 0-based
     sectors::Vector{Int}     # the materialized colour sectors it serves (empty: a source, all)
@@ -64,15 +67,19 @@ struct CompiledExecution
     amplitude::Vector{CompiledLeaf}
     roots::Vector{Any}        # the amplitude roots, as execution.json has them
     raw::Dict{String,Any}     # the execution's JSON
+    parameters::Dict{String,Float64}  # the model's (model/parameters.json), also as particle.<pdg>.mass/width
 end
 
 struct CompiledInteraction
     current::Int
-    kind::Symbol              # :three_vector, :vector_wedge, :tensor_vector
+    kind::Symbol              # a UIR vertex (:three_vector, :vector_wedge, :tensor_vector, :weyl_vector_a, :weyl_vector_b),
+                              # :kernel (a model kernel), :identity (no vertex: the propagator of `left` alone)
     left::Int
-    right::Int
+    right::Int                # -1 for :identity (current ids count from 0)
     coefficient::ComplexF64   # coupling × factor of the recurrence row, in this orientation
+    kernel::Int               # the model kernel of :kernel (0 otherwise)
 end
+CompiledInteraction(current, kind, left, right, coefficient) = CompiledInteraction(current, kind, left, right, coefficient, 0)
 
 struct CompiledClosure
     root::Int                 # 1-based, in execution.json's order
@@ -82,10 +89,19 @@ struct CompiledClosure
     coefficient::ComplexF64
 end
 
+# a term no UIR vertex computes (two input currents, one output): a model kernel's (phase 3)
+struct CompiledTerm
+    current::Int
+    inputs::Vector{Int}
+    propagated::Bool
+end
+
 struct CompiledPlan
     execution::CompiledExecution
     interactions::Vector{CompiledInteraction}
     closures::Vector{CompiledClosure}
+    propagators::Dict{Int,Any}      # a propagated current's propagator: :vector, :weyl_a, :weyl_b, or a model kernel's id
+    unmatched::Vector{CompiledTerm} # the terms of no UIR vertex
 end
 
 # the probes' numbers: SplitMix64, uniform in [-1, 1) (reproducible, no dependency)
@@ -158,11 +174,16 @@ function read_compiled(artifact::AbstractString; process::Union{Nothing,Abstract
     rs = ex["runtime_schema"]
     currents = Dict{Int,CompiledCurrent}()
     component_current = Dict{Int,Tuple{Int,Int}}()
+    helicity = Dict(src["current_id"] => src["source_helicity"] for src in rs["source_fill"]["sources"])
     for c in rs["current_storage"]["current_slots"]
         id = c["current_id"]
         comps = c["component_start"]:c["component_stop"]-1
-        currents[id] = CompiledCurrent(id, sort(Int.(c["external_labels"])), c["particle_id"], c["spin_state"], c["is_source"],
-                                       c["auxiliary_kind"] !== nothing, c["dimension"], comps, sector_support(c))
+        aux, dim = c["auxiliary_kind"], c["dimension"]
+        family = aux == "antisymmetric-tensor" ? :tensor : aux == "u1-subtraction-color-flow-vector" ? :u1 :
+                 aux !== nothing ? :other : dim == 2 ? :weyl : dim == 4 ? :vector : dim == 1 ? :scalar : :other
+        spin = c["is_source"] ? helicity[id] : 0
+        currents[id] = CompiledCurrent(id, sort(Int.(c["external_labels"])), c["particle_id"], spin, c["is_source"],
+                                       family === :tensor, family, c["chirality"], dim, comps, sector_support(c))
         foreach(g -> component_current[g] = (id, g - first(comps)), comps)
     end
     value_count = rs["parameter_layout"]["value_component_count"]
@@ -190,7 +211,17 @@ function read_compiled(artifact::AbstractString; process::Union{Nothing,Abstract
     bindings = Dict(b["parameter_index"] => b for b in amp["input_bindings"])
     out_at = Dict(r["output_index"] => (i, 0) for (i, r) in enumerate(roots))
     amplitude = [read_leaf(dir, leaf, bindings, value_count, component_current, mom_slot, out_at) for leaf in amp["leaves"]]
-    return CompiledExecution(path, process, currents, momentum_slots, propagated, stages, amplitude, roots, ex)
+    parameters = Dict{String,Float64}()
+    ppath = joinpath(artifact, "model", "parameters.json")
+    if isfile(ppath)
+        for (name, v) in JSON.parsefile(ppath)["parameters"]
+            x = Float64(v isa AbstractVector ? v[1] : v)
+            parameters[name] = x
+            m = match(r"^(mass|width)_(\d+)$", name)
+            m === nothing || (parameters["particle.$(m.captures[2]).$(m.captures[1])"] = x)
+        end
+    end
+    return CompiledExecution(path, process, currents, momentum_slots, propagated, stages, amplitude, roots, ex, parameters)
 end
 
 # ---- interactions: the sets of input currents an output current's terms multiply ------------------
@@ -232,7 +263,147 @@ end
 function bare_vertex(kind::Symbol, l, r, u, v)
     kind === :three_vector && return vertex_three_vector(l, r, u, v)
     kind === :vector_wedge && return vertex_vector_wedge(l, r)
-    return vertex_tensor_vector(l, r)
+    kind === :tensor_vector && return vertex_tensor_vector(l, r)
+    kind === :weyl_vector_a && return vertex_weyl_vector_a(l, r)
+    kind === :weyl_vector_b && return vertex_weyl_vector_b(l, r)
+    throw(CompiledPlanError("no vertex $kind"))
+end
+
+# the UIR vertices that may compute an output of `x`'s family from currents a and b, oriented
+# (kind, left, right): a tensor or a Weyl spinor left; of two vectors, the lower first label
+function vertex_candidates(a::CompiledCurrent, b::CompiledCurrent, x::CompiledCurrent)
+    vectorlike(c) = c.family === :vector || c.family === :u1
+    if a.family === :tensor || b.family === :tensor
+        (t, v) = a.family === :tensor ? (a, b) : (b, a)
+        return v.family === :vector && x.family === :vector ? [(:tensor_vector, t, v)] : []
+    elseif a.family === :weyl || b.family === :weyl
+        (w, v) = a.family === :weyl ? (a, b) : (b, a)
+        return vectorlike(v) && x.family === :weyl ? [(:weyl_vector_a, w, v), (:weyl_vector_b, w, v)] : []
+    elseif a.family === :vector && b.family === :vector
+        (l, r) = first(a.labels) < first(b.labels) ? (a, b) : (b, a)
+        return x.family === :tensor ? [(:vector_wedge, l, r)] : x.family === :vector ? [(:three_vector, l, r)] : []
+    end
+    return []
+end
+
+# of the forms that fit a term (equal formulas: the model has identical kernels, and kernels equal to
+# UIR's vertices and propagators), the one with the fewest model kernels, then the lowest kernel ids;
+# they must agree on the coefficient
+function pick_form(found, x, s)
+    nk(f) = (f[6] != 0) + (f[4] isa Int)
+    key(f) = (nk(f), f[6], f[4] isa Int ? f[4] : -1)
+    best = sort(found; by = key)[1]
+    same = [f for f in found if f[1] === best[1] && f[6] == best[6] && f[4] == best[4]]
+    return best
+end
+
+# the leaf's value of current x on probes (J, P), its components in order
+function leaf_value(exec::CompiledExecution, leaf::CompiledLeaf, comps, rng, J, P)
+    o = evaluate_direct(leaf.kernel, probe_planes(rng, leaf, J, P))
+    return [complex(o[2j-1][1], o[2j][1]) for (j, _) in sort(comps; by = last)]
+end
+
+# a propagator form (UIR symbol or model kernel) on o, the current with momentum k
+function apply_form(prop, o, k, kernels, parameters)
+    prop isa Symbol && return apply_propagator(prop, o, k)
+    kern = only(filter(m -> m.id == prop, kernels))
+    return run_model_kernel(kern, Dict(:current => o), Dict(:momentum => k), parameters)
+end
+
+# whether a model kernel's contract fits the operands' chiralities: it names Dirac components for a
+# Weyl operand, {0, 1} for chirality +1 and {2, 3} for -1 (as recurrence mode binds them)
+function chirality_fits(k::ModelKernel, role::Symbol, c::CompiledCurrent)
+    c.family === :weyl || return true
+    comps = sort([comp for (r, comp, _) in k.roles if r === role])
+    return comps == (c.chirality == 1 ? [0, 1] : c.chirality == -1 ? [2, 3] : comps)
+end
+
+# whether a model kernel's outputs are a current of x's family (its output layout)
+function layout_fits(k::ModelKernel, x::CompiledCurrent)
+    layout = rsplit(k.output_layout[1], ":"; limit = 2)[1]
+    x.family === :vector && return layout == "lorentz-vector"
+    x.family === :u1 && return layout == "auxiliary:u1-subtraction-color-flow-vector"
+    x.family === :tensor && return layout == "auxiliary:antisymmetric-tensor"
+    x.family === :weyl && return layout == "weyl-chiral"
+    x.family === :scalar && return layout == "scalar"
+    return false
+end
+
+# the propagator forms a current of x's family and dimension may have: UIR's and the model's
+function propagator_forms(x::CompiledCurrent, propagated::Bool, kernels)
+    propagated || return Any[:none]
+    forms = Any[propagator_candidates(x, true)...]
+    for k in kernels
+        k.contract === :propagator && role_count(k, :current) == x.dimension && k.output_arity == x.dimension && layout_fits(k, x) &&
+            chirality_fits(k, :current, x) && push!(forms, k.id)
+    end
+    return forms
+end
+
+# the terms of two operands with a model kernel for the vertex or the propagator (or both)
+function kernel_forms(exec, leaf, comps, x, a, b, propagated, kernels, samples, randJ, randP, rng)
+    cur = exec.currents
+    found = []
+    q = exec.momentum_slots[cur[x].labels]
+    vertices = Any[(kind, l, r, 0) for (kind, l, r) in vertex_candidates(a, b, cur[x])]
+    for k in kernels, (l, r) in ((a, b), (b, a))
+        k.contract === :vertex && role_count(k, :left_current) == l.dimension && role_count(k, :right_current) == r.dimension &&
+            k.output_arity == cur[x].dimension && layout_fits(k, cur[x]) && chirality_fits(k, :left_current, l) &&
+            chirality_fits(k, :right_current, r) && push!(vertices, (:kernel, l, r, k.id))
+    end
+    for (kind, l, r, kid) in vertices, prop in propagator_forms(cur[x], propagated, kernels)
+        (kid == 0 && prop isa Symbol) && continue   # UIR only: tried already
+        probes = [(Dict(l.id => randJ(l.id), r.id => randJ(r.id)), randP()) for _ in 1:samples]
+        kernel(i) = leaf_value(exec, leaf, comps, rng, probes[i]...)
+        reference(i) = begin
+            (J, P) = probes[i]
+            (u, v) = (P[exec.momentum_slots[l.labels]], P[exec.momentum_slots[r.labels]])
+            o = kid == 0 ? bare_vertex(kind, J[l.id], J[r.id], u, v) :
+                run_model_kernel(only(filter(m -> m.id == kid, kernels)), Dict(:left_current => J[l.id], :right_current => J[r.id]),
+                                 Dict(:left_momentum => u, :right_momentum => v), exec.parameters)
+            apply_form(prop, o, P[q], kernels, exec.parameters)
+        end
+        c = try
+            measure(kernel, reference, samples, "current $x from $(l.id), $(r.id) ($kind $kid, $prop)")
+        catch e
+            e isa CompiledPlanError || rethrow()
+            continue
+        end
+        push!(found, (kind, l, r, prop, c, kid))
+    end
+    return found
+end
+
+# a term of one operand: x = propagator(a), a UIR propagator or a model kernel's
+function identity_forms(exec, leaf, comps, x, a, kernels, samples, randJ, randP, rng)
+    cur = exec.currents
+    q = exec.momentum_slots[cur[x].labels]
+    found = []
+    for prop in propagator_forms(cur[x], true, kernels)
+        prop isa Symbol && a.dimension != cur[x].dimension && continue
+        probes = [(Dict(a.id => randJ(a.id)), randP()) for _ in 1:samples]
+        kernel(i) = leaf_value(exec, leaf, comps, rng, probes[i]...)
+        reference(i) = (J = probes[i][1]; apply_form(prop, J[a.id], probes[i][2][q], kernels, exec.parameters))
+        c = try
+            measure(kernel, reference, samples, "current $x from $(a.id) ($prop)")
+        catch e
+            e isa CompiledPlanError || rethrow()
+            continue
+        end
+        push!(found, (prop, c))
+    end
+    return found
+end
+
+# the propagators a stored current may have: none (unpropagated), the vector's, a Weyl spinor's two
+propagator_candidates(x::CompiledCurrent, propagated::Bool) =
+    !propagated ? [:none] : x.family === :vector || x.family === :u1 ? [:vector] : x.family === :weyl ? [:weyl_a, :weyl_b] : Symbol[]
+
+function apply_propagator(prop::Symbol, o, k)
+    prop === :none && return o
+    prop === :vector && return propagator_vector(o, k, 1.0 + 0im)
+    prop === :weyl_a && return propagator_weyl_a(o, k, 1.0 + 0im)
+    return propagator_weyl_b(o, k, 1.0 + 0im)
 end
 
 # the one constant c with kernel = c × reference over the components and `samples` samples
@@ -251,16 +422,20 @@ function measure(f_kernel, f_reference, samples::Int, what)
 end
 
 """
-    compiled_plan(exec::CompiledExecution; samples = 3, rng = ProbeRng(1)) -> CompiledPlan
+    compiled_plan(exec::CompiledExecution; samples = 3, rng = ProbeRng(1), kernels = ModelKernel[]) -> CompiledPlan
 
 The interactions (vertex kind, inputs, coefficient) of every computed current and the closures of
-the amplitude roots (src/compiled_plan.jl).
+the amplitude roots (src/compiled_plan.jl). With `kernels` (model_kernels.jl: the model's prepared
+kernels), a term no UIR vertex and propagator computes is matched against them.
 """
-function compiled_plan(exec::CompiledExecution; samples::Int = 3, rng::ProbeRng = ProbeRng(1))::CompiledPlan
+function compiled_plan(exec::CompiledExecution; samples::Int = 3, rng::ProbeRng = ProbeRng(1),
+                       kernels::Vector{ModelKernel} = ModelKernel[])::CompiledPlan
     cur = exec.currents
     randJ(c) = [complex(next!(rng), next!(rng)) for _ in 1:cur[c].dimension]
     randP() = Dict(s => [next!(rng) for _ in 1:4] for s in values(exec.momentum_slots))
     interactions = CompiledInteraction[]
+    propagators = Dict{Int,Any}()
+    unmatched = CompiledTerm[]
     for leaves in exec.stages, leaf in leaves
         m = monomials(leaf)
         outs = Dict{Int,Vector{Tuple{Int,Int}}}()   # current -> (complex output j, component)
@@ -272,34 +447,54 @@ function compiled_plan(exec::CompiledExecution; samples::Int = 3, rng::ProbeRng 
                 throw(CompiledPlanError("current $x: $(length(comps)) of its $(cur[x].dimension) components in one leaf"))
             sets = sort!(collect(Set(s for (j, _) in comps for s in m[leaf.kernel.outputs[j]] if !isempty(s))))
             for s in sets
-                length(s) == 2 || throw(CompiledPlanError("current $x: a term of $(length(s)) currents $s (vertices of two inputs only)"))
+                if length(s) == 1 && !isempty(kernels)
+                    f = identity_forms(exec, leaf, comps, x, cur[s[1]], kernels, samples, randJ, randP, rng)
+                    if !isempty(f)
+                        (_, _, _, prop, c, _) = pick_form([(:identity, cur[s[1]], cur[s[1]], p, c, 0) for (p, c) in f], x, s)
+                        get!(propagators, x, prop) == prop || throw(CompiledPlanError("current $x: propagators $(propagators[x]) and $prop"))
+                        push!(interactions, CompiledInteraction(x, :identity, s[1], -1, c, 0))
+                        continue
+                    end
+                end
+                if length(s) != 2
+                    push!(unmatched, CompiledTerm(x, s, x in exec.propagated))
+                    continue
+                end
                 (a, b) = (cur[s[1]], cur[s[2]])
-                kind, l, r = if a.tensor != b.tensor
-                    (:tensor_vector, a.tensor ? a : b, a.tensor ? b : a)
-                elseif !a.tensor && !b.tensor
-                    (cur[x].tensor ? :vector_wedge : :three_vector, first(a.labels) < first(b.labels) ? a : b, first(a.labels) < first(b.labels) ? b : a)
-                else
-                    throw(CompiledPlanError("current $x: two tensors $(a.id), $(b.id)"))
-                end
-                (kind === :tensor_vector && cur[x].tensor) && throw(CompiledPlanError("current $x: tensor × vector → tensor"))
-                k = exec.momentum_slots[cur[x].labels]
                 propagated = x in exec.propagated
-                probes = [(Dict(l.id => randJ(l.id), r.id => randJ(r.id)), randP()) for _ in 1:samples]
-                kernel(s) = begin
-                    (J, P) = probes[s]
-                    o = evaluate_direct(leaf.kernel, probe_planes(rng, leaf, J, P))
-                    [complex(o[2j-1][1], o[2j][1]) for (j, _) in sort(comps; by = last)]
+                q = exec.momentum_slots[cur[x].labels]
+                found = Tuple{Symbol,CompiledCurrent,CompiledCurrent,Any,ComplexF64,Int}[]
+                for (kind, l, r) in vertex_candidates(a, b, cur[x]), prop in propagator_candidates(cur[x], propagated)
+                    probes = [(Dict(l.id => randJ(l.id), r.id => randJ(r.id)), randP()) for _ in 1:samples]
+                    kernel(i) = begin
+                        (J, P) = probes[i]
+                        o = evaluate_direct(leaf.kernel, probe_planes(rng, leaf, J, P))
+                        [complex(o[2j-1][1], o[2j][1]) for (j, _) in sort(comps; by = last)]
+                    end
+                    reference(i) = begin
+                        (J, P) = probes[i]
+                        o = bare_vertex(kind, J[l.id], J[r.id], P[exec.momentum_slots[l.labels]], P[exec.momentum_slots[r.labels]])
+                        apply_propagator(prop, o, P[q])
+                    end
+                    c = try
+                        measure(kernel, reference, samples, "current $x from $(l.id), $(r.id) ($kind, $prop)")
+                    catch e
+                        e isa CompiledPlanError || rethrow()
+                        continue
+                    end
+                    push!(found, (kind, l, r, prop, c, 0))
                 end
-                reference(s) = begin
-                    (J, P) = probes[s]
-                    u, v = P[exec.momentum_slots[l.labels]], P[exec.momentum_slots[r.labels]]
-                    o = bare_vertex(kind, J[l.id], J[r.id], u, v)
-                    propagated || return o
-                    q = P[k]
-                    o .* (-1im / (q[1]^2 - q[2]^2 - q[3]^2 - q[4]^2))
+                isempty(found) && !isempty(kernels) &&
+                    append!(found, kernel_forms(exec, leaf, comps, x, a, b, propagated, kernels, samples, randJ, randP, rng))
+                if isempty(found)
+                    push!(unmatched, CompiledTerm(x, s, propagated))
+                    continue
                 end
-                c = measure(kernel, reference, samples, "current $x from $(l.id), $(r.id) ($kind)")
-                push!(interactions, CompiledInteraction(x, kind, l.id, r.id, c))
+                (kind, l, r, prop, c, kid) = pick_form(found, x, s)
+                if prop !== :none
+                    get!(propagators, x, prop) == prop || throw(CompiledPlanError("current $x: propagators $(propagators[x]) and $prop"))
+                end
+                push!(interactions, CompiledInteraction(x, kind, l.id, r.id, c, kid))
             end
         end
     end
@@ -315,5 +510,5 @@ function compiled_plan(exec::CompiledExecution; samples::Int = 3, rng::ProbeRng 
             push!(closures, CompiledClosure(root, l, r, cf, measure(kernel, reference, samples, "root $root")))
         end
     end
-    return CompiledPlan(exec, interactions, closures)
+    return CompiledPlan(exec, interactions, closures, propagators, unmatched)
 end
