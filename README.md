@@ -75,7 +75,8 @@ following operations:
 5. The source folder is compiled to generate `libumami_pac.so`.
 
 We will discuss the files in the source folder below. For now, let's continue with generating CUDA providers. 
-PacRunner currently supports two types of GPU backend: `compile(device="cuda")` and `compile(device="cuda_provider")`.
+PacRunner currently supports two types of GPU backend: `compile(device="cuda")` and `compile(device="cuda_provider")`
+(also called `device="cuda_full"`: everything on the GPU).
 The first one is a hybrid provider, where the UMAMI library identies itself as a "CPU" provider but actually runs CUDA 
 kernels. The second one is a full CUDA provider that identifies itself as "CUDA". First, the `cuda` option:
 

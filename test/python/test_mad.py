@@ -53,6 +53,9 @@ class ParamCard(unittest.TestCase):
         self.assertEqual([_mad.library_folder_name(*v) for v in (("cpu", "f64"), ("cuda", "f64"), ("cuda", "mixed"),
                                                                  ("cuda_provider", "mixed"))],
                          ["pacrunner", "pacrunner-cuda", "pacrunner-cuda-mixed", "pacrunner-cuda_provider-mixed"])
+        # cuda_full is cuda_provider: the same folder (one build)
+        self.assertEqual(_mad.library_folder_name("cuda_full", "mixed"), "pacrunner-cuda_provider-mixed")
+        self.assertEqual(pacrunner._env.device_name("cuda_full"), "cuda_provider")
 
 
 def stock_run(output):

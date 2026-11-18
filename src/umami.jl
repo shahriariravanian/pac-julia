@@ -97,6 +97,8 @@ function umami_program_h(lib::UmamiLibrary, l::Lowered, provider, exported_count
 end
 
 const UMAMI_DEVICES = (:cpu, :cuda, :cuda_provider)   # :cuda: on the GPU, a CPU provider; :cuda_provider: a CUDA one
+const UMAMI_DEVICE_ALIASES = Dict(:cuda_full => :cuda_provider)   # cuda_full: all on the GPU (MadSpace's GPU runtime)
+umami_device(device::Symbol)::Symbol = get(UMAMI_DEVICE_ALIASES, device, device)
 const UMAMI_PRECISIONS = (:f64, :mixed)   # device = :cuda: :mixed is pacops.h's PAC_MIXED
 
 find_nvcc() = (c = get(ENV, "NVCC", something(Sys.which("nvcc"), "/usr/local/cuda/bin/nvcc"));
@@ -173,7 +175,8 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
                              gpu_memory::Real = GPU_MEMORY_DEFAULT, gpu_slots::Integer = 0,
                              precision::Symbol = :f64, fmad::Bool = precision == :mixed,
                              runtime_dir::String = dir)::String
-    device in UMAMI_DEVICES || error("device $device: one of $UMAMI_DEVICES")
+    device = umami_device(device)
+    device in UMAMI_DEVICES || error("device $device: one of $UMAMI_DEVICES (or $(join(keys(UMAMI_DEVICE_ALIASES), ", ")))")
     precision in UMAMI_PRECISIONS || error("precision $precision: one of $UMAMI_PRECISIONS")
     cuda = device in (:cuda, :cuda_provider)
     provider_build = device == :cuda_provider
@@ -282,7 +285,7 @@ bit for bit, or `:mixed`: the currents, their arithmetic and the vertex sums in 
 forms, propagator denominators, wavefunctions and amplitudes in f64, the kernels in f32 but the
 backward slices of their denominators (about 1e-7 relative on the matrix element, ~1e-5 at worst);
 `nvflags` adds nvcc flags (`-DPAC_ACC64`: the vertex sums in f64; `-DPAC_AMP32`: the amplitudes in
-f32); `fmad = false`: no contracted multiply-adds. `device = :cuda_provider`: the same GPU build,
+f32); `fmad = false`: no contracted multiply-adds. `device = :cuda_provider` (alias `:cuda_full`): the same GPU build,
 but each library identifies as a CUDA provider for MadSpace's GPU runtime: device pointers, the
 caller's stream (UMAMI_OUT_GPU_STREAM), nothing synchronized; `gpu_memory` is then the workspace
 budget of one launch (a larger call runs as several launches on the stream). The libraries are
@@ -295,6 +298,7 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
                          gpu_slots::Integer = 0, gpu_memory::Real = GPU_MEMORY_DEFAULT,
                          precision::Symbol = :f64, fmad::Bool = precision == :mixed, nvflags::Cmd = `-O3`,
                          quiet::Bool = false)::String
+    device = umami_device(device)
     precision in UMAMI_PRECISIONS || error("precision $precision: one of $UMAMI_PRECISIONS")
     precision == :f64 || device in (:cuda, :cuda_provider) || error("precision = $precision needs device = :cuda or :cuda_provider")
     d = read_export(export_path)
