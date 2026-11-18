@@ -1,6 +1,6 @@
 name = "PacRunner"
 uuid = "ab3250da-500d-44d3-85b1-c63d1dd5e6ef"
-version = "0.1.0"
+version = "0.3.0"
 authors = ["Shahriar Iravanian <siravan@svtsim.com>"]
 
 [deps]
