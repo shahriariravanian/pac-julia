@@ -105,15 +105,38 @@ find_nvcc() = (c = get(ENV, "NVCC", something(Sys.which("nvcc"), "/usr/local/cud
 const POOL_CU = joinpath(dirname(@__DIR__), "c", "pool.cu")
 const POOL_H = joinpath(dirname(@__DIR__), "c", "pool.h")
 
-# the CUDA runtime library's file next to nvcc (libcudart.so.N, its soname)
+# the CUDA toolkit's folder as nvcc itself reports it (its `TOP`): right also when `nvcc` is a
+# wrapper script (Ubuntu's /usr/bin/nvcc execs a toolkit's nvcc); nothing if nvcc cannot say
+function nvcc_toolkit(nvcc::String)
+    out = try
+        mktempdir() do dir
+            src = joinpath(dir, "t.cu")
+            write(src, "")
+            buf = IOBuffer()   # nvcc --dryrun prints its steps on stderr
+            run(pipeline(`$nvcc --dryrun -c $src -o $(joinpath(dir, "t.o"))`; stdout = buf, stderr = buf))
+            String(take!(buf))
+        end
+    catch
+        return nothing
+    end
+    m = match(r"^#\$ TOP=(.*)$"m, out)
+    m === nothing ? nothing : normpath(strip(m.captures[1]))
+end
+
+# the CUDA runtime library's file of nvcc's toolkit (libcudart.so.N, its soname): the toolkit nvcc
+# reports, else the folders next to nvcc
 function find_cudart(nvcc::String)::String
     bin = dirname(something(Sys.which(nvcc), nvcc))
-    for lib in (joinpath(bin, "..", "lib64"), joinpath(bin, "..", "targets", "x86_64-linux", "lib"))
+    tops = unique(filter(!isnothing, [nvcc_toolkit(nvcc), joinpath(bin, "..")]))
+    tried = String[]
+    for top in tops, lib in (joinpath(top, "lib64"), joinpath(top, "targets", "x86_64-linux", "lib"))
+        push!(tried, lib)
         isdir(lib) || continue
         names = filter(f -> occursin(r"^libcudart\.so\.\d+$", f), readdir(lib))
         isempty(names) || return realpath(joinpath(lib, first(names)))   # the file it links to
     end
-    error("no libcudart.so.N next to $nvcc")
+    error("no libcudart.so.N in the CUDA toolkit of $nvcc (looked in $(join(normpath.(tried), ", "))); " *
+          "set NVCC to the toolkit's nvcc, e.g. NVCC=/usr/local/cuda/bin/nvcc")
 end
 
 # the process-wide GPU pool (pool.cu) in `dir`: libpacpool.so, with a copy of the CUDA runtime
