@@ -1,4 +1,4 @@
-"""pacrunner.MadOutput, MadArtifact and MadLibrary.run on a MadGraph7 output of several subprocesses.
+"""pacrunner.Output, SubProcess and Provider.run on a MadGraph7 output of several subprocesses.
 
     PACRUNNER_MADGRAPH7=~/MadGraph7 PACRUNNER_TEST_MG7_MULTI=OUTPUT python -m unittest discover -s test/python
 
@@ -67,10 +67,10 @@ def stock_run(output):
 
 
 @unittest.skipUnless(OUTPUT, "PACRUNNER_TEST_MG7_MULTI not set")
-class Output(unittest.TestCase):
+class OutputRuns(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.out = pacrunner.MadOutput(OUTPUT)
+        cls.out = pacrunner.Output(OUTPUT)
         cls.libs = cls.out.compile(device="cpu")
         cls.stock_xs, cls.stock_events = stock_run(OUTPUT)
 
@@ -79,10 +79,12 @@ class Output(unittest.TestCase):
         self.assertGreaterEqual(len(out.names), 2)
         with open(out.path / "SubProcesses" / "subprocesses.json") as f:
             entries = [e for e in json.load(f) if e.get("backend") == "amplicol"]
-        self.assertEqual(sum(a.channels for a in out.artifacts()), len(entries))
-        for a, lib in zip(out.artifacts(), self.libs):
-            self.assertEqual((lib.name, lib.output, lib.channels), (a.name, out.path, a.channels))
-            self.assertEqual(lib.mad_artifact().name, a.name)
+        self.assertEqual(sum(a.channels for a in out.subprocesses()), len(entries))
+        self.assertEqual(out.names, sorted({os.path.basename(e["path"]) for e in entries}))   # the SubProcesses folders
+        for a, lib in zip(out.subprocesses(), self.libs):
+            self.assertEqual((lib.name, lib.output, lib.channels), (a.library_name, out.path, a.channels))
+            self.assertEqual(a.library_name, f"{a.name}_{a.provider}")
+            self.assertEqual((lib.subprocess.name, lib.subprocess.provider), (a.name, a.provider))
             self.assertTrue(a.stock_library_path.is_file())
             self.assertIn("aS", a.parameters)
             with open(lib.folder / "pacrunner-build.json") as f:
@@ -90,7 +92,7 @@ class Output(unittest.TestCase):
 
     def test_compile_is_the_stock_library(self):
         rng = np.random.default_rng(3)
-        for a, lib in zip(self.out.artifacts(), self.libs):
+        for a, lib in zip(self.out.subprocesses(), self.libs):
             momenta = np.stack([p for _, p in a.artifact.validation_points()])
             for c in range(a.channels):
                 flavours = rng.integers(0, a.flavours(c), len(momenta))
@@ -102,6 +104,24 @@ class Output(unittest.TestCase):
                                                    else getattr(s, name),
                                                    getattr(o, name).view(np.uint64) if name == "matrix_element"
                                                    else getattr(o, name)), f"{a.name} channel {c}: {name}")
+
+    def test_the_stock_provider(self):
+        for a, lib in zip(self.out.subprocesses(), self.libs):
+            sp = a.stock()
+            self.assertTrue(sp.stock and not lib.stock)
+            self.assertEqual((sp.name, sp.output, sp.subprocess, sp.channels), (a.library_name, self.out.path, a, a.channels))
+            for c in range(a.channels):
+                # MadGraph7's flavours, as its own integrand remaps them
+                self.assertEqual(sp.flavor_arguments(c)["flavor_remap"], [f["index"] for f in a.entries[c]["flavors"]])
+                mes, tables = sp.integrand_inputs(c)
+                self.assertEqual(len(mes), 1)
+
+    def test_run_the_stock_providers(self):
+        # the stock provider's run is the output's own: the stock cross section
+        r = self.out.subprocesses()[0].stock().run(log=tempfile.mktemp(suffix=".log"))
+        self.assertEqual(r.cross_section, self.stock_xs)
+        r = self.out.run(providers=[s.stock() for s in self.out.subprocesses()], log=tempfile.mktemp(suffix=".log"))
+        self.assertEqual(r.cross_section, self.stock_xs)
 
     def test_integrand_inputs(self):
         lib = self.libs[0]
@@ -138,6 +158,24 @@ class Output(unittest.TestCase):
         r = self.libs[-1].run(log=tempfile.mktemp(suffix=".log"))
         self.assertEqual(r.cross_section, self.stock_xs)
         self.check_events(r, lambda larger: larger)
+
+
+@unittest.skipUnless(OUTPUT, "PACRUNNER_TEST_MG7_MULTI not set")
+class OldNames(unittest.TestCase):
+    def test_the_0_1_names_still_work(self):
+        # aliases for one release
+        self.assertIs(pacrunner.MadOutput, pacrunner.Output)
+        self.assertIs(pacrunner.MadArtifact, pacrunner.SubProcess)
+        self.assertIs(pacrunner.PacArtifact, pacrunner.Artifact)
+        self.assertIs(pacrunner.PacLibrary, pacrunner.Provider)
+        self.assertIs(pacrunner.MadLibrary, pacrunner.Provider)
+        out = pacrunner.Output(OUTPUT)
+        s = out.subprocess(out.names[0])
+        # a stock library's name (subprocess_provider) still names a subprocess, as MadArtifact's did
+        self.assertEqual(out.artifact(s.library_name).name, s.name)
+        self.assertEqual([a.library_name for a in out.artifacts()], [a.library_name for a in out.subprocesses()])
+        self.assertEqual(s.library().folder, s.compiled().folder)
+        self.assertEqual(s.compiled().mad_artifact().name, s.name)
 
 
 if __name__ == "__main__":

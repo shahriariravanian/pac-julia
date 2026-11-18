@@ -1,12 +1,12 @@
-"""PacArtifact: a pyAmpliCol artifact folder (`pyamplicol generate`, or the one MadGraph7's [amplicol]
+"""Artifact: a pyAmpliCol artifact folder (`pyamplicol generate`, or the one MadGraph7's [amplicol]
 writes in an mg7 output).
 
-    a = PacArtifact("artifacts/zgg")
+    a = Artifact("artifacts/zgg")
     a.id, a.producer_version, a.processes, a.particle_count, a.masses, a.channels, a.flavours(0), a.parameters
     process, momenta = a.validation_points()[0]
     stock = a.runtime(channel=0)                                  # the stock UMAMI library (built once)
-    lib = a.compile(device="cpu")                                 # export + umami_libraries -> PacLibrary
-    stock(momenta[None], 0).matrix_element, lib.runtime(0)(momenta[None], 0).matrix_element
+    provider = a.compile(device="cpu")                            # export + umami_libraries -> Provider
+    stock(momenta[None], 0).matrix_element, provider.runtime(0)(momenta[None], 0).matrix_element
 
 The export and the stock library's build use the pyAmpliCol installation that produced the artifact
 (pacrunner._pyamplicol: found by its revision, or configure(pyamplicol=...)). An artifact may hold
@@ -41,7 +41,7 @@ def _git_revision(folder):
         return None
 
 
-class PacArtifact:
+class Artifact:
     """A pyAmpliCol artifact, one of its UMAMI providers.
 
     path             the artifact folder
@@ -68,7 +68,7 @@ class PacArtifact:
         if provider is None:
             if len(entries) != 1:
                 raise _env.PacRunnerError(f"{self.path}: {len(entries)} UMAMI providers {self.providers}: pick one, "
-                                          "PacArtifact(path, provider=...)")
+                                          "Artifact(path, provider=...)")
             provider = self.providers[0]
         if str(provider) not in entries:
             raise _env.PacRunnerError(f"{self.path}: no UMAMI provider {provider!r} (there are {self.providers})")
@@ -88,6 +88,7 @@ class PacArtifact:
         self.parameters = {k: float(v[0] if isinstance(v, list) else v) for k, v in _read(params)["parameters"].items()} \
             if params.is_file() else {}
         self._stock_apis = {}
+        self._stock_providers = {}   # parameters (JSON) -> the stock Provider
 
     @staticmethod
     def provider_metadata(path):
@@ -103,7 +104,7 @@ class PacArtifact:
 
     def __repr__(self):
         names = ", ".join(p.get("expression") or p["id"] for p in self.processes[:3])
-        return f"<PacArtifact {self.path} ({names}; provider {self.provider}, {self.color_accuracy}, {self.channels} channels)>"
+        return f"<Artifact {self.path} ({names}; provider {self.provider}, {self.color_accuracy}, {self.channels} channels)>"
 
     @property
     def producer_version(self):
@@ -170,20 +171,21 @@ class PacArtifact:
             raise _env.PacRunnerError(f"{self.path}: make built no {lib}")
         return lib
 
+    def stock(self, parameters=None):
+        """the stock provider (pyAmpliCol's library, built once) as a Provider (stock=True), the model at
+        `parameters` over the artifact's defaults"""
+        from ._libraries import Provider
+        key = json.dumps(parameters or {}, sort_keys=True)
+        if key not in self._stock_providers:
+            lib = self.build_stock_library()
+            self._stock_providers[key] = Provider._stock(lib, self.path, self.particle_count,
+                                                         [self.flavours(c) for c in range(self.channels)],
+                                                         parameters, name=f"{self.path.name}_{self.provider}")
+        return self._stock_providers[key]
+
     def runtime(self, channel=0, threads=None, parameters=None):
-        """the stock UMAMI library's matrix element of `channel`: a pacrunner.Runtime (on the CPU; the
-        model at `parameters` over the artifact's defaults). Builds the library once."""
-        from . import _runtime
-        if not 0 <= channel < self.channels:
-            raise IndexError(f"UMAMI channel {channel}: there are {self.channels}")
-        lib = self.build_stock_library()
-        context = _runtime.context("cpu", threads, _env.madgraph7_for(self.path))
-        key = (id(context), json.dumps(parameters or {}, sort_keys=True))
-        if key not in self._stock_apis:
-            self._stock_apis[key] = context.load_matrix_element(os.fspath(lib), os.fspath(self.path),
-                                                                dict(parameters or {}))
-        return _runtime.matrix_element_runtime(self._stock_apis[key], self.particle_count, channel, context, cuda=False,
-                                               description=f"stock {self.path.name} channel {channel}")
+        """the stock provider's `channel` as a pacrunner.Runtime (on the CPU): stock(parameters).runtime"""
+        return self.stock(parameters).runtime(channel, threads)
 
     # ---- the export and PacRunner's libraries
 
@@ -208,23 +210,27 @@ class PacArtifact:
 
     def compile(self, folder=None, device="cpu", precision="f64", parameters=None, interpreter=False, force=False):
         """PacRunner's UMAMI libraries of this provider: the export (export()), then umami_libraries
-        (Julia) into `folder` (default: default_folder()); returns the PacLibrary. Skipped when `folder`
+        (Julia) into `folder` (default: default_folder()); returns the Provider. Skipped when `folder`
         holds libraries of the same artifact, provider, parameters, device, precision and pac-julia
         revision (its pacrunner-build.json), unless `force`. device: "cpu", "cuda" (the GPU, a CPU
         provider), "cuda_provider" (MadSpace's GPU runtime); precision "f64" or "mixed" (the GPU)."""
         from . import lowlevel
-        from ._libraries import PacLibrary
+        from ._libraries import Provider
         folder = Path(folder) if folder is not None else self.default_folder(device, precision)
         stamp = {"artifact_id": self.id, "provider": self.provider, "device": device, "precision": precision,
                  "interpreter": bool(interpreter), "parameters": dict(sorted((parameters or {}).items())),
                  "pac_julia": _git_revision(_env.repository())}
         if not force and (folder / "umami_pac.json").is_file() and (folder / STAMP).is_file():
             if _read(folder / STAMP) == stamp and stamp["pac_julia"] is not None and not stamp["pac_julia"].endswith("+"):
-                return PacLibrary(folder)
+                return Provider(folder)
         folder.mkdir(parents=True, exist_ok=True)
         (folder / STAMP).unlink(missing_ok=True)
         export = self.export(folder / "export.json", parameters)
         lowlevel.umami_libraries(export, self.metadata_path, folder, device=device, precision=precision,
                                  interpreter=interpreter, quiet=True)
         (folder / STAMP).write_text(json.dumps(stamp, indent=1))
-        return PacLibrary(folder)
+        return Provider(folder)
+
+
+# the name before 0.2 (one release)
+PacArtifact = Artifact

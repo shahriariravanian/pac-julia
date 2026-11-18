@@ -52,6 +52,21 @@ class MadGraph7(unittest.TestCase):
             with self.assertRaises(pacrunner.PacRunnerError):
                 _env.madgraph7()
 
+    def test_installed_madspace_without_madgraph7(self):
+        # no MadGraph7 configured: the madspace installed in this python, or an error naming both ways
+        env = {k: v for k, v in os.environ.items() if k != "PACRUNNER_MADGRAPH7"}
+        installed = "from pacrunner import _env; print(_env.import_madspace().__file__)"
+        r = subprocess.run([sys.executable, "-c", installed], capture_output=True, text=True, env=env)
+        if "no MadSpace" not in r.stderr:   # this python has a madspace of its own
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("site-packages", r.stdout)
+        hidden = ("import sys; sys.path = [p for p in sys.path if 'site-packages' not in p]; "
+                  f"sys.path.insert(0, {os.fspath(_env.REPOSITORY)!r}); from pacrunner import _env\n"
+                  "try:\n    _env.import_madspace()\nexcept _env.PacRunnerError as e:\n    print('error:', e)")
+        r = subprocess.run([sys.executable, "-c", hidden], capture_output=True, text=True, env=env)
+        self.assertIn("error: no MadSpace", r.stdout, r.stderr)
+        self.assertIn("PACRUNNER_MADGRAPH7", r.stdout)
+
     def test_madspace_build_choice(self):
         mg7 = Path(tempfile.mkdtemp())
         (mg7 / "bin").mkdir()

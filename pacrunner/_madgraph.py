@@ -7,7 +7,7 @@ matrix element per library, MadSpace splitting each batch by flavour (every libr
 MadGraph7 does the rest as usual (phase space, PDFs, scales, cuts, the survey, unweighting, the
 event files), and `run` returns the cross section:
 
-    from pacrunner._madgraph import run              # MadLibrary.run and MadOutput.run wrap it
+    from pacrunner._madgraph import run              # Provider.run and Output.run wrap it
     result = run("OUTPUT/lib/pacrunner/A1_pp_jjj_p0", "OUTPUT/SubProcesses/A1_pp_jjj/lc")
     print(result["cross_section"], "+-", result["error"], "pb;", result["events"])
 
@@ -33,7 +33,7 @@ What it needs:
     the remapped flavour).
 
 The run is in this process (generate_events' main, with the subprocess class replaced), so call it
-once per process (MadLibrary.run runs it in a process of its own).
+once per process (Provider.run runs it in a process of its own).
 
 A channel whose flavours are on several libraries splits each batch by library, so its matrix
 elements draw the helicity choice's random numbers over their parts of the batch: the cross section
