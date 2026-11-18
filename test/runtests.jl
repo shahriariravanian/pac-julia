@@ -37,6 +37,7 @@ const CASES = CompileScript.cases()
 const CC = CompileScript.CC
 const HAVE_CC = Sys.which(CC) !== nothing
 const HAVE_MAKE = Sys.which("make") !== nothing
+const HAVE_CXX = Sys.which("c++") !== nothing
 const SJB2OBJ = let s = get(ENV, "SJB2OBJ", Sys.which("sjb2obj"))
     s === nothing || !isfile(s) ? nothing : s
 end
@@ -121,6 +122,54 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         @test kept > 0
         compressed = MIR([PacRunner.LoadArgs([PacRunner.Loc(PacRunner.LOC_STACK, 0)], true, false)], Float64[])
         @test_throws PacRunner.SsaError to_ssa(compressed)
+    end
+
+    @testset "direct cpp" begin
+        # pyAmpliCol's cpp backend leaves (data/cpp): read into a graph, evaluated as the C++ (built
+        # here without contraction) bit for bit
+        rng = Xoshiro(11)
+        dir = joinpath(@__DIR__, "data", "cpp")
+        for f in sort(filter(endswith(".direct.cpp"), readdir(dir; join = true)))
+            k = read_direct_cpp(f)
+            text = read(f, String)
+            @test startswith(basename(f), k.name) && k.output_planes == 2 * length(k.outputs)
+            @test k.instruction_count == count(l -> occursin(r"^\s+(output|temporary)\[\d+\] = ", l), split(text, '\n'))
+            @test count(n -> n.op in (:complex_plane, :real_plane), k.nodes) ==
+                  count("direct_complex_plane<Lane>(inputs", text) + count("direct_real_plane<Lane>(inputs", text)
+            # every operation reads earlier nodes only (a DAG in order), and each operation of the
+            # C++ is one node
+            @test all(eachindex(k.nodes)) do i
+                n = k.nodes[i]
+                n.op in (:complex_plane, :real_plane, :constant) || all(a -> 1 <= a < i, n.args)
+            end
+            for (op, name) in ((:add, "direct_add("), (:multiply, "direct_multiply("), (:real_reciprocal, "direct_real_reciprocal("),
+                               (:constant, "direct_constant<Lane>("))
+                body = text[findfirst("inline void evaluate_direct_bundle", text)[1]:end]
+                @test count(n -> n.op === op, k.nodes) == count(name, body)
+            end
+            planes = [randn(rng, 6) for _ in 1:k.input_planes]
+            got = evaluate_direct(k, planes)
+            @test all(o -> all(isfinite, o), got)
+            if HAVE_CXX
+                mktempdir() do tmp
+                    so = joinpath(tmp, "leaf.so")
+                    run(`c++ -O2 -std=c++17 -ffp-contract=off -shared -fPIC -o $so $f`)
+                    lib = direct_library_call(so, k, planes)
+                    @test all(j -> reinterpret(UInt64, lib[j]) == reinterpret(UInt64, got[j]), eachindex(lib))
+                end
+            end
+        end
+        # errors: not a DirectApplication, a register read before it is written, an unknown statement
+        mktempdir() do tmp
+            bad = joinpath(tmp, "bad.direct.cpp")
+            write(bad, "// something else\n")
+            @test_throws PacRunner.DirectCppError read_direct_cpp(bad)
+            src = read(first(filter(endswith(".direct.cpp"), readdir(dir; join = true))), String)
+            write(bad, replace(src, r"output\[(\d+)\] = " => s"output[\1] = temporary[23] + ", count = 1))
+            @test_throws PacRunner.DirectCppError read_direct_cpp(bad)
+            write(bad, replace(src, " = direct_add(" => " = direct_sub(", count = 1))   # a use, not the helper
+            @test_throws PacRunner.DirectCppError read_direct_cpp(bad)
+        end
     end
 
     @testset "complexify" begin

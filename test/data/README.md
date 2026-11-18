@@ -36,3 +36,12 @@ the three `main.json` files; their text is in `CONVENTIONS.md` at the root.
 
 symjit-utils' `sjb2ssa` (0.3.0) of the kernels above (`sjb2ssa -q KERNEL.plane.symjit -o ssa/NAME.ssa`):
 their lowered MIR in SSA form, for `read_sjb`'s `.ssa` support (the "sjb reader" tests).
+
+## `cpp/`
+
+Three leaves of pyAmpliCol's cpp backend (planc): `pyamplicol generate "g g > g g g" OUT --color-accuracy lc
+--execution-mode compiled --backend cpp` with pyAmpliCol 1.0.2 (b3132bc), from
+`OUT/processes/ggggg/helicity-sum/compiled/repackaged/`: a stage-1 leaf (propagators: reciprocals, √½),
+a stage-3 leaf (tensor currents) and an amplitude leaf. The "direct cpp" tests read them
+(`read_direct_cpp`) and evaluate them against the same C++ built with `c++ -O2 -ffp-contract=off`
+(pyAmpliCol itself builds with `-O3 -ffast-math`, which reassociates: the last bits differ).
