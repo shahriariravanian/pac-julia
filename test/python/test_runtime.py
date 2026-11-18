@@ -1,4 +1,4 @@
-"""pacrunner.PacLibrary / MadLibrary and their Runtime, against the stock pyAmpliCol library.
+"""pacrunner.Provider and its Runtime, against the stock pyAmpliCol library.
 
     PACRUNNER_MADGRAPH7=~/MadGraph7 PACRUNNER_TEST_MG7_OUTPUT=OUTPUT python -m unittest discover -s test/python
 
@@ -58,7 +58,7 @@ def stock_runtime(lib, channel, context):
 class Library(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.lib = pacrunner.MadLibrary(library_folder(OUTPUT))
+        cls.lib = pacrunner.Provider(library_folder(OUTPUT))
         with open(cls.lib.table["metadata"]) as f:
             meta = json.load(f)
         cls.masses = meta["provider"]["masses"]
@@ -119,7 +119,7 @@ CUDA_SCRIPT = r"""
 import json, sys, numpy as np
 sys.path.insert(0, sys.argv[2])
 import test_runtime as t, pacrunner
-lib = pacrunner.MadLibrary(t.library_folder(sys.argv[1], "pacrunner-cuda_provider"))
+lib = pacrunner.Provider(t.library_folder(sys.argv[1], "pacrunner-cuda_provider"))
 meta = json.load(open(lib.table["metadata"]))
 rng = np.random.default_rng(3)
 ok = True
@@ -142,7 +142,7 @@ print("CUDA", lib.precision, "ok" if ok else "DIFFERENT")
 class CudaLibrary(unittest.TestCase):
     def test_cuda_provider_runtime_is_the_stock_library(self):
         # a process of its own: MadSpace's CUDA build (configure(cuda=True)), CuPy
-        env = dict(os.environ, PACRUNNER_MADGRAPH7=os.environ.get("PACRUNNER_MADGRAPH7", ""))
+        env = dict(os.environ)
         r = subprocess.run([sys.executable, "-c", CUDA_SCRIPT, CUDA_OUTPUT, os.path.dirname(__file__)],
                            capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])

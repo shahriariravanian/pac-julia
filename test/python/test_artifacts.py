@@ -1,4 +1,4 @@
-"""pacrunner.PacArtifact: information, the producing pyAmpliCol, the stock runtime, export and compile.
+"""pacrunner.Artifact: information, the producing pyAmpliCol, the stock runtime, export and compile.
 
     PACRUNNER_MADGRAPH7=~/MadGraph7 PACRUNNER_TEST_ARTIFACT=ARTIFACT PACRUNNER_PYAMPLICOL=PYTHON \
         python -m unittest discover -s test/python
@@ -30,7 +30,7 @@ def same(a, b):
 
 
 def fake_artifact(revision="0" * 40, providers=("p0",)):
-    """an artifact folder with the files PacArtifact reads, none of pyAmpliCol's payloads"""
+    """an artifact folder with the files Artifact reads, none of pyAmpliCol's payloads"""
     d = Path(tempfile.mkdtemp()) / "fake"
     (d / "API" / "umami").mkdir(parents=True)
     (d / "artifact.json").write_text(json.dumps({"artifact_id": "f" * 64, "producer": {"version": "9.9", "git_revision": revision},
@@ -49,7 +49,7 @@ def fake_artifact(revision="0" * 40, providers=("p0",)):
 
 class Producer(unittest.TestCase):
     def test_an_unknown_revision_is_refused_with_the_way_out(self):
-        a = pacrunner.PacArtifact(fake_artifact())
+        a = pacrunner.Artifact(fake_artifact())
         with self.assertRaises(pacrunner.PacRunnerError) as e:
             a.pyamplicol()
         self.assertIn("no installation of that revision", str(e.exception))
@@ -58,8 +58,8 @@ class Producer(unittest.TestCase):
     def test_a_provider_must_be_picked(self):
         d = fake_artifact(providers=("p0", "p1"))
         with self.assertRaises(pacrunner.PacRunnerError):
-            pacrunner.PacArtifact(d)
-        a = pacrunner.PacArtifact(d, provider="p1")
+            pacrunner.Artifact(d)
+        a = pacrunner.Artifact(d, provider="p1")
         self.assertEqual((a.provider, a.providers), ("p1", ["p0", "p1"]))
 
     def test_a_configured_installation_must_exist(self):
@@ -79,7 +79,7 @@ class Artifact(unittest.TestCase):
         # a copy: the stock library and the libraries are built beside it
         cls.dir = Path(tempfile.mkdtemp())
         shutil.copytree(ARTIFACT, cls.dir / Path(ARTIFACT).name, symlinks=True)
-        cls.a = pacrunner.PacArtifact(cls.dir / Path(ARTIFACT).name)
+        cls.a = pacrunner.Artifact(cls.dir / Path(ARTIFACT).name)
 
     def test_information(self):
         a = self.a
@@ -107,6 +107,16 @@ class Artifact(unittest.TestCase):
                 for h in range(len(a.metadata["helicities"])):
                     self.assertTrue(same(stock(momenta, f, helicity=h).matrix_element,
                                          ours(momenta, f, helicity=h).matrix_element), f"helicity {h}")
+        # the stock provider is a Provider too: one library, called with each flavour
+        sp = a.stock()
+        self.assertTrue(sp.stock and not lib.stock)
+        self.assertEqual((sp.channels, sp.library_count, sp.device), (a.channels, 1, "cpu"))
+        self.assertEqual([sp.flavours(c) for c in range(a.channels)], [a.flavours(c) for c in range(a.channels)])
+        self.assertIsNone(sp.subprocess)
+        self.assertIs(a.stock(), sp)   # built and loaded once
+        for c in range(a.channels):
+            self.assertTrue(same(sp.runtime(c)(momenta, 0).matrix_element, a.runtime(c)(momenta, 0).matrix_element))
+            self.assertEqual(sp.flavor_arguments(c)["flavor_remap"], list(range(a.flavours(c))))
         # unchanged: the stamp skips the build; force rebuilds
         stamp = (self.dir / "libs" / "pacrunner-build.json").stat().st_mtime_ns
         a.compile(self.dir / "libs", device="cpu")

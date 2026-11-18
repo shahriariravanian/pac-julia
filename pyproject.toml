@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pacrunner"
-version = "0.1.0"
+version = "0.2.0"
 description = "pyAmpliCol's LC recurrence programs as UMAMI libraries for MadGraph7/MadSpace (CPU, CUDA), from Python"
 readme = "README.md"
 requires-python = ">=3.10"
