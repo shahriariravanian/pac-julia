@@ -39,16 +39,18 @@ const KERNEL_PRELUDE = """
 #pragma nv_diag_suppress 177  /* a helper a program's kernels do not use */
 #endif
 
-/* the symjit kernels' bit operations on doubles (kernel_c.jl) */
-PAC_FN static inline uint64_t sj_bits(double x) { uint64_t u; memcpy(&u, &x, sizeof u); return u; }
-PAC_FN static inline double sj_double(uint64_t u) { double x; memcpy(&x, &u, sizeof x); return x; }
-PAC_FN static inline double sj_mask(int b) { return sj_double(b ? ~(uint64_t)0 : 0); }
-PAC_FN static inline double sj_and(double a, double b) { return sj_double(sj_bits(a) & sj_bits(b)); }
-PAC_FN static inline double sj_andnot(double a, double b) { return sj_double(~sj_bits(a) & sj_bits(b)); }
-PAC_FN static inline double sj_or(double a, double b) { return sj_double(sj_bits(a) | sj_bits(b)); }
-PAC_FN static inline double sj_xor(double a, double b) { return sj_double(sj_bits(a) ^ sj_bits(b)); }
-PAC_FN static inline double sj_not(double a) { return sj_double(~sj_bits(a)); }
-PAC_FN static inline double sj_sign(double a) { return sj_double(sj_bits(a) & ((uint64_t)1 << 63)); }
+/* the symjit kernels' bit operations on doubles (kernel_c.jl); a program's kernels use some of
+   them, so each is marked unused (clang's -Wunused-function warns of an unused static inline) */
+#define SJ_FN PAC_FN static inline __attribute__((unused))
+SJ_FN uint64_t sj_bits(double x) { uint64_t u; memcpy(&u, &x, sizeof u); return u; }
+SJ_FN double sj_double(uint64_t u) { double x; memcpy(&x, &u, sizeof x); return x; }
+SJ_FN double sj_mask(int b) { return sj_double(b ? ~(uint64_t)0 : 0); }
+SJ_FN double sj_and(double a, double b) { return sj_double(sj_bits(a) & sj_bits(b)); }
+SJ_FN double sj_andnot(double a, double b) { return sj_double(~sj_bits(a) & sj_bits(b)); }
+SJ_FN double sj_or(double a, double b) { return sj_double(sj_bits(a) | sj_bits(b)); }
+SJ_FN double sj_xor(double a, double b) { return sj_double(sj_bits(a) ^ sj_bits(b)); }
+SJ_FN double sj_not(double a) { return sj_double(~sj_bits(a)); }
+SJ_FN double sj_sign(double a) { return sj_double(sj_bits(a) & ((uint64_t)1 << 63)); }
 """
 
 function reg_c(r::Reg)::String
