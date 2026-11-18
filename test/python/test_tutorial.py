@@ -2,8 +2,11 @@
 holding what the tutorial makes first: artifacts/zgg (tutorial/generate_zgg.sh) and processes/zgg
 (README: `generate u u~ > z g g [amplicol]`, `output mg7 processes/zgg`).
 
-    PACRUNNER_PYAMPLICOL=PYTHON PACRUNNER_MADGRAPH7=~/mg7 python -m unittest test.python.test_tutorial
+    PACRUNNER_TEST_TUTORIAL=1 PACRUNNER_PYAMPLICOL=PYTHON PACRUNNER_MADGRAPH7=~/mg7 \
+        python -m unittest discover -s test/python -p test_tutorial.py
 
+Optional: not part of the default suite; every test here skips unless PACRUNNER_TEST_TUTORIAL is
+set (~3 minutes: it generates the artifact and two or three MadGraph7 outputs).
 PACRUNNER_PYAMPLICOL: the python of a pyAmpliCol installation with its `pyamplicol` command beside it
 (generate_zgg.sh runs it); PACRUNNER_MADGRAPH7: MadGraph7 (bin/madgraph) for processes/zgg. Without
 them the tests skip. The GPU snippets need nvcc (and CuPy, or MadSpace's CUDA build, for
@@ -29,6 +32,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+OPTIONAL = unittest.skipUnless(os.environ.get("PACRUNNER_TEST_TUTORIAL"), "optional: PACRUNNER_TEST_TUTORIAL not set")
 TUTORIAL = ROOT / "tutorial"
 PYAMPLICOL = os.environ.get("PACRUNNER_PYAMPLICOL")
 MADGRAPH7 = os.environ.get("PACRUNNER_MADGRAPH7")
@@ -131,6 +135,7 @@ def stock_cross_section(output):
     return float(process["mean"]), float(process["error"])
 
 
+@OPTIONAL
 class Snippets(unittest.TestCase):
     def test_every_snippet_is_tested(self):
         found = sorted(p.name for p in TUTORIAL.glob("*.py"))
@@ -141,6 +146,7 @@ class Snippets(unittest.TestCase):
             self.assertIsNotNone(expected(snippet), f"{snippet}: no `# should print`")
 
 
+@OPTIONAL
 @unittest.skipUnless(PYAMPLICOL, "PACRUNNER_PYAMPLICOL not set")
 class ArtifactSnippets(unittest.TestCase):
     @classmethod
@@ -181,6 +187,7 @@ class ArtifactSnippets(unittest.TestCase):
         self.check("pac_cuda_provider.py")
 
 
+@OPTIONAL
 @unittest.skipUnless(MADGRAPH7, "PACRUNNER_MADGRAPH7 not set")
 class OutputSnippets(unittest.TestCase):
     @classmethod
