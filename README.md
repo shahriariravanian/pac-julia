@@ -6,7 +6,7 @@ mode processes to UMAMI-compatible libraries for both CPU and GPU.
 Unified  MAtrix  eleMent  Interface (UMAMI) is a standard interface to bridge various matrix elements 
 generators and [MadGraph](https://github.com/MadGraphTeam/MadGraph7) ecosystem. 
 
-# Installation
+## Installation
 
 1. Install [MadGraph7](https://github.com/MadGraphTeam/MadGraph7/).
 2. Install `MadGrapg7/madspace`. It should be available from Python: `import madspace as ms`.
@@ -17,7 +17,7 @@ generators and [MadGraph](https://github.com/MadGraphTeam/MadGraph7) ecosystem.
 7. Install PacRunner's Python API: `python -m pip install .`.
 8. Set `export NVCC=path/to/nvcc`.
   
-# Quick Start
+## Quick Start
 
 Before explaining how PacRunner works, let's run a simple example showcasing the interaction 
 between pyAmpliCol and MadGraph. 
@@ -106,140 +106,70 @@ print(rt_cuda_provider(batch, 0).matrix_element)    # should print [2.43239313e-
 
 Note that for `device=cuda_provider`, we need to pass the momenta wrapped in a CuPy array.
 
-## pyAmpliCol 1.0.x: RustiCol's recurrence export
+## MadMatrix
 
-pyAmpliCol 1.0.x writes an LC artifact's programs itself: `pyamplicol export-recurrence LC_DIR -o
-capture.json` (schema 2, on pyAmpliCol's branch `feature/rusticol-capture-mode` until it is merged;
-the format is its `docs/reference/recurrence-export.md`). `load_recurrence_export(path)` reads it
-straight into UIR (`Lowered`, one per program entry in the file's order), with no `Program` and no
-pac2json: RustiCol's storage layout is kept (`fixed_layout`), its instructions become rows one for
-one, union runs are concatenated (each run's body with its own sources, then its reduction), a
-process-group member or alias is its representative's rows with its own crossing, group factor and
-helicities, and the kernels (base64 in the file) are decoded into the scratch space and built as
-pac2json's are (`kernels = :c`, the default, `:sjb2obj`, `:auto`, `:none`). With `--reference-points FILE`
-the export holds RustiCol's values at those points; `recurrence_references(path)` reads them.
+The previous examples all used the pyAmpliCol directly to generate matrix elements. However, to find the cross-section, we need
+Madspace. We start with generating the process:
 
-On eight pyAmpliCol 1.0.2 artifacts (gg > 3g, 4g; pp > jjj with 574 group members; tt~ + 2g; u u~ >
-tt~ + 2g; u u~ > Z + 2g, 4g; Z + 3g all-flow-union), all 856 programs at 4 points each are RustiCol's
-values bit for bit (146,560 values), with the kernels from sjb2obj or as C, plain and after
-`optimize`; sampled programs of each are bit for bit in the straight-line C, the UIR interpreter
-and its GPU build (`test/test_recurrence_export.jl`, `test/test_recurrence_export_c.jl`).
-Not supported (an error): spin-2 sources, kernels that read or write amplitudes.
+```
+mg7> generate u u~ > z g g [amplicol]
+mg7> output mg7 processes/zgg 
+```
 
-## UMAMI libraries for MadSpace (MadGraph7)
+We can load the resulting folder using `pacrunner.Output`. Each `Output` has a set of sub-processes,
+which can be names using `names` or accessed using `subprocess(name)` or `subprocesses()`. Each
+subprocess is a pyAmpliCol artifact with additional metadata. Therefore, we can adopt the same code
+as above to generate matrix elements:
 
-`umami_libraries(export, metadata, dir)` writes one UMAMI library (CPU) per (process, colour flow,
-leg permutation) that an artifact's UMAMI provider uses (`metadata`: the artifact's
-`API/umami/metadata.json`; `export`: its recurrence export), each the program's compiled C plus
-`c/umami_pac.c`, a thin UMAMI layer: momenta gathered with the permutation, the program run, the
-helicity drawn from the random number or a fixed helicity read, the factor, the colour index, an
-optional alpha_s rescaling by the export's power. The flavours are MadSpace's to split:
-`dir/umami_pac.json` gives, per channel, each flavour's library, for an integrand with one
-differential cross section per library (`flavor_diff_xs_indices`, `flavor_remap = 0`).
+```python
+import numpy as np
+import pacrunner
 
-In Python, `pacrunner` (below) loads the libraries into MadSpace and hides their layout:
+out = pacrunner.Output("processes/zgg")
+a = out.subprocess("A1_uux_zgg")
+
+momenta = np.array([
+    [500., 0., 0., 500.],
+    [ 500., 0., 0., -500.],
+    [142.22002372, -53.10090083, 59.0409804, -74.87149502],
+    [380.350097, -268.20692462, 256.15852034, -84.34485361],
+    [477.42987928,  321.30782545, -315.19950074, 159.21634863]])
+
+batch = momenta[None, :, :]
+provider_cpu = a.compile(device="cpu") 
+rt_cpu = provider_cpu.runtime() # the stock Madspace runtime
+print(rt_cpu(batch, 0).matrix_element)    # should print [2.43239313e-05]
+```
+
+We can use Madspace to calculate a process cross-section:
 
 ```python
 import pacrunner
-provider = pacrunner.Provider("OUTPUT/lib/pacrunner/A1_pp_jjj_p0")   # an umami_libraries folder
-rt = provider.runtime(channel=0)                # all the channel's flavours, on the libraries' device
-out = rt(momenta, flavours, random_helicity=r)  # momenta[event, particle, (E, px, py, pz)]
-out.matrix_element, out.color_index, out.helicity_index
+
+out = pacrunner.Output("processes/zgg")
+a = out.subprocess("A1_uux_zgg")
+
+provider_cuda = a.compile(device="cuda") 
+print(provider_cuda.run().cross_section)    # should print 75.4519586763261
 ```
 
-A runtime is one MadSpace function that splits a batch of mixed flavours over the flavours' libraries
-(each with flavour 0) and merges the outputs back in the events' order, as MadSpace's `Integrand`
-does, so it runs where its context does (a CUDA context for `:cuda_provider` libraries: numpy is moved
-to the GPU with CuPy). `provider.matrix_elements(channel)` and `provider.flavor_arguments(channel)` are
-the pieces for an `Integrand` of your own; `provider.parameters` the exported model parameters.
-`test/python/test_runtime.py` checks it against the stock library.
+Note that passing `cuda` uses the hybrid mode with a CPU interface; therefore, it works with the 
+CPU-only build of Madspace. We can do an end-to-end GPU run by passing `device="cuda_provider"`, 
+assuming Madspace is built for CUDA.
 
-For a MadGraph7 output (`generate ... [amplicol]`, `output mg7 OUTPUT`), `Output` compiles its
-pyAmpliCol subprocesses at the param card's parameters and runs `generate_events` (event generation to
-the cross section) with their stock providers replaced by PacRunner's:
+## pyAmpliCol 1.0.x: RustiCol's recurrence export
 
-```python
-out = pacrunner.Output("OUTPUT")                 # out.names: the subprocesses, SubProcesses/<name>
-s = out.subprocess("A1_pp_zj")                   # a SubProcess
-stock = s.stock()                                # pyAmpliCol's provider (lib/libamplicol_A1_pp_zj_p0.so)
-provider = s.compile(device="cpu")               # PacRunner's, in OUTPUT/lib/pacrunner/A1_pp_zj_p0
-r = provider.run()                               # this subprocess on PacRunner, the others stock
-r = out.run(device="cpu")                        # all of them (compiled when needed)
-r.cross_section, r.error, r.events, r.run_dir
-```
-
-The names: an output holds processes (`generate`, `add process`), which MadGraph splits into
-subprocesses (`SubProcesses/<name>`), one pyAmpliCol artifact each; an artifact's provider (`p0`, ...)
-is one UMAMI matrix-element library (the stock `lib/libamplicol_<name>_<provider>.so`) with its
-channels, each a group of flavours. A `Provider` is either: pyAmpliCol's own (`stock()`, the stock
-library) or PacRunner's build (`compile()`, one library per (process, colour flow, permutation) it
-uses); both have `channels`, `flavours(c)`, `runtime(c)`, `integrand_inputs(c)` and, in an output,
-`run()` (the stock provider's: the output's own run); `s.runtime(c)` is `s.stock().runtime(c)`. The 0.1 names (`MadOutput`, `MadArtifact`, `PacArtifact`,
-`PacLibrary`, `MadLibrary`) remain as aliases for one release.
-
-A run is a process of its own (the output's python runs `python -m pacrunner._madgraph`;
-`in_process=True` runs it in this one, once per process) with the output's cards: `cuda_provider`
-libraries need `run.device = ["cuda"]` and MadSpace's CUDA build. The cross section and the weights are
-the stock run's bit for bit; in a channel whose flavours are on several libraries an event's sampled
-helicity (its LHE spins) may differ, drawn from the same distribution. `provider.integrand_inputs(c)`
-gives the matrix elements and flavour tables for a `madspace.Integrand` of your own.
-
-`test/umami_check.py` runs them in MadSpace against the stock pyAmpliCol library, flavour by flavour:
-on eight 1.0.2 artifacts (355 flavours; pp > jjj: 325 flavours on 53 libraries) the LC pass (ME,
-colour and helicity indices) and the fixed-helicity pass are bit for bit. A plain helicity sum (no
-index in or out, which MadGraph does not ask for) agrees to rounding: RustiCol sums over helicity
-orbits there.
-
-## Artifacts and installation (pyAmpliCol 0.2.x, pac2json)
-
-`load_artifact`, `load_programs` and `load_examples` take a pyAmpliCol LC artifact directory (its
-`artifact.json`) as they take a pac2json folder. The first time, the artifact is recorded by
-pac2json (`capture(artifact)`), into this package's scratch space (Scratch.jl), in a folder named by
-the artifact's `artifact_id`; afterwards that folder is used. `capture(artifact; parameters =
-"params.json")` records with other model parameters (a folder of its own).
-
-A program's `alpha_s` is `(value, power)`: its scales are at alpha_s = value, and |M|² ∝
-alpha_s^power. A capture that did not measure the power (pac-miner's pac2json evaluates nothing)
-has `power` null, read as `nothing`; `alpha_s_power(artifact)` measures it as pac2json did with
-RustiCol: the artifact captured again at twice its alpha_s, both programs run by the Julia runner at
-16 phase-space points, every ratio of totals 2^power to 1e-12 (else an error).
-`alpha_s_power(base, doubled)` does it for two folders, and `load_programs(artifact;
-measure_alpha_s = true)` fills the powers in.
-
-pac2json is built on first use, or by `PacRunner.install()`: pacuda (github.com/siravan/pacuda at
-a pinned commit) and its patched RustiCol (MadGraph7's `pyamplicol/` at the commit pacuda pins,
-with pacuda's patches; only RustiCol's Rust crate is compiled: no Python, no pyAmpliCol build, no
-Symbolica), into the scratch space; only the pac2json binary is kept. It needs git, tar, patch, a C
-compiler and Rust installed with rustup (pacuda names its toolchain; rustup fetches it). On Linux and
-macOS. A first install takes a few minutes (about 4 on 2 cores). Rustup's default install adds a
-"stable" toolchain beside the one pacuda pins (about 1 GB each); to have only the pinned one:
-
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-```
-
-The Julia runner calls each symjit kernel through a shared library, built on first use into the
-scratch space (`load_recurrence_export(path; kernels = ...)`, `load_programs`): `:c` (the default)
-from `kernel_c`'s C with `cc`; `:sjb2obj` with symjit-utils' `sjb2obj` (`SJB2OBJ`, or the PATH);
-`:auto`, `:sjb2obj` when it is found, else `:c`; or `:none` (no library: only programs without
-kernel rows run). Both give the same values bit
-for bit. The compiled runners need neither: their kernels are C in `runner.c`.
+pyAmpliCol 1.0.x writes an LC artifact's programs itself: `pyamplicol export-recurrence LC_DIR -o
+capture.json`; the format is its `docs/reference/recurrence-export.md`). 
 
 ## The compiled folder
-
-`compile(dir, p)` writes a folder that builds on its own:
 
 | File | What it is |
 | --- | --- |
 | `runner.c` | the program: `int run(double *out, double *p, const double *momenta)` for one point |
 | `runner.h` | its prototype and sizes: `RUNNER_LEGS`, `RUNNER_OUTPUTS`, `RUNNER_ARENA_SIZE` (the scratch `p`) |
 | `pacops.c`, `pacops.h` | the sources and instructions |
-| `testing.c` | with `examples`: the points of examples.json, each output against RustiCol's within 1e-14 of the total |
-| `Makefile` | `make` (`runner.o`, `pacops.o`, `testing`), `make test`, `make clean`; `CC`, `CFLAGS` may be set |
-
-```sh
-cd out && make test     # u_ubar_to_z_g_g flow:2,4,5,1: 8 points, 384 outputs; 0 beyond 1e-14 of the total ...
-```
+| `Makefile` | `make` (`runner.o`, `pacops.o`, `testing`), `make clean`; `CC`, `CFLAGS` may be set |
 
 With `interpreter = true`, `runner.c` holds the program as data (the encoded words, sources first, the
 edge table and the tables they index, as one `uir_program`) and includes `uirvm.c`, the UIR
@@ -254,66 +184,6 @@ The interpreter's `runner.c` also builds with nvcc: `make gpu` gives `runner_gpu
 one thread each, momenta and outputs point by point on the host. Every function of `pacops`, `uirvm`
 and the kernels is then a device function too (`PAC_FN`), and the tables are `__device__` data
 (`UIR_DATA`). The outputs are the CPU build's bit for bit (`--fmad=false`, as `-ffp-contract=off`).
-
-## Layout
-
-| Path | What it is |
-| --- | --- |
-| `src/PacRunner.jl` | the module |
-| `src/recurrence_export.jl` | `load_recurrence_export`, `recurrence_references`: RustiCol's recurrence export (pyAmpliCol 1.0.x, schema 2) as `Lowered` programs |
-| `src/umami.jl`, `c/umami_pac.c`, `c/umami.h` | `umami_libraries`: one UMAMI library per program, for MadSpace |
-| `src/types.jl` | the indices and the shared types (`Form`, `KernelLibrary`, `KernelInput`) |
-| `src/uir.jl`, `src/validate.jl` | UIR v0.8, the lowered form the back ends read (`Lowered`); the vertex, propagator and source tables and `validate` |
-| `src/passes.jl` | the optional passes over a `Lowered`: `sort_runs`, `fuse`, `reuse_planes` (the liveness layout), `optimize` (all three) |
-| `src/encode.jl` | `encode(l)`: the device form (one stream of 64-bit words, the SOURCE rows first, END last; the 32-bit edge table), and `decode` |
-| `src/evaluators/` | `wavefunctions.jl` and `operations.jl` (the sources and the instructions, RustiCol's arithmetic in the same order), `uireval.jl` (`evaluate(::Lowered)`) |
-| `src/compile.jl` | the C generator, from a `Lowered`; `ArenaIndex`, runner.c's arena |
-| `src/sjb.jl`, `src/complexify.jl` | the reader of saved symjit applications and symjit's Complexifier in Julia |
-| `src/kernel_c.jl`, `src/kernel_lib.jl` | `kernel_c(name, path)`: a kernel's MIR as one C function, the native code's operations (bit for bit sjb2obj's library); the Julia runner's kernel libraries |
-| `src/v1/` | the earlier path, pac2json's `main.json` (pyAmpliCol 0.2.x): `types.jl` (`Program`), `program.jl` (the loader), `arena.jl`, `operations.jl`, `progeval.jl` (`evaluate(::Program)`), `lower.jl` (`lower(p)`), `compile.jl` (`compile(dir, p::Program)`), `install.jl` (`install`, `capture`: pac2json, built with cargo), `alpha_s.jl` (`alpha_s_power`) |
-| `c/pacops.c`, `c/pacops.h` | the sources and instructions in C, copied next to each `runner.c` |
-| `src/compile_vm.jl`, `c/uirvm.c`, `c/uirvm.h` | `compile(dir, p; interpreter = true)`: the program as tables for the UIR interpreter, in portable C (one source for the CPU and the GPU) |
-| `CONVENTIONS.md` | the meaning of main.json's fields and instructions (pac2json's legend) |
-| `test/runtests.jl` | the short tests |
-| `test/test_*.jl` | the longer comparisons, one script each (usage at the top of each); `test_lower.jl` reads every lowered row back to its operation and runs `evaluate(::Lowered)` against `evaluate(::Program)`, plain and after each pass |
-| `test/bench_compile.jl` | timing of the compiled C (straight-line and interpreted) against the Julia runner |
-| `test/data/` | the test cases (`test/data/README.md`) |
-
-## Python: the `pacrunner` package
-
-`pacrunner` (in progress: phase 1 of `plans/pacrunner-python/DESIGN.md` in the development notes) is the
-Python interface. Install Julia (`julia` on the PATH, or `PACRUNNER_JULIA`), clone this repository and,
-in it:
-
-```sh
-python -m pip install -e .
-python -m unittest discover -s test/python      # PACRUNNER_MADGRAPH7=... for the MadSpace test
-```
-
-The first use starts Julia through juliacall; `pacrunner/juliapkg.json` puts PacRunner (this clone,
-developed in place) in juliacall's environment, so juliapkg installs its dependencies then (no Julia
-REPL needed). From an artifact to its libraries:
-
-```python
-import pacrunner
-a = pacrunner.Artifact("artifacts/zgg")          # pyamplicol generate ... --emit-api-bundle
-stock = a.stock()                                # the stock provider (built once): a Provider
-provider = a.compile(device="cpu")               # export-recurrence + umami_libraries -> Provider
-process, momenta = a.validation_points()[0]
-provider.runtime(0)(momenta[None], 0).matrix_element, stock.runtime(0)(momenta[None], 0).matrix_element
-```
-
-The export and the stock library use the pyAmpliCol that produced the artifact (its revision in
-`artifact.json`): MadGraph7's for an mg7 artifact, else `pacrunner.configure(pyamplicol=...)` or
-`PACRUNNER_PYAMPLICOL` (a python, or an install folder).
-The low-level layer, `pacrunner.lowlevel`, is PacRunner.jl's exported functions (but the deprecated v1
-path), with strings for the keywords Julia types as a Symbol:
-
-```python
-from pacrunner import lowlevel as pr
-programs = pr.load_recurrence_export("export.json")
-pr.umami_libraries("export.json", "metadata.json", "out", device="cuda", precision="mixed")
-```
 
 ## Tests
 
@@ -332,14 +202,6 @@ library. With nvcc and a GPU, the interpreter's GPU build against its CPU build.
 ```sh
 SJB2OBJ=/path/to/sjb2obj PACRUNNER_ARTIFACT=/path/to/lc julia --project -e 'using Pkg; Pkg.test()'
 ```
-
-The scripts compare with symjit and RustiCol directly, for example
-`julia --project test/test_compile.jl SJB2OBJ` (every program of every case, C against Julia and
-RustiCol), `julia --project test/test_kernel_c.jl SJB2OBJ` (each kernel's C against its sjb2obj
-library), `julia --project test/test_gpu.jl` (the GPU build against the CPU build, every program;
-with nvcc and a GPU, `Pkg.test()` runs it too), `julia --project test/test_sjb.jl SJBDUMP DIR` (the reader against symjit's own, with
-`test/sjbdump`) and `julia --project test/test_wavefunctions.jl` (against RustiCol's
-wavefunctions, built with rustc).
 
 The C must be built with `-ffp-contract=off` (nvcc: `--fmad=false`): the values are bit for bit only
 without contracted multiply-adds.
