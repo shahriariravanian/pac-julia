@@ -4,9 +4,10 @@ pyAmpliCol's leading-colour recurrence programs, compiled by PacRunner into UMAM
 for MadGraph7 and MadSpace. Two layers:
 
   - the high-level API: Artifact (a pyAmpliCol artifact), Output and SubProcess (a MadGraph7 output and
-    its pyAmpliCol subprocesses), Provider (PacRunner's build of an artifact's UMAMI provider; in an
-    output, Provider.run: generate_events on it) and Runtime, the one callable for any UMAMI matrix
-    element (one channel of a provider, stock or PacRunner's);
+    its pyAmpliCol subprocesses), Provider (an artifact's UMAMI provider: pyAmpliCol's stock library,
+    Artifact/SubProcess.stock(), or PacRunner's build, .compile(); in an output, Provider.run:
+    generate_events on it) and Runtime, the one callable for any UMAMI matrix element (one channel of
+    a provider);
   - the low-level API, pacrunner.lowlevel: PacRunner.jl's exported functions through juliacall.
 
 Setup: Julia installed (`julia` on the PATH, or PACRUNNER_JULIA), this repository cloned and installed
@@ -21,7 +22,8 @@ with `python -m pip install -e .`, a MadGraph7 checkout with MadSpace for runnin
 Nomenclature: an Output holds processes (`generate`, `add process`), split by MadGraph into
 subprocesses (SubProcesses/<name>), one pyAmpliCol artifact each; an artifact's provider (p0, ...) is
 one UMAMI matrix-element library with its channels (each a group of flavours); a Provider is
-PacRunner's build of it, one library per (process, colour flow, permutation) it uses. The 0.1 names
+pyAmpliCol's (stock) or PacRunner's build of it, the latter one library per (process, colour flow,
+permutation) it uses. The 0.1 names
 (MadOutput, MadArtifact, PacArtifact, PacLibrary, MadLibrary) remain as aliases for one release.
 """
 

@@ -105,6 +105,24 @@ class OutputRuns(unittest.TestCase):
                                                    getattr(o, name).view(np.uint64) if name == "matrix_element"
                                                    else getattr(o, name)), f"{a.name} channel {c}: {name}")
 
+    def test_the_stock_provider(self):
+        for a, lib in zip(self.out.subprocesses(), self.libs):
+            sp = a.stock()
+            self.assertTrue(sp.stock and not lib.stock)
+            self.assertEqual((sp.name, sp.output, sp.subprocess, sp.channels), (a.library_name, self.out.path, a, a.channels))
+            for c in range(a.channels):
+                # MadGraph7's flavours, as its own integrand remaps them
+                self.assertEqual(sp.flavor_arguments(c)["flavor_remap"], [f["index"] for f in a.entries[c]["flavors"]])
+                mes, tables = sp.integrand_inputs(c)
+                self.assertEqual(len(mes), 1)
+
+    def test_run_the_stock_providers(self):
+        # the stock provider's run is the output's own: the stock cross section
+        r = self.out.subprocesses()[0].stock().run(log=tempfile.mktemp(suffix=".log"))
+        self.assertEqual(r.cross_section, self.stock_xs)
+        r = self.out.run(providers=[s.stock() for s in self.out.subprocesses()], log=tempfile.mktemp(suffix=".log"))
+        self.assertEqual(r.cross_section, self.stock_xs)
+
     def test_integrand_inputs(self):
         lib = self.libs[0]
         mes, tables = lib.integrand_inputs(0)

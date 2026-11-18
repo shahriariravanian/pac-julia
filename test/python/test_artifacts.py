@@ -107,6 +107,16 @@ class Artifact(unittest.TestCase):
                 for h in range(len(a.metadata["helicities"])):
                     self.assertTrue(same(stock(momenta, f, helicity=h).matrix_element,
                                          ours(momenta, f, helicity=h).matrix_element), f"helicity {h}")
+        # the stock provider is a Provider too: one library, called with each flavour
+        sp = a.stock()
+        self.assertTrue(sp.stock and not lib.stock)
+        self.assertEqual((sp.channels, sp.library_count, sp.device), (a.channels, 1, "cpu"))
+        self.assertEqual([sp.flavours(c) for c in range(a.channels)], [a.flavours(c) for c in range(a.channels)])
+        self.assertIsNone(sp.subprocess)
+        self.assertIs(a.stock(), sp)   # built and loaded once
+        for c in range(a.channels):
+            self.assertTrue(same(sp.runtime(c)(momenta, 0).matrix_element, a.runtime(c)(momenta, 0).matrix_element))
+            self.assertEqual(sp.flavor_arguments(c)["flavor_remap"], list(range(a.flavours(c))))
         # unchanged: the stamp skips the build; force rebuilds
         stamp = (self.dir / "libs" / "pacrunner-build.json").stat().st_mtime_ns
         a.compile(self.dir / "libs", device="cpu")

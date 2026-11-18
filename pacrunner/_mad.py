@@ -235,24 +235,29 @@ class SubProcess:
         """the param card's values of the subprocess's model parameters (read each time: the card may change)"""
         return card_parameters(self.output.param_card, self.entries[0]["parameters"])
 
-    def runtime(self, channel=0, threads=None):
-        """the stock provider (lib/libamplicol_<library_name>.so) at the param card's parameters, as a
-        pacrunner.Runtime on the CPU. MadGraph7 builds the library at the output's first run
-        (bin/generate_events)."""
-        from . import _runtime
-        if not 0 <= channel < self.channels:
-            raise IndexError(f"UMAMI channel {channel}: there are {self.channels}")
+    def stock(self):
+        """the stock provider (lib/libamplicol_<library_name>.so, which MadGraph7 builds at the output's
+        first run) as a Provider (stock=True), at the param card's parameters, called with MadGraph7's
+        flavours (each channel's entry's flavour indices)"""
+        from ._libraries import Provider
         if not self.stock_library_path.is_file():
             raise _env.PacRunnerError(f"{self.stock_library_path}: not built yet; MadGraph7 builds it at the output's "
                                       "first run (bin/generate_events -f in the output)")
-        context = _runtime.context("cpu", threads, self.output.madgraph7)
-        key = (id(context), json.dumps(self.parameters, sort_keys=True))
-        apis = self.artifact._stock_apis
-        if key not in apis:
-            apis[key] = context.load_matrix_element(str(self.stock_library_path), str(self.artifact.path),
-                                                    self.parameters)
-        return _runtime.matrix_element_runtime(apis[key], self.particle_count, channel, context, cuda=False,
-                                               description=f"stock {self.library_name} channel {channel}")
+        params = self.parameters
+        key = json.dumps(params, sort_keys=True)
+        if getattr(self, "_stock_key", None) != key:
+            remap = [[f["index"] for f in e["flavors"]] for e in self.entries]
+            self._stock_provider = Provider._stock(self.stock_library_path, self.artifact.path, self.particle_count,
+                                                   [len(r) for r in remap], params, name=self.library_name,
+                                                   subprocess=self, remap=remap)
+            self._stock_key = key
+        return self._stock_provider
+
+    def runtime(self, channel=0, threads=None):
+        """the stock provider's `channel` as a pacrunner.Runtime (on the CPU): stock().runtime"""
+        if not 0 <= channel < self.channels:
+            raise IndexError(f"UMAMI channel {channel}: there are {self.channels}")
+        return self.stock().runtime(channel, threads)
 
     def provider_folder(self, device="cpu", precision="f64"):
         """where compile() puts the Provider: OUTPUT/lib/pacrunner[-device[-precision]]/<library_name>"""

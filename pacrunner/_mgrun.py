@@ -38,14 +38,19 @@ def output_python(output):
 
 
 def run_libraries(output, libraries, args=None, in_process=False, log=None, python=None):
-    """generate_events of `output` with `libraries` (Providers) in place of their stock libraries;
+    """generate_events of `output` with `libraries` (Providers) in place of their stock libraries (a
+    stock Provider: its subprocess stays stock; none of PacRunner's: the output's own run);
     `args` generate_events' arguments (default -f); `log` a file for the run's output (default: this
     process's stdout and stderr); `python` the interpreter (default: the output's). Returns a RunResult."""
     from . import _madgraph
     libraries = list(libraries)
     if not libraries:
         raise _env.PacRunnerError("no libraries to run")
-    pairs = [(os.fspath(lib.folder), os.fspath(lib.artifact)) for lib in libraries]
+    pairs = [(os.fspath(lib.folder), os.fspath(lib.artifact)) for lib in libraries if not lib.stock]
+    if not pairs:
+        if in_process:
+            raise _env.PacRunnerError("in_process: for PacRunner's providers only (the stock run is bin/generate_events)")
+        return run_stock(output, args=args, log=log, python=python)
     start = time.time()
     if in_process:
         r = _madgraph.run(pairs, args=args)
@@ -85,3 +90,39 @@ def run_libraries(output, libraries, args=None, in_process=False, log=None, pyth
                 r = json.load(f)
     return RunResult(float(r["cross_section"]), float(r["error"]), int(r["events"]), Path(r["run"]),
                      Path(r["output"]), time.time() - start)
+
+
+def run_stock(output, args=None, log=None, python=None):
+    """the output's own generate_events (every subprocess on its stock library), in a process of its own
+    (the output's python); a RunResult"""
+    from . import _madgraph
+    output = Path(output)
+    before = _madgraph.latest_run(os.fspath(output))
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", os.path.expanduser("~/.cache/xdg-runtime"))
+    os.makedirs(env["XDG_RUNTIME_DIR"], exist_ok=True)
+    start = time.time()
+    out = open(log, "w") if log is not None else None
+    try:
+        p = subprocess.Popen([python or output_python(output), "bin/generate_events", *(args or ["-f"])], env=env,
+                             cwd=os.fspath(output), stdout=out, stderr=subprocess.STDOUT if out else None)
+        try:
+            code = p.wait()
+        except KeyboardInterrupt:
+            p.send_signal(signal.SIGINT)
+            try:
+                p.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                p.kill()
+            raise
+    finally:
+        if out is not None:
+            out.close()
+    folder = _madgraph.latest_run(os.fspath(output))
+    if code != 0 or folder is None or folder == before or not (Path(folder) / "events.npy").exists():
+        where = f" (its output: {log})" if log is not None else ""
+        raise _env.PacRunnerError(f"{output}: generate_events failed, exit code {code}{where}")
+    with open(Path(folder) / "info.json") as f:
+        process = json.load(f)["process"]
+    return RunResult(float(process["mean"]), float(process["error"]), int(process["count_unweighted"]), Path(folder),
+                     output, time.time() - start)

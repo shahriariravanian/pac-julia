@@ -81,8 +81,9 @@ the cross section) with their stock providers replaced by PacRunner's:
 
 ```python
 out = pacrunner.Output("OUTPUT")                 # out.names: the subprocesses, SubProcesses/<name>
-s = out.subprocess("A1_pp_zj")                   # a SubProcess: s.runtime(c) is the stock provider
-provider = s.compile(device="cpu")               # a Provider in OUTPUT/lib/pacrunner/A1_pp_zj_p0
+s = out.subprocess("A1_pp_zj")                   # a SubProcess
+stock = s.stock()                                # pyAmpliCol's provider (lib/libamplicol_A1_pp_zj_p0.so)
+provider = s.compile(device="cpu")               # PacRunner's, in OUTPUT/lib/pacrunner/A1_pp_zj_p0
 r = provider.run()                               # this subprocess on PacRunner, the others stock
 r = out.run(device="cpu")                        # all of them (compiled when needed)
 r.cross_section, r.error, r.events, r.run_dir
@@ -91,8 +92,10 @@ r.cross_section, r.error, r.events, r.run_dir
 The names: an output holds processes (`generate`, `add process`), which MadGraph splits into
 subprocesses (`SubProcesses/<name>`), one pyAmpliCol artifact each; an artifact's provider (`p0`, ...)
 is one UMAMI matrix-element library (the stock `lib/libamplicol_<name>_<provider>.so`) with its
-channels, each a group of flavours; a `Provider` is PacRunner's build of it, one library per (process,
-colour flow, permutation) it uses. The 0.1 names (`MadOutput`, `MadArtifact`, `PacArtifact`,
+channels, each a group of flavours. A `Provider` is either: pyAmpliCol's own (`stock()`, the stock
+library) or PacRunner's build (`compile()`, one library per (process, colour flow, permutation) it
+uses); both have `channels`, `flavours(c)`, `runtime(c)`, `integrand_inputs(c)` and, in an output,
+`run()` (the stock provider's: the output's own run); `s.runtime(c)` is `s.stock().runtime(c)`. The 0.1 names (`MadOutput`, `MadArtifact`, `PacArtifact`,
 `PacLibrary`, `MadLibrary`) remain as aliases for one release.
 
 A run is a process of its own (the output's python runs `python -m pacrunner._madgraph`;
@@ -215,10 +218,10 @@ REPL needed). From an artifact to its libraries:
 ```python
 import pacrunner
 a = pacrunner.Artifact("artifacts/zgg")          # pyamplicol generate ... --emit-api-bundle
-stock = a.runtime(channel=0)                     # the stock provider (built once)
+stock = a.stock()                                # the stock provider (built once): a Provider
 provider = a.compile(device="cpu")               # export-recurrence + umami_libraries -> Provider
 process, momenta = a.validation_points()[0]
-provider.runtime(0)(momenta[None], 0).matrix_element
+provider.runtime(0)(momenta[None], 0).matrix_element, stock.runtime(0)(momenta[None], 0).matrix_element
 ```
 
 The export and the stock library use the pyAmpliCol that produced the artifact (its revision in

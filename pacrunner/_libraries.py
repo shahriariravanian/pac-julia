@@ -61,12 +61,15 @@ def _with_channel(ME, inputs):
 
 
 class Provider:
-    """PacRunner's build of one UMAMI provider (an umami_libraries folder).
+    """One UMAMI provider: PacRunner's build (an umami_libraries folder: Provider(folder)) or
+    pyAmpliCol's own, the stock library (stock: Artifact.stock(), SubProcess.stock()).
 
-    folder         the folder
+    stock          True for pyAmpliCol's stock library (one library for every channel and flavour,
+                   called with the flavour itself), False for PacRunner's build
+    folder         the folder (the stock library's folder)
     output         the MadGraph7 output it lies in (OUTPUT/lib/pacrunner[-device]/<name>), else None
     name           the folder's name (in an output: the stock library's, lib/libamplicol_<name>.so)
-    table          umami_pac.json, as read
+    table          umami_pac.json, as read (the stock library's: one library, every flavour on it)
     device         what they were built for: "cpu", "cuda", "cuda_provider", "metal"
     precision      "f64" or "mixed"
     particle_count the provider's particles
@@ -89,10 +92,38 @@ class Provider:
         self.parameters = exported_parameters(export, self.artifact) if export.is_file() else {}
         self.output = _env.mg7_output_of(self.artifact)
         self.name = self.folder.name
+        self.stock = False
+        self._load_with = ""          # load_matrix_element's second argument (PacRunner's libraries read no card)
+        self._remap = None            # a channel's flavour remap (None: every flavour to 0)
         self._apis = {}      # id(context) -> [MatrixElementApi]
         self._subprocess = None
 
+    @classmethod
+    def _stock(cls, library, artifact, particle_count, flavours, parameters=None, name=None, subprocess=None, remap=None):
+        """pyAmpliCol's stock library as a Provider: one library, every channel's flavours on it, each
+        called with its own flavour (remap: per channel, MadGraph7's flavour -> the provider's)"""
+        self = cls.__new__(cls)
+        library = Path(library)
+        self.table = {"device": "cpu", "precision": "f64", "particle_count": particle_count,
+                      "libraries": [{"path": library.name}],
+                      "channels": [{"libraries": [0], "flavor_libraries": [0] * n} for n in flavours]}
+        self.folder = library.parent
+        self.device, self.precision, self.particle_count = "cpu", "f64", int(particle_count)
+        self.channels, self.library_count = len(flavours), 1
+        self.artifact = Path(artifact)
+        self.parameters = dict(parameters or {})
+        self.output = _env.mg7_output_of(self.folder)
+        self.name = name or library.stem
+        self.stock = True
+        self._load_with = os.fspath(self.artifact)   # the stock library reads the artifact's model
+        self._remap = remap
+        self._apis = {}
+        self._subprocess = subprocess
+        return self
+
     def __repr__(self):
+        if self.stock:
+            return f"<{type(self).__name__} stock {self.folder / self.table['libraries'][0]['path']} ({self.channels} channels)>"
         return (f"<{type(self).__name__} {self.folder} ({self.device}, {self.precision}: {self.library_count} libraries, "
                 f"{self.channels} channels)>")
 
@@ -116,10 +147,13 @@ class Provider:
 
     def flavor_arguments(self, channel):
         """an Integrand's flavour arguments for `channel`'s matrix_elements: flavor_remap (every flavour
-        to 0: each library is one flavour) and flavor_diff_xs_indices (flavour f's library's position)"""
+        to 0: each of PacRunner's libraries is one flavour; the stock library: the flavour itself) and
+        flavor_diff_xs_indices (flavour f's library's position)"""
         ch = self._channel(channel)
         libs = ch["libraries"]
-        return {"flavor_remap": [0] * len(ch["flavor_libraries"]),
+        n = len(ch["flavor_libraries"])
+        remap = [0] * n if not self.stock else (self._remap[channel] if self._remap is not None else list(range(n)))
+        return {"flavor_remap": remap,
                 "flavor_diff_xs_indices": [libs.index(k) for k in ch["flavor_libraries"]]}
 
     # ---- MadSpace
@@ -134,12 +168,13 @@ class Provider:
         return _runtime.context(self.context_device, threads, _env.madgraph7_for(self.folder, required=False))
 
     def apis(self, context, parameters=None, param_card=""):
-        """every library loaded into `context` (once per context): [MatrixElementApi]. The libraries do
-        not read param_card; a parameter given must be the exported value (or the library refuses it)"""
+        """every library loaded into `context` (once per context): [MatrixElementApi]. PacRunner's
+        libraries do not read param_card, and a parameter given must be the exported value (or the
+        library refuses it); the stock library is loaded with its artifact and the provider's parameters"""
         key = id(context)
         if key not in self._apis:
-            self._apis[key] = [context.load_matrix_element(os.fspath(self.library_path(k)), param_card,
-                                                           dict(parameters or {}))
+            (with_, values) = (self._load_with, self.parameters) if self.stock else (param_card, parameters)
+            self._apis[key] = [context.load_matrix_element(os.fspath(self.library_path(k)), with_, dict(values or {}))
                                for k in range(self.library_count)]
         return self._apis[key]
 
@@ -172,7 +207,8 @@ class Provider:
         tables = self.flavor_arguments(channel)
         if len(mes) == 1:
             # one library: no split (its gathers and merges cost as much as a fast matrix element)
-            args[flavour] = fb.gather_int(args[flavour], ms.Value(tables["flavor_remap"]))   # every flavour: 0
+            if not self.stock:
+                args[flavour] = fb.gather_int(args[flavour], ms.Value(tables["flavor_remap"]))   # every flavour: 0
             for j, value in enumerate(mes[0].build_function(fb, args).values()):
                 fb.output(j, value)
             return fb.function()
@@ -196,7 +232,7 @@ class Provider:
         context = self.context(threads)
         return _runtime.Runtime(lambda inputs, outputs: self.function(channel, inputs, outputs, context),
                                 context, self.particle_count, self.context_device == "cuda",
-                                f"{self.folder.name} channel {channel}")
+                                f"{'stock ' if self.stock else ''}{self.name} channel {channel}")
 
 
     # ---- in a MadGraph7 output
@@ -218,7 +254,8 @@ class Provider:
         process); `args` generate_events' arguments (default -f); `log` a file for its output (default:
         this process's). The cards are the output's (Cards/run_card.toml: cuda_provider libraries need
         run.device = ["cuda"]). Returns a RunResult (cross_section, error, events, run_dir, output,
-        wall_seconds). A provider in a MadGraph7 output only."""
+        wall_seconds). A provider in a MadGraph7 output only; the stock provider's run is the output's
+        own (bin/generate_events, every subprocess stock)."""
         from . import _mgrun
         if self.output is None:
             raise _env.PacRunnerError(f"{self.folder}: its artifact {self.artifact} is not in a MadGraph7 output: "

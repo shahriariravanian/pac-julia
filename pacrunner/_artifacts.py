@@ -88,6 +88,7 @@ class Artifact:
         self.parameters = {k: float(v[0] if isinstance(v, list) else v) for k, v in _read(params)["parameters"].items()} \
             if params.is_file() else {}
         self._stock_apis = {}
+        self._stock_providers = {}   # parameters (JSON) -> the stock Provider
 
     @staticmethod
     def provider_metadata(path):
@@ -170,20 +171,21 @@ class Artifact:
             raise _env.PacRunnerError(f"{self.path}: make built no {lib}")
         return lib
 
+    def stock(self, parameters=None):
+        """the stock provider (pyAmpliCol's library, built once) as a Provider (stock=True), the model at
+        `parameters` over the artifact's defaults"""
+        from ._libraries import Provider
+        key = json.dumps(parameters or {}, sort_keys=True)
+        if key not in self._stock_providers:
+            lib = self.build_stock_library()
+            self._stock_providers[key] = Provider._stock(lib, self.path, self.particle_count,
+                                                         [self.flavours(c) for c in range(self.channels)],
+                                                         parameters, name=f"{self.path.name}_{self.provider}")
+        return self._stock_providers[key]
+
     def runtime(self, channel=0, threads=None, parameters=None):
-        """the stock UMAMI library's matrix element of `channel`: a pacrunner.Runtime (on the CPU; the
-        model at `parameters` over the artifact's defaults). Builds the library once."""
-        from . import _runtime
-        if not 0 <= channel < self.channels:
-            raise IndexError(f"UMAMI channel {channel}: there are {self.channels}")
-        lib = self.build_stock_library()
-        context = _runtime.context("cpu", threads, _env.madgraph7_for(self.path, required=False))
-        key = (id(context), json.dumps(parameters or {}, sort_keys=True))
-        if key not in self._stock_apis:
-            self._stock_apis[key] = context.load_matrix_element(os.fspath(lib), os.fspath(self.path),
-                                                                dict(parameters or {}))
-        return _runtime.matrix_element_runtime(self._stock_apis[key], self.particle_count, channel, context, cuda=False,
-                                               description=f"stock {self.path.name} channel {channel}")
+        """the stock provider's `channel` as a pacrunner.Runtime (on the CPU): stock(parameters).runtime"""
+        return self.stock(parameters).runtime(channel, threads)
 
     # ---- the export and PacRunner's libraries
 
