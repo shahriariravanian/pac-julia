@@ -1,12 +1,12 @@
-"""PacArtifact: a pyAmpliCol artifact folder (`pyamplicol generate`, or the one MadGraph7's [amplicol]
+"""Artifact: a pyAmpliCol artifact folder (`pyamplicol generate`, or the one MadGraph7's [amplicol]
 writes in an mg7 output).
 
-    a = PacArtifact("artifacts/zgg")
+    a = Artifact("artifacts/zgg")
     a.id, a.producer_version, a.processes, a.particle_count, a.masses, a.channels, a.flavours(0), a.parameters
     process, momenta = a.validation_points()[0]
     stock = a.runtime(channel=0)                                  # the stock UMAMI library (built once)
-    lib = a.compile(device="cpu")                                 # export + umami_libraries -> PacLibrary
-    stock(momenta[None], 0).matrix_element, lib.runtime(0)(momenta[None], 0).matrix_element
+    provider = a.compile(device="cpu")                            # export + umami_libraries -> Provider
+    stock(momenta[None], 0).matrix_element, provider.runtime(0)(momenta[None], 0).matrix_element
 
 The export and the stock library's build use the pyAmpliCol installation that produced the artifact
 (pacrunner._pyamplicol: found by its revision, or configure(pyamplicol=...)). An artifact may hold
@@ -41,7 +41,7 @@ def _git_revision(folder):
         return None
 
 
-class PacArtifact:
+class Artifact:
     """A pyAmpliCol artifact, one of its UMAMI providers.
 
     path             the artifact folder
@@ -68,7 +68,7 @@ class PacArtifact:
         if provider is None:
             if len(entries) != 1:
                 raise _env.PacRunnerError(f"{self.path}: {len(entries)} UMAMI providers {self.providers}: pick one, "
-                                          "PacArtifact(path, provider=...)")
+                                          "Artifact(path, provider=...)")
             provider = self.providers[0]
         if str(provider) not in entries:
             raise _env.PacRunnerError(f"{self.path}: no UMAMI provider {provider!r} (there are {self.providers})")
@@ -103,7 +103,7 @@ class PacArtifact:
 
     def __repr__(self):
         names = ", ".join(p.get("expression") or p["id"] for p in self.processes[:3])
-        return f"<PacArtifact {self.path} ({names}; provider {self.provider}, {self.color_accuracy}, {self.channels} channels)>"
+        return f"<Artifact {self.path} ({names}; provider {self.provider}, {self.color_accuracy}, {self.channels} channels)>"
 
     @property
     def producer_version(self):
@@ -208,23 +208,27 @@ class PacArtifact:
 
     def compile(self, folder=None, device="cpu", precision="f64", parameters=None, interpreter=False, force=False):
         """PacRunner's UMAMI libraries of this provider: the export (export()), then umami_libraries
-        (Julia) into `folder` (default: default_folder()); returns the PacLibrary. Skipped when `folder`
+        (Julia) into `folder` (default: default_folder()); returns the Provider. Skipped when `folder`
         holds libraries of the same artifact, provider, parameters, device, precision and pac-julia
         revision (its pacrunner-build.json), unless `force`. device: "cpu", "cuda" (the GPU, a CPU
         provider), "cuda_provider" (MadSpace's GPU runtime); precision "f64" or "mixed" (the GPU)."""
         from . import lowlevel
-        from ._libraries import PacLibrary
+        from ._libraries import Provider
         folder = Path(folder) if folder is not None else self.default_folder(device, precision)
         stamp = {"artifact_id": self.id, "provider": self.provider, "device": device, "precision": precision,
                  "interpreter": bool(interpreter), "parameters": dict(sorted((parameters or {}).items())),
                  "pac_julia": _git_revision(_env.repository())}
         if not force and (folder / "umami_pac.json").is_file() and (folder / STAMP).is_file():
             if _read(folder / STAMP) == stamp and stamp["pac_julia"] is not None and not stamp["pac_julia"].endswith("+"):
-                return PacLibrary(folder)
+                return Provider(folder)
         folder.mkdir(parents=True, exist_ok=True)
         (folder / STAMP).unlink(missing_ok=True)
         export = self.export(folder / "export.json", parameters)
         lowlevel.umami_libraries(export, self.metadata_path, folder, device=device, precision=precision,
                                  interpreter=interpreter, quiet=True)
         (folder / STAMP).write_text(json.dumps(stamp, indent=1))
-        return PacLibrary(folder)
+        return Provider(folder)
+
+
+# the name before 0.2 (one release)
+PacArtifact = Artifact

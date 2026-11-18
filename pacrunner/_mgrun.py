@@ -1,4 +1,4 @@
-"""MadLibrary.run and MadOutput.run: generate_events on PacRunner's libraries, by default in a process of
+"""Provider.run and Output.run: generate_events on PacRunner's libraries, by default in a process of
 its own (MadGraph7's run is global state, once per process): the output's python (bin/generate_events'
 shebang) runs `python -m pacrunner._madgraph` with this repository on its PYTHONPATH, the result back
 through a JSON file; Ctrl-C stops it. in_process=True runs pacrunner._madgraph.run here instead."""
@@ -38,7 +38,7 @@ def output_python(output):
 
 
 def run_libraries(output, libraries, args=None, in_process=False, log=None, python=None):
-    """generate_events of `output` with `libraries` (MadLibrary's) in place of their stock libraries;
+    """generate_events of `output` with `libraries` (Providers) in place of their stock libraries;
     `args` generate_events' arguments (default -f); `log` a file for the run's output (default: this
     process's stdout and stderr); `python` the interpreter (default: the output's). Returns a RunResult."""
     from . import _madgraph

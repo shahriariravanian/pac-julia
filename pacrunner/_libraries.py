@@ -1,10 +1,13 @@
-"""PacLibrary and MadLibrary: the UMAMI libraries PacRunner's umami_libraries wrote into a folder.
+"""Provider: PacRunner's build of a UMAMI provider, the folder PacRunner's umami_libraries writes.
 
-    lib = PacLibrary("zgg_libs")                    # a folder (or its umami_pac.json)
-    lib.device, lib.precision, lib.channels, lib.flavours(0), lib.library_count, lib.parameters
-    rt = lib.runtime(channel=0)                     # a pacrunner.Runtime over all the channel's flavours
+    provider = Provider("zgg_libs")                 # a folder (or its umami_pac.json)
+    provider.device, provider.precision, provider.channels, provider.flavours(0), provider.library_count
+    rt = provider.runtime(channel=0)                # a pacrunner.Runtime over all the channel's flavours
+    provider.subprocess, provider.run()             # a provider in a MadGraph7 output: its SubProcess, generate_events
 
-umami_libraries writes one library per program a provider uses, each for one flavour (always called
+A provider (pyAmpliCol's `p0`, ...) is one UMAMI matrix-element interface for its channels and flavours;
+pyAmpliCol's own build is the stock library, PacRunner's this folder. umami_libraries writes one library
+per (process, colour flow, permutation) a provider uses, each for one flavour (always called
 with flavour 0), and umami_pac.json: the libraries and, per UMAMI channel, the library of each of the
 provider's flavours. A runtime is one MadSpace function that looks up each event's library, splits the
 batch (batch_split_by_index), runs each library with flavour 0 and merges the outputs back
@@ -57,10 +60,12 @@ def _with_channel(ME, inputs):
     return inputs if ME.channel_in in inputs else inputs + [ME.channel_in]
 
 
-class PacLibrary:
-    """The UMAMI libraries of one provider (an umami_libraries folder).
+class Provider:
+    """PacRunner's build of one UMAMI provider (an umami_libraries folder).
 
     folder         the folder
+    output         the MadGraph7 output it lies in (OUTPUT/lib/pacrunner[-device]/<name>), else None
+    name           the folder's name (in an output: the stock library's, lib/libamplicol_<name>.so)
     table          umami_pac.json, as read
     device         what they were built for: "cpu", "cuda", "cuda_provider", "metal"
     precision      "f64" or "mixed"
@@ -82,7 +87,10 @@ class PacLibrary:
         self.artifact = metadata.parent.parent.parent
         export = Path(self.table["export"])
         self.parameters = exported_parameters(export, self.artifact) if export.is_file() else {}
+        self.output = _env.mg7_output_of(self.artifact)
+        self.name = self.folder.name
         self._apis = {}      # id(context) -> [MatrixElementApi]
+        self._subprocess = None
 
     def __repr__(self):
         return (f"<{type(self).__name__} {self.folder} ({self.device}, {self.precision}: {self.library_count} libraries, "
@@ -191,26 +199,17 @@ class PacLibrary:
                                 f"{self.folder.name} channel {channel}")
 
 
-class MadLibrary(PacLibrary):
-    """The UMAMI libraries of one subprocess of a MadGraph7 output (an umami_libraries folder in the
-    output, OUTPUT/lib/pacrunner[-device]/<name>): a PacLibrary that knows its output.
+    # ---- in a MadGraph7 output
 
-    output         the mg7 output
-    name           the subprocess's library name (lib/libamplicol_<name>.so is its stock library)"""
-
-    def __init__(self, folder):
-        super().__init__(folder)
-        output = _env.mg7_output_of(self.artifact)
-        if output is None:
-            raise _env.PacRunnerError(f"{self.folder}: its artifact {self.artifact} is not in an mg7 output "
-                                      "(a PacLibrary, not a MadLibrary)")
-        self.output = output
-        self.name = self.folder.name
-
-    def mad_artifact(self):
-        """the MadArtifact these libraries were compiled from"""
-        from ._mad import MadArtifact
-        return MadArtifact(self.output, self.name)
+    @property
+    def subprocess(self):
+        """the SubProcess it was compiled for (in a MadGraph7 output), else None"""
+        if self.output is None:
+            return None
+        if self._subprocess is None:
+            from ._mad import Output
+            self._subprocess = Output(self.output).subprocess(self.name)
+        return self._subprocess
 
     def run(self, args=None, in_process=False, log=None):
         """an end-to-end MadGraph7 run (generate_events: the survey, the events, the cross section) with
@@ -219,8 +218,11 @@ class MadLibrary(PacLibrary):
         process); `args` generate_events' arguments (default -f); `log` a file for its output (default:
         this process's). The cards are the output's (Cards/run_card.toml: cuda_provider libraries need
         run.device = ["cuda"]). Returns a RunResult (cross_section, error, events, run_dir, output,
-        wall_seconds)."""
+        wall_seconds). A provider in a MadGraph7 output only."""
         from . import _mgrun
+        if self.output is None:
+            raise _env.PacRunnerError(f"{self.folder}: its artifact {self.artifact} is not in a MadGraph7 output: "
+                                      "run() needs one (SubProcess.compile builds a provider there)")
         return _mgrun.run_libraries(self.output, [self], args=args, in_process=in_process, log=log)
 
     def integrand_inputs(self, channel, inputs=None, outputs=None, context=None, me_frame=(), incoming_count=2):
@@ -231,13 +233,17 @@ class MadLibrary(PacLibrary):
                                      incoming_count=incoming_count),
                 self.flavor_arguments(channel))
 
+    # the name before 0.2 (one release)
+    def mad_artifact(self):
+        return self.subprocess
+
 
 class _ContextLibraries:
     """load_libraries' result (the earlier utils/libraries.py API, for code written against it): a
-    PacLibrary loaded into the caller's context; runtime() a madspace.FunctionRuntime"""
+    Provider loaded into the caller's context; runtime() a madspace.FunctionRuntime"""
 
     def __init__(self, context, folder, parameters=None, param_card=""):
-        self.library = PacLibrary(folder)
+        self.library = Provider(folder)
         for name in ("table", "device", "particle_count", "channels", "artifact", "parameters"):
             setattr(self, name, getattr(self.library, name))
         self.context = context
@@ -271,5 +277,10 @@ class _ContextLibraries:
 def load_libraries(context, out, parameters=None, param_card=""):
     """the libraries of umami_libraries' output `out` loaded into `context` (a madspace.Context you
     made): the earlier utils/libraries.py API (runtime() a madspace.FunctionRuntime). New code:
-    PacLibrary(out).runtime(channel) (a pacrunner.Runtime, the context made for the libraries' device)."""
+    Provider(out).runtime(channel) (a pacrunner.Runtime, the context made for the libraries' device)."""
     return _ContextLibraries(context, out, parameters, param_card)
+
+
+# the names before 0.2 (one release)
+PacLibrary = Provider
+MadLibrary = Provider

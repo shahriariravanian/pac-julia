@@ -62,8 +62,8 @@ In Python, `pacrunner` (below) loads the libraries into MadSpace and hides their
 
 ```python
 import pacrunner
-lib = pacrunner.MadLibrary("OUTPUT/lib/pacrunner/A1_pp_jjj_p0")   # or PacLibrary(folder)
-rt = lib.runtime(channel=0)                     # all the channel's flavours, on the libraries' device
+provider = pacrunner.Provider("OUTPUT/lib/pacrunner/A1_pp_jjj_p0")   # an umami_libraries folder
+rt = provider.runtime(channel=0)                # all the channel's flavours, on the libraries' device
 out = rt(momenta, flavours, random_helicity=r)  # momenta[event, particle, (E, px, py, pz)]
 out.matrix_element, out.color_index, out.helicity_index
 ```
@@ -71,29 +71,36 @@ out.matrix_element, out.color_index, out.helicity_index
 A runtime is one MadSpace function that splits a batch of mixed flavours over the flavours' libraries
 (each with flavour 0) and merges the outputs back in the events' order, as MadSpace's `Integrand`
 does, so it runs where its context does (a CUDA context for `:cuda_provider` libraries: numpy is moved
-to the GPU with CuPy). `lib.matrix_elements(channel)` and `lib.flavor_arguments(channel)` are the
-pieces for an `Integrand` of your own; `lib.parameters` the exported model parameters.
+to the GPU with CuPy). `provider.matrix_elements(channel)` and `provider.flavor_arguments(channel)` are
+the pieces for an `Integrand` of your own; `provider.parameters` the exported model parameters.
 `test/python/test_runtime.py` checks it against the stock library.
 
-For a MadGraph7 output (`generate ... [amplicol]`, `output mg7 OUTPUT`), `MadOutput` compiles its
+For a MadGraph7 output (`generate ... [amplicol]`, `output mg7 OUTPUT`), `Output` compiles its
 pyAmpliCol subprocesses at the param card's parameters and runs `generate_events` (event generation to
-the cross section) with their stock libraries replaced by PacRunner's:
+the cross section) with their stock providers replaced by PacRunner's:
 
 ```python
-out = pacrunner.MadOutput("OUTPUT")              # out.names: one per stock library lib/libamplicol_<name>.so
-m = out.artifact("A1_pp_zj_p0")                  # a MadArtifact: m.runtime(c) is the stock library
-lib = m.compile(device="cpu")                    # MadLibrary in OUTPUT/lib/pacrunner/A1_pp_zj_p0
-r = lib.run()                                    # this subprocess on PacRunner, the others stock
+out = pacrunner.Output("OUTPUT")                 # out.names: the subprocesses, SubProcesses/<name>
+s = out.subprocess("A1_pp_zj")                   # a SubProcess: s.runtime(c) is the stock provider
+provider = s.compile(device="cpu")               # a Provider in OUTPUT/lib/pacrunner/A1_pp_zj_p0
+r = provider.run()                               # this subprocess on PacRunner, the others stock
 r = out.run(device="cpu")                        # all of them (compiled when needed)
 r.cross_section, r.error, r.events, r.run_dir
 ```
+
+The names: an output holds processes (`generate`, `add process`), which MadGraph splits into
+subprocesses (`SubProcesses/<name>`), one pyAmpliCol artifact each; an artifact's provider (`p0`, ...)
+is one UMAMI matrix-element library (the stock `lib/libamplicol_<name>_<provider>.so`) with its
+channels, each a group of flavours; a `Provider` is PacRunner's build of it, one library per (process,
+colour flow, permutation) it uses. The 0.1 names (`MadOutput`, `MadArtifact`, `PacArtifact`,
+`PacLibrary`, `MadLibrary`) remain as aliases for one release.
 
 A run is a process of its own (the output's python runs `python -m pacrunner._madgraph`;
 `in_process=True` runs it in this one, once per process) with the output's cards: `cuda_provider`
 libraries need `run.device = ["cuda"]` and MadSpace's CUDA build. The cross section and the weights are
 the stock run's bit for bit; in a channel whose flavours are on several libraries an event's sampled
-helicity (its LHE spins) may differ, drawn from the same distribution. `lib.integrand_inputs(c)` gives
-the matrix elements and flavour tables for a `madspace.Integrand` of your own.
+helicity (its LHE spins) may differ, drawn from the same distribution. `provider.integrand_inputs(c)`
+gives the matrix elements and flavour tables for a `madspace.Integrand` of your own.
 
 `test/umami_check.py` runs them in MadSpace against the stock pyAmpliCol library, flavour by flavour:
 on eight 1.0.2 artifacts (355 flavours; pp > jjj: 325 flavours on 53 libraries) the LC pass (ME,
@@ -207,11 +214,11 @@ REPL needed). From an artifact to its libraries:
 
 ```python
 import pacrunner
-a = pacrunner.PacArtifact("artifacts/zgg")       # pyamplicol generate ... --emit-api-bundle
-stock = a.runtime(channel=0)                     # the stock UMAMI library (built once)
-lib = a.compile(device="cpu")                    # export-recurrence + umami_libraries -> PacLibrary
+a = pacrunner.Artifact("artifacts/zgg")          # pyamplicol generate ... --emit-api-bundle
+stock = a.runtime(channel=0)                     # the stock provider (built once)
+provider = a.compile(device="cpu")               # export-recurrence + umami_libraries -> Provider
 process, momenta = a.validation_points()[0]
-lib.runtime(0)(momenta[None], 0).matrix_element
+provider.runtime(0)(momenta[None], 0).matrix_element
 ```
 
 The export and the stock library use the pyAmpliCol that produced the artifact (its revision in
