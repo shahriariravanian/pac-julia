@@ -52,7 +52,7 @@ g g > g g, LC, pyAmpliCol 1.0.2: `processes/gggg/execution.json` and the C++ of 
 from `pyamplicol generate "g g > g g" OUT --color-accuracy lc --execution-mode compiled --backend cpp`
 (the leaves `read_compiled` reads, at their paths; the JSON written compact), and
 `export_recurrence.json`, the `pyamplicol export-recurrence` of the same process generated in recurrence
-mode. The "compiled plan" tests (`compiled_plan`, test/compare_export.jl).
+mode, and `model/parameters.json`. The "compiled plan" tests (`compiled_plan`, test/compare_export.jl).
 
 ## `planc_uuddg/`
 

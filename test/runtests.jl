@@ -17,6 +17,7 @@
 # reference interpreter) are the test_*.jl scripts.
 using Test
 using Random
+using JSON
 using PacRunner
 using PacRunner: built, Kernel, ComplexBi, Uni, Bi, Fused, LoadMath, LoadConstMath, Call, LoadArgs, SaveArgs, mem_size
 
@@ -235,6 +236,42 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             (reports, differences) = CompareExport.compare(plan, joinpath(art, "export_recurrence.json"); kernels = ks)
             @test length(reports) == 4 && isempty(differences)
             @test [r.flow for r in reports] == ["flow:2,1,3,5,4", "flow:2,5,1,3,4", "flow:2,4,3,5,1", "flow:2,5,4,3,1"]
+        end
+
+        @testset "compiled plan as Lowered programs" begin
+            # compiled_export: the plan written as a recurrence export and loaded by
+            # load_recurrence_export; its |M|² per helicity, summed over the programs, is the real
+            # export's at random massless points (to rounding: another order of the operations)
+            rambo(rng, n, sqrts) = begin
+                q = [begin c = 2rand(rng) - 1; φ = 2π * rand(rng); e = -log(rand(rng) * rand(rng)); t = sqrt(1 - c^2)
+                         (e, e * t * cos(φ), e * t * sin(φ), e * c) end for _ in 1:n]
+                Q = ntuple(k -> sum(x[k] for x in q), 4); M = sqrt(Q[1]^2 - Q[2]^2 - Q[3]^2 - Q[4]^2)
+                β = (-Q[2] / M, -Q[3] / M, -Q[4] / M); γ = Q[1] / M; a = 1 / (1 + γ); x = sqrts / M
+                p = map(q) do v
+                    bq = β[1] * v[2] + β[2] * v[3] + β[3] * v[4]
+                    (x * (γ * v[1] + bq), (x * (v[k+1] + β[k] * v[1] + a * bq * β[k]) for k in 1:3)...)
+                end
+                vcat([(sqrts / 2, 0.0, 0.0, sqrts / 2), (sqrts / 2, 0.0, 0.0, -sqrts / 2)], p)
+            end
+            rng = Xoshiro(5)
+            for (case, nout) in (("planc_gggg", 2), ("planc_uuddg", 3))
+                art = joinpath(@__DIR__, "data", case)
+                ks = case == "planc_uuddg" ? model_kernels(joinpath(art, "model.pyamplicol-model")) : PacRunner.ModelKernel[]
+                plan = compiled_plan(read_compiled(art); kernels = ks)
+                mktempdir() do tmp
+                    path = joinpath(tmp, "compiled_export.json")
+                    write(path, JSON.json(compiled_export(plan; kernels = ks)))
+                    mine, theirs = load_recurrence_export(path), load_recurrence_export(joinpath(art, "export_recurrence.json"))
+                    for _ in 1:5
+                        mom = rambo(rng, nout, 1000.0)
+                        sumh(ps) = (acc = Dict{Vector{Int},Float64}(); for p in ps
+                            for (h, v) in zip(p.helicities, evaluate(p, LArena(p), mom)); acc[h] = get(acc, h, 0.0) + v; end end; acc)
+                        (a, b) = (sumh(mine), sumh(theirs))
+                        @test keys(a) == keys(b) || issubset(Set(h for (h, v) in a if v != 0), keys(b))
+                        @test maximum(abs(get(a, h, 0.0) - get(b, h, 0.0)) for h in union(keys(a), keys(b))) <= 1e-13 * sum(values(b))
+                    end
+                end
+            end
         end
     end
 

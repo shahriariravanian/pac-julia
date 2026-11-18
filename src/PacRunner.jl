@@ -49,6 +49,7 @@ include("kernel_c.jl")
 include("kernel_lib.jl")
 # RustiCol's recurrence export (pyAmpliCol 1.0.x)
 include("recurrence_export.jl")
+include("compiled_export.jl")
 # UMAMI libraries for MadSpace, one per program
 include("umami.jl")
 # v1: pac2json's main.json (pyAmpliCol 0.2.x)
@@ -73,6 +74,7 @@ export read_sjb, SavedApplication, MIR, complexify, to_ssa, listing, kernel_c
 export read_direct_cpp, DirectKernel, DirectNode, evaluate_direct, direct_library_call
 export read_compiled, compiled_plan, CompiledExecution, CompiledPlan, CompiledInteraction, CompiledClosure, CompiledCurrent, CompiledTerm
 export model_kernels, ModelKernel, run_model_kernel
+export compiled_export
 # v1: main.json, pac2json
 export Program, Arena, read_main, load_artifact, load_programs, load_examples, lower, install, capture, alpha_s_power
 

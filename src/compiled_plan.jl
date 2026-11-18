@@ -212,6 +212,11 @@ function read_compiled(artifact::AbstractString; process::Union{Nothing,Abstract
     out_at = Dict(r["output_index"] => (i, 0) for (i, r) in enumerate(roots))
     amplitude = [read_leaf(dir, leaf, bindings, value_count, component_current, mom_slot, out_at) for leaf in amp["leaves"]]
     parameters = Dict{String,Float64}()
+    # execution.json's (particle.<pdg>.mass/width, normalization.*), then model/parameters.json's
+    for mp in rs["model_parameters"]
+        parameters[String(mp["name"])] = Float64(mp["default"])
+    end
+    haskey(parameters, "normalization.alpha_s_me_check") && (parameters["alpha_s"] = parameters["normalization.alpha_s_me_check"])
     ppath = joinpath(artifact, "model", "parameters.json")
     if isfile(ppath)
         for (name, v) in JSON.parsefile(ppath)["parameters"]
