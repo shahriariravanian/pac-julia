@@ -31,3 +31,8 @@ All crossing signs here are +1 (permutations); a sign of −1 does not occur in 
 
 The `configs.conventions` and `configs.instructions` legends that pac2json writes are removed from
 the three `main.json` files; their text is in `CONVENTIONS.md` at the root.
+
+## `ssa/`
+
+symjit-utils' `sjb2ssa` (0.3.0) of the kernels above (`sjb2ssa -q KERNEL.plane.symjit -o ssa/NAME.ssa`):
+their lowered MIR in SSA form, for `read_sjb`'s `.ssa` support (the "sjb reader" tests).

@@ -6,6 +6,9 @@
 # The format (symjit rust/runnable.rs, model.rs, config.rs, builder.rs, serializer.rs, strings.rs;
 # all integers little-endian u64 unless noted):
 #   Application  magic, version (3 or 4), Program, mask (the kernels it was saved with), Mir, reals
+#   SSA          SSA_MAGIC, version (4), flags (bit 0: the MIR is lowered), Program, Mir, reals: the
+#                SSA form symjit-utils' `sjb2ssa` writes (`.ssa`; ssa.rs): an Application without
+#                a mask, its MIR with `Static` registers (σ<k>), symjit cannot load it
 #   Program      magic, Config, count_states, count_params, count_obs, count_diffs, count_loops, Builder
 #   Config       magic, opt | ty << 32, [version 4: stack_limit, num_args]
 #   Builder      magic, count_loops, stack slots, n, n f64 constants, n, n function names (strings)
@@ -167,9 +170,11 @@ struct SavedApplication
     stack_size::Int            # the stack slots of the model
     consts::Vector{Float64}    # the builder's constants (the MIR's, but for `stable_math` ones)
     functions::Vector{String}  # the function table (the math functions it calls), sorted
-    mask::Int                  # 1 scalar, 2 fast, 4 SIMD: the kernels it was saved with
+    mask::Int                  # 1 scalar, 2 fast, 4 SIMD: the kernels it was saved with (0: an .ssa)
     mir::MIR
     reals::Vector{Loc}         # the locations of a complex model that hold real numbers, sorted
+    ssa::Bool                  # an .ssa file (sjb2ssa): the MIR in SSA form, `Static` registers
+    lowered::Bool              # the MIR is a complex model's lowered to real operations
 end
 
 # the option bits of Config.opt (symjit config.rs)
@@ -197,6 +202,8 @@ const PROGRAM_MAGIC = 0xc2b244aefb8e4d5d
 const CONFIG_MAGIC = 0x802c3c77c7422e70
 const BUILDER_MAGIC = 0x12f21e25abe627bc
 const MIR_MAGIC = 0x876a9b6323b00c9e
+const SSA_MAGIC = 0x5353413274696a73  # symjit-utils' ssa.rs (an .ssa file: "sjit2ASS")
+const SSA_FLAG_LOWERED = 1
 
 struct SjbError <: Exception
     msg::String
@@ -327,15 +334,20 @@ function decode(code::Vector{UInt8})::Vector{Instruction}
     return out
 end
 
-# The application of a .sjb. With `lowered`, a complex model's MIR is lowered to real MIR (a real
+# The application of a .sjb, or of an .ssa (sjb2ssa's SSA form: read as written, `lowered` only
+# checks it; `app.ssa`, `app.lowered`). With `lowered`, a complex model's MIR is lowered to real MIR (a real
 # model's is as saved); `stable_math` (true or false) replaces the saved configuration's option
 # before it is lowered, as symjit-utils' `--set stable_math=...`. The lowered MIR has real registers
 # only, but for LoadComplex/SaveComplex (a pair of values at i, i + 1) and symjit's ComplexBi
 # instructions (+, -, ×, ÷ of register pairs).
 function read_sjb(io::IO; lowered::Bool = false, stable_math::Union{Bool,Nothing} = nothing)::SavedApplication
-    magic(io, APPLICATION_MAGIC, "Application")
+    m = u64(io)
+    ssa = m == SSA_MAGIC
+    ssa || m == APPLICATION_MAGIC || throw(SjbError("invalid magic number (Application): 0x$(string(m, base = 16))"))
     version = int(io)
-    version in (3, 4) || throw(SjbError("unsupported sjb version $version"))
+    version in (ssa ? (4,) : (3, 4)) || throw(SjbError("unsupported $(ssa ? "ssa" : "sjb") version $version"))
+    # an .ssa: its flags; its MIR is as sjb2ssa wrote it (lowered or not), never lowered here
+    ssa_lowered = ssa && (int(io) & SSA_FLAG_LOWERED != 0)
 
     magic(io, PROGRAM_MAGIC, "Program")
     config = read_config(io, version)
@@ -347,7 +359,7 @@ function read_sjb(io::IO; lowered::Bool = false, stable_math::Union{Bool,Nothing
     consts = f64s(io, int(io))
     functions = [read_string(() -> read(io, UInt8)) for _ in 1:int(io)]
 
-    mask = int(io)
+    mask = ssa ? 0 : int(io)
 
     magic(io, MIR_MAGIC, "Mir")
     code = read(io, int(io))
@@ -359,19 +371,28 @@ function read_sjb(io::IO; lowered::Bool = false, stable_math::Union{Bool,Nothing
         kind in (1, 2, 3) || throw(SjbError("invalid real location 0x$(string(b, base = 16))"))
         Loc((LOC_MEM, LOC_STACK, LOC_PARAM)[kind], Int(b & 0xffffffff))
     end
+    # a set: symjit writes it sorted, sjb2ssa in its HashSet's order
+    sort!(reals; by = l -> (Int(l.kind), l.index))
     Base.eof(io) || throw(SjbError("bytes after the application"))
 
     if stable_math !== nothing
         bit = CONFIG_OPTIONS.stable_math
         config = Config(stable_math ? config.opt | bit : config.opt & ~bit, config.ty, config.stack_limit, config.num_args)
     end
-    if lowered && is_complex(config)
+    if ssa
+        # the lowering cannot read Static registers: an .ssa's MIR is used as written
+        lowered && is_complex(config) && !ssa_lowered &&
+            throw(SjbError("an .ssa of a complex model written without lowering cannot be lowered here"))
+        stable_math === nothing || throw(SjbError("stable_math: an .ssa's MIR is lowered already (sjb2ssa --set)"))
+    elseif lowered && is_complex(config)
         mir = complexify(mir, reals; stable_math = config.opt & CONFIG_OPTIONS.stable_math != 0)
         # stable_math appends constants, which symjit copies to the program's
         length(mir.consts) > length(consts) && (consts = copy(mir.consts))
     end
+    is_lowered = ssa ? ssa_lowered : lowered && is_complex(config)
 
-    return SavedApplication(version, config, states, params, obs, diffs, loops, stack, consts, functions, mask, mir, reals)
+    return SavedApplication(version, config, states, params, obs, diffs, loops, stack, consts, functions, mask, mir, reals,
+                            ssa, is_lowered)
 end
 
 read_sjb(path::AbstractString; kw...) = open(io -> read_sjb(io; kw...), path)
@@ -435,7 +456,7 @@ end
 listing(mir::MIR) = listing(stdout, mir)
 
 function Base.show(io::IO, ::MIME"text/plain", a::SavedApplication)
-    println(io, "SavedApplication (sjb version $(a.version)), ", is_complex(a.config) ? "complex" : "real",
+    println(io, "SavedApplication ($(a.ssa ? "ssa" : "sjb") version $(a.version)$(a.lowered ? ", lowered" : "")), ", is_complex(a.config) ? "complex" : "real",
             ", opt level $(opt_level(a.config)): $(join(options(a.config), ", "))")
     println(io, "  states $(a.count_states), params $(a.count_params), observables $(a.count_obs), ",
             "derivatives $(a.count_diffs), loops $(a.count_loops), stack $(a.stack_size), memory $(mem_size(a))")

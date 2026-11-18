@@ -72,6 +72,29 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             a = read_sjb(joinpath(case, k.path))
             @test (a.count_states, a.count_obs) == (k.inputs, 2 * k.output_pairs)
             @test occursin("instructions", sprint(show, MIME"text/plain"(), a)) || !isempty(listing(a.mir))
+            @test !a.ssa && !a.lowered
+        end
+        # sjb2ssa's SSA form (data/ssa, from the kernels above): the lowered MIR with its general
+        # registers renamed, instruction for instruction pac-julia's lowering of the .sjb
+        for case in CASES, path in kernel_files(case)
+            ssa_path = joinpath(@__DIR__, "data", "ssa", replace(basename(path), ".plane.symjit" => ".ssa"))
+            isfile(ssa_path) || continue
+            l, s = read_sjb(path; lowered = true), read_sjb(ssa_path)
+            @test s.ssa && s.lowered && s.mask == 0 && l.lowered
+            @test (s.count_states, s.count_params, s.count_obs, s.stack_size, s.reals) ==
+                  (l.count_states, l.count_params, l.count_obs, l.stack_size, l.reals)
+            @test s.mir.consts == l.mir.consts
+            @test length(s.mir.code) == length(l.mir.code)
+            @test all(zip(s.mir.code, l.mir.code)) do (x, y)
+                typeof(x) == typeof(y) && all(fieldnames(typeof(x))) do f
+                    u, v = getfield(x, f), getfield(y, f)
+                    u isa PacRunner.Reg ? (u == v || u.kind == PacRunner.REG_STATIC && v.kind == PacRunner.REG_GEN) : u == v
+                end
+            end
+            regs = [getfield(i, f) for i in s.mir.code for f in fieldnames(typeof(i)) if getfield(i, f) isa PacRunner.Reg]
+            @test any(r -> r.kind == PacRunner.REG_STATIC, regs)
+            @test read_sjb(ssa_path; lowered = true).mir.code == s.mir.code   # read as written
+            @test_throws PacRunner.SjbError read_sjb(ssa_path; stable_math = true)
         end
     end
 
