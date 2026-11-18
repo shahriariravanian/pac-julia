@@ -38,6 +38,7 @@ const CC = CompileScript.CC
 const HAVE_CC = Sys.which(CC) !== nothing
 const HAVE_MAKE = Sys.which("make") !== nothing
 const HAVE_CXX = Sys.which("c++") !== nothing
+include("compare_export.jl")
 const SJB2OBJ = let s = get(ENV, "SJB2OBJ", Sys.which("sjb2obj"))
     s === nothing || !isfile(s) ? nothing : s
 end
@@ -170,6 +171,29 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
             write(bad, replace(src, " = direct_add(" => " = direct_sub(", count = 1))   # a use, not the helper
             @test_throws PacRunner.DirectCppError read_direct_cpp(bad)
         end
+    end
+
+    @testset "compiled plan" begin
+        # planc: g g > g g (data/planc_gggg: a cpp-backend compiled artifact's execution.json and its
+        # helicity-sum leaves, and the recurrence export of the same process): the interactions and
+        # coefficients read from the leaves are the export's, sector by sector (compare_export.jl)
+        art = joinpath(@__DIR__, "data", "planc_gggg")
+        ex = read_compiled(art)
+        plan = compiled_plan(ex)
+        @test length(ex.currents) == 33 && length(plan.interactions) ==
+              ex.raw["materialization_census"]["final"]["interaction_count"]
+        @test Set(i.kind for i in plan.interactions) == Set([:three_vector, :vector_wedge, :tensor_vector])
+        mags = Dict(:three_vector => sqrt(0.5), :vector_wedge => 1.0, :tensor_vector => 0.5)
+        @test all(i -> isapprox(abs(i.coefficient), mags[i.kind]; rtol = 1e-14), plan.interactions)
+        @test all(c -> isapprox(c.coefficient, 1; rtol = 1e-14), plan.closures)
+        reports = CompareExport.compare(plan, joinpath(art, "export_recurrence.json"))
+        @test [r.flow for r in reports] == ["flow:1,2,3,4", "flow:1,3,2,4"]
+        @test all(r -> (r.currents, r.interactions, r.propagators, r.closures) == (20, 22, 5, 3), reports)
+        # the same plan from other probes
+        @test [i.coefficient for i in compiled_plan(ex; rng = PacRunner.ProbeRng(99)).interactions] ≈
+              [i.coefficient for i in plan.interactions] rtol = 1e-13
+        @test_throws PacRunner.CompiledPlanError read_compiled(joinpath(@__DIR__, "data"))   # not an artifact
+        @test_throws PacRunner.CompiledPlanError read_compiled(art; process = "nope")
     end
 
     @testset "complexify" begin

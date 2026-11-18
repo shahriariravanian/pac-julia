@@ -45,3 +45,11 @@ Three leaves of pyAmpliCol's cpp backend (planc): `pyamplicol generate "g g > g 
 a stage-3 leaf (tensor currents) and an amplitude leaf. The "direct cpp" tests read them
 (`read_direct_cpp`) and evaluate them against the same C++ built with `c++ -O2 -ffp-contract=off`
 (pyAmpliCol itself builds with `-O3 -ffast-math`, which reassociates: the last bits differ).
+
+## `planc_gggg/`
+
+g g > g g, LC, pyAmpliCol 1.0.2: `processes/gggg/execution.json` and the C++ of its helicity-sum leaves
+from `pyamplicol generate "g g > g g" OUT --color-accuracy lc --execution-mode compiled --backend cpp`
+(the leaves `read_compiled` reads, at their paths; the JSON written compact), and
+`export_recurrence.json`, the `pyamplicol export-recurrence` of the same process generated in recurrence
+mode. The "compiled plan" tests (`compiled_plan`, test/compare_export.jl).
