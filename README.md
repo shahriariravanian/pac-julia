@@ -14,9 +14,9 @@ generators and [MadGraph](https://github.com/MadGraphTeam/MadGraph7) ecosystem.
 4. Install Julia using juliaup: `curl -fsSL https://install.julialang.org | sh`. 
 5. Clone PacRunner, aka `pac-julia`, as `git clone https://github.com/shahriariravanian/pac-julia`.
 6. `cd pac-julia`.
-7. Optional tests: `julia --project -e 'using Pkg; Pkg.test()'`.
+7. Optional tests: `julia --project -e 'using Pkg; Pkg.test()'` (takes a few minutes).
 8. Install PacRunner's Python API: `python -m pip install .`.
-9. Set `export NVCC=path/to/nvcc`.
+9. Set `export NVCC=path/to/nvcc` (optional, should be needed only if CUDA is installed in a non-standard location).
   
 ## Quick Start
 
@@ -76,7 +76,8 @@ following operations:
 
 We will discuss the files in the source folder below. For now, let's continue with generating CUDA providers. 
 PacRunner currently supports two types of GPU backend: `compile(device="cuda")` and `compile(device="cuda_provider")`
-(also called `device="cuda_full"`: everything on the GPU).
+(also called `device="cuda_full"`: everything on the GPU). 
+
 The first one is a hybrid provider, where the UMAMI library identies itself as a "CPU" provider but actually runs CUDA 
 kernels. The second one is a full CUDA provider that identifies itself as "CUDA". First, the `cuda` option:
 
@@ -106,7 +107,7 @@ rt_gpu = provider_gpu.runtime()             # a pacrunner.Runtime of its channel
 print(rt_gpu(batch, 0).matrix_element)      # should print [2.43239313e-05]
 ```
 
-Note that for `device="cuda_full"` (`"cuda_provider"`), we need to pass the momenta wrapped in a CuPy array.
+Note that for `device="cuda_full"`, we need to pass the momenta wrapped in a CuPy array.
 
 ## MadMatrix
 
