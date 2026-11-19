@@ -1,6 +1,7 @@
 """The tutorial's snippets (tutorial/*.py), run as they are written, each a script in a scratch folder
-holding what the tutorial makes first: artifacts/zgg (tutorial/generate_zgg.sh) and processes/zgg
-(README: `generate u u~ > z g g [amplicol]`, `output mg7 processes/zgg`).
+holding what the tutorial makes first: artifacts/zgg (tutorial/generate_zgg.sh) and processes/zgg,
+processes/zgg_gpu (README: `mkdir -p processes`, `generate u u~ > z g g [amplicol]`, `output mg7
+processes/zgg`, `output mg7 processes/zgg_gpu`).
 
     PACRUNNER_TEST_TUTORIAL=1 PACRUNNER_PYAMPLICOL=PYTHON PACRUNNER_MADGRAPH7=~/mg7 \
         python -m unittest discover -s test/python -p test_tutorial.py
@@ -17,9 +18,9 @@ A snippet's `# should print X` is its expected output (the last line it prints):
 matrix elements. A cross section depends on the run's seed (the default run card draws one), so
 the cross-section snippets run on an output with a fixed seed and must print the stock run's cross
 section of that output (device cuda: the GPU matrix elements, MadSpace on the CPU), or agree with
-it within the errors (cuda_provider: MadSpace on the GPU samples another phase space, and the run
-card needs run.device = ["cuda"] and color_accuracy = "lc", which the default card does not have: the
-reference is then the stock run of an LC output, not the default full-colour one)."""
+it within the errors (cuda_provider: MadSpace on the GPU samples another phase space, and the snippet
+sets processes/zgg_gpu's run.device = ["cuda"] and color_accuracy = "lc": the reference is the stock
+run of an LC output, not the default full-colour one)."""
 
 import json
 import math
@@ -114,25 +115,26 @@ def pyamplicol_command(folder):
     return command
 
 
-def make_output(folder, device="cpu", color_accuracy=None):
-    """processes/zgg in `folder`, as the README makes it, then the run card's seed fixed and its
-    device set (cuda: color_accuracy = "lc" too, which PacRunner on a CUDA device needs: the stock
-    full-colour ratio library is a CPU one); the output's path"""
-    (folder / "processes").mkdir(parents=True, exist_ok=True)   # MadGraph7 creates no parent folder
+def make_outputs(folder, color_accuracy=None):
+    """processes/zgg and processes/zgg_gpu in `folder`, as the README makes them (the GPU snippet sets
+    zgg_gpu's run.device and color_accuracy itself), then both run cards' seed fixed (and zgg's
+    color_accuracy set, for a reference run); the processes folder"""
+    processes = folder / "processes"
+    processes.mkdir(parents=True, exist_ok=True)   # MadGraph7 creates no parent folder (README)
     commands = folder / "mg7_commands.txt"
-    commands.write_text("generate u u~ > z g g [amplicol]\noutput mg7 processes/zgg\n")
+    commands.write_text("generate u u~ > z g g [amplicol]\noutput mg7 processes/zgg\noutput mg7 processes/zgg_gpu\n")
     r = subprocess.run([sys.executable, str(Path(MADGRAPH7) / "bin" / "madgraph"), str(commands)], cwd=folder,
                        env=environment(), capture_output=True, text=True, timeout=3600)
-    output = folder / "processes" / "zgg"
-    if r.returncode != 0 or not (output / "bin" / "generate_events").exists():
-        raise AssertionError(f"MadGraph7 made no processes/zgg (exit {r.returncode}):\n{r.stdout[-3000:]}")
-    card = output / "Cards" / "run_card.toml"
-    text = re.sub(r"(?m)^seed = .*$", f"seed = {SEED}", card.read_text())
-    text = re.sub(r'(?m)^device = .*$', f'device = ["{device}"]', text)
-    if device == "cuda" or color_accuracy is not None:
-        text = re.sub(r'(?m)^color_accuracy = .*$', f'color_accuracy = "{color_accuracy or "lc"}"', text)
-    card.write_text(text)
-    return output
+    for name in ("zgg", "zgg_gpu"):
+        output = processes / name
+        if r.returncode != 0 or not (output / "bin" / "generate_events").exists():
+            raise AssertionError(f"MadGraph7 made no processes/{name} (exit {r.returncode}):\n{r.stdout[-3000:]}")
+        card = output / "Cards" / "run_card.toml"
+        text = re.sub(r"(?m)^seed = .*$", f"seed = {SEED}", card.read_text())
+        if name == "zgg" and color_accuracy is not None:
+            text = re.sub(r'(?m)^color_accuracy = .*$', f'color_accuracy = "{color_accuracy}"', text)
+        card.write_text(text)
+    return processes
 
 
 def stock_cross_section(output):
@@ -205,8 +207,8 @@ class OutputSnippets(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.folder = Path(cls.tmp.name) / "cpu"
-        cls.output = make_output(cls.folder)
+        cls.folder = Path(cls.tmp.name) / "tutorial"
+        cls.output = make_outputs(cls.folder) / "zgg"
         cls.stock = None
 
     @classmethod
@@ -235,12 +237,10 @@ class OutputSnippets(unittest.TestCase):
         mg7 = Path(MADGRAPH7)
         if not (mg7 / "madspace" / "install-cuda" / "madspace").is_dir():
             self.skipTest(f"no CUDA build of MadSpace in {mg7 / 'madspace' / 'install-cuda'}")
-        # its own output: cuda_provider libraries need run.device = ["cuda"] and color_accuracy = "lc",
-        # so the reference is the stock run of an LC output (on the CPU: the stock library is a CPU one)
-        xs, error = stock_cross_section(make_output(Path(self.tmp.name) / "cpu_lc", color_accuracy="lc"))
-        folder = Path(self.tmp.name) / "cuda_provider"
-        make_output(folder, device="cuda")
-        got = float(run_snippet("cross_section_cuda_provider.py", folder))
+        # the snippet runs on processes/zgg_gpu, setting run.device = ["cuda"] and color_accuracy = "lc"
+        # itself; the reference is the stock run of an LC output (on the CPU: a CPU stock library)
+        xs, error = stock_cross_section(make_outputs(Path(self.tmp.name) / "reference", color_accuracy="lc") / "zgg")
+        got = float(run_snippet("cross_section_cuda_provider.py", self.folder))
         # MadSpace on the GPU samples another phase space: the stock LC cross section within the errors
         self.assertLess(abs(got - xs), 5 * math.hypot(error, error), f"{got} vs the stock LC {xs} +- {error}")
 
