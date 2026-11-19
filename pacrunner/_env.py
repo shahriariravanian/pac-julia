@@ -18,6 +18,14 @@ class PacRunnerError(RuntimeError):
 REPOSITORY = Path(__file__).resolve().parent.parent
 
 
+DEVICE_ALIASES = {"cuda_full": "cuda_provider"}   # cuda_full: everything on the GPU (MadSpace's GPU runtime)
+
+
+def device_name(device: str) -> str:
+    """a compile device's own name (an alias's target: cuda_full is cuda_provider)"""
+    return DEVICE_ALIASES.get(device, device)
+
+
 def repository() -> Path:
     if not (REPOSITORY / "Project.toml").is_file() or not (REPOSITORY / "src" / "PacRunner.jl").is_file():
         raise PacRunnerError(f"{REPOSITORY}: not the pac-julia repository (no Project.toml, src/PacRunner.jl): "

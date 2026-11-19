@@ -16,7 +16,7 @@ Run it with the pyAmpliCol environment's python (its bin/ holds `pyamplicol` and
 MadSpace on PYTHONPATH (e.g. MadGraph7/madspace/install) and Symbolica usable (pyAmpliCol generates
 with it; here XDG_RUNTIME_DIR=$HOME/.cache/xdg-runtime):
 
-  PYTHONPATH=~/mg7-pr452/madspace/install ~/pyamplicol-1.0/.venv/bin/python test/umami_example.py"""
+  PYTHONPATH=~/mg7/madspace/install ~/pyamplicol-1.0/.venv/bin/python test/umami_example.py"""
 
 import glob
 import json

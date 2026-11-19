@@ -252,17 +252,45 @@ def run(libraries, artifact=None, args=None):
     if len(devices) != 1:
         raise ValueError(f"libraries of several devices {sorted(devices)}: one run is one device")
     device = devices.pop()
+    _madspace(output, device == "cuda_provider", "cuda_provider libraries")
+    errors = []
+    install(pairs, errors)
+    return _launch(output, args, errors)
+
+
+def run_stock(output, args=None):
+    """The output's own run (every subprocess on its stock library), with MadSpace as run() chooses it:
+    the CUDA build (madspace/install-cuda) when the run card's run.device names cuda (MadGraph7 runs
+    a stock [amplicol] subprocess on the CPU only: on cuda it refuses with "[amplicol] processes are
+    only supported on CPUs"). Returns run()'s dictionary."""
+    output = os.path.abspath(output)
+    _madspace(output, "cuda" in run_card_devices(output), "a run on cuda (run.device)")
+    return _launch(output, args, [])
+
+
+def run_card_devices(output):
+    """the run card's run.device kinds (cpu, cuda, hip; without a device index)"""
+    import tomllib
+    with open(os.path.join(output, "Cards", "run_card.toml"), "rb") as f:
+        devices = tomllib.load(f).get("run", {}).get("device", ["cpu"])
+    return {d.split(":")[0] for d in ([devices] if isinstance(devices, str) else devices)}
+
+
+def _madspace(output, cuda, why):
+    """MadGraph7's MadSpace first on sys.path (the CUDA build when `cuda`)"""
     sys.path.append(mg5_dir(output))
     from madgraph.mg7 import bootstrap
     bootstrap.ensure_madspace(interactive=False)  # MadGraph7's madspace first on sys.path
-    if device == "cuda_provider":
+    if cuda:
         # MadSpace built with CUDA (ENABLE_CUDA) beside the CPU build: madspace/install-cuda
-        cuda = os.path.join(mg5_dir(output), "madspace", "install-cuda")
-        if not os.path.isdir(os.path.join(cuda, "madspace")):
-            raise RuntimeError(f"cuda_provider libraries need a CUDA build of MadSpace in {cuda}")
-        sys.path.insert(0, cuda)
-    errors = []
-    install(pairs, errors)
+        path = os.path.join(mg5_dir(output), "madspace", "install-cuda")
+        if not os.path.isdir(os.path.join(path, "madspace")):
+            raise RuntimeError(f"{why}: needs a CUDA build of MadSpace in {path}")
+        sys.path.insert(0, path)
+
+
+def _launch(output, args, errors):
+    """generate_events in this process; run()'s dictionary"""
     from madgraph.mg7.launch import main
     before = latest_run(output)
     cwd, argv = os.getcwd(), sys.argv
@@ -291,10 +319,22 @@ def _result_json(result):
 
 def main(argv):
     """python -m pacrunner._madgraph [--json FILE] LIBRARIES ARTIFACT [LIBRARIES ARTIFACT ...] [-- ARGS]
-    (without "--": LIBRARIES ARTIFACT [ARGS], the earlier form)"""
+    (without "--": LIBRARIES ARTIFACT [ARGS], the earlier form);
+    python -m pacrunner._madgraph [--json FILE] --stock OUTPUT [-- ARGS]: the output's own run"""
     json_path = None
     if argv[:1] == ["--json"]:
         json_path, argv = argv[1], argv[2:]
+    if argv[:1] == ["--stock"]:
+        try:
+            result = run_stock(argv[1], args=(argv[3:] if argv[2:3] == ["--"] else argv[2:]) or None)
+        except RuntimeError as e:
+            sys.exit(f"PacRunner: {e}")
+        if json_path:
+            with open(json_path, "w") as f:
+                json.dump(_result_json(result), f)
+        print(f"stock: cross section {result['cross_section']!r} +- {result['error']:.4g} pb, "
+              f"{result['events']} events in {result['run']}")
+        return
     if "--" in argv:
         k = argv.index("--")
         names, args = argv[:k], argv[k + 1:]

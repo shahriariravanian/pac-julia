@@ -55,74 +55,52 @@ def run_libraries(output, libraries, args=None, in_process=False, log=None, pyth
     if in_process:
         r = _madgraph.run(pairs, args=args)
     else:
-        with tempfile.TemporaryDirectory() as tmp:
-            result = Path(tmp) / "result.json"
-            command = [python or output_python(output), "-m", "pacrunner._madgraph", "--json", os.fspath(result)]
-            for lib, art in pairs:
-                command += [lib, art]
-            command += ["--", *(args or ["-f"])]
-            env = dict(os.environ)
-            env["PYTHONPATH"] = os.pathsep.join([os.fspath(_env.repository())] +
-                                                ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
-            env.setdefault("XDG_RUNTIME_DIR", os.path.expanduser("~/.cache/xdg-runtime"))
-            os.makedirs(env["XDG_RUNTIME_DIR"], exist_ok=True)
-            out = open(log, "w") if log is not None else None
-            try:
-                p = subprocess.Popen(command, env=env, cwd=os.fspath(output), stdout=out,
-                                     stderr=subprocess.STDOUT if out else None)
-                try:
-                    code = p.wait()
-                except KeyboardInterrupt:
-                    p.send_signal(signal.SIGINT)
-                    try:
-                        p.wait(timeout=30)
-                    except subprocess.TimeoutExpired:
-                        p.kill()
-                    raise
-            finally:
-                if out is not None:
-                    out.close()
-            if code != 0 or not result.is_file():
-                where = f" (its output: {log})" if log is not None else ""
-                raise _env.PacRunnerError(f"{output}: generate_events on PacRunner's libraries failed, exit code "
-                                          f"{code}{where}")
-            with open(result) as f:
-                r = json.load(f)
+        runner = [a for lib, art in pairs for a in (lib, art)]
+        r = _runner(output, runner, args, log, python, "generate_events on PacRunner's libraries")
     return RunResult(float(r["cross_section"]), float(r["error"]), int(r["events"]), Path(r["run"]),
                      Path(r["output"]), time.time() - start)
 
 
 def run_stock(output, args=None, log=None, python=None):
     """the output's own generate_events (every subprocess on its stock library), in a process of its own
-    (the output's python); a RunResult"""
-    from . import _madgraph
-    output = Path(output)
-    before = _madgraph.latest_run(os.fspath(output))
-    env = dict(os.environ)
-    env.setdefault("XDG_RUNTIME_DIR", os.path.expanduser("~/.cache/xdg-runtime"))
-    os.makedirs(env["XDG_RUNTIME_DIR"], exist_ok=True)
+    (the output's python), with MadSpace as PacRunner's runs choose it (the CUDA build for a run on
+    cuda); a RunResult"""
     start = time.time()
-    out = open(log, "w") if log is not None else None
-    try:
-        p = subprocess.Popen([python or output_python(output), "bin/generate_events", *(args or ["-f"])], env=env,
-                             cwd=os.fspath(output), stdout=out, stderr=subprocess.STDOUT if out else None)
+    r = _runner(output, ["--stock", os.fspath(Path(output).resolve())], args, log, python, "generate_events")
+    return RunResult(float(r["cross_section"]), float(r["error"]), int(r["events"]), Path(r["run"]),
+                     Path(r["output"]), time.time() - start)
+
+
+def _runner(output, runner_args, args, log, python, what):
+    """python -m pacrunner._madgraph --json RESULT RUNNER_ARGS -- ARGS in the output (its python); the
+    result's dictionary"""
+    with tempfile.TemporaryDirectory() as tmp:
+        result = Path(tmp) / "result.json"
+        command = [python or output_python(output), "-m", "pacrunner._madgraph", "--json", os.fspath(result),
+                   *runner_args, "--", *(args or ["-f"])]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join([os.fspath(_env.repository())] +
+                                            ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        env.setdefault("XDG_RUNTIME_DIR", os.path.expanduser("~/.cache/xdg-runtime"))
+        os.makedirs(env["XDG_RUNTIME_DIR"], exist_ok=True)
+        out = open(log, "w") if log is not None else None
         try:
-            code = p.wait()
-        except KeyboardInterrupt:
-            p.send_signal(signal.SIGINT)
+            p = subprocess.Popen(command, env=env, cwd=os.fspath(output), stdout=out,
+                                 stderr=subprocess.STDOUT if out else None)
             try:
-                p.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                p.kill()
-            raise
-    finally:
-        if out is not None:
-            out.close()
-    folder = _madgraph.latest_run(os.fspath(output))
-    if code != 0 or folder is None or folder == before or not (Path(folder) / "events.npy").exists():
-        where = f" (its output: {log})" if log is not None else ""
-        raise _env.PacRunnerError(f"{output}: generate_events failed, exit code {code}{where}")
-    with open(Path(folder) / "info.json") as f:
-        process = json.load(f)["process"]
-    return RunResult(float(process["mean"]), float(process["error"]), int(process["count_unweighted"]), Path(folder),
-                     output, time.time() - start)
+                code = p.wait()
+            except KeyboardInterrupt:
+                p.send_signal(signal.SIGINT)
+                try:
+                    p.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                raise
+        finally:
+            if out is not None:
+                out.close()
+        if code != 0 or not result.is_file():
+            where = f" (its output: {log})" if log is not None else ""
+            raise _env.PacRunnerError(f"{output}: {what} failed, exit code {code}{where}")
+        with open(result) as f:
+            return json.load(f)

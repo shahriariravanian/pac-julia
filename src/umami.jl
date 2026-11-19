@@ -97,6 +97,8 @@ function umami_program_h(lib::UmamiLibrary, l::Lowered, provider, exported_count
 end
 
 const UMAMI_DEVICES = (:cpu, :cuda, :cuda_provider)   # :cuda: on the GPU, a CPU provider; :cuda_provider: a CUDA one
+const UMAMI_DEVICE_ALIASES = Dict(:cuda_full => :cuda_provider)   # cuda_full: all on the GPU (MadSpace's GPU runtime)
+umami_device(device::Symbol)::Symbol = get(UMAMI_DEVICE_ALIASES, device, device)
 const UMAMI_PRECISIONS = (:f64, :mixed)   # device = :cuda: :mixed is pacops.h's PAC_MIXED
 
 find_nvcc() = (c = get(ENV, "NVCC", something(Sys.which("nvcc"), "/usr/local/cuda/bin/nvcc"));
@@ -105,15 +107,38 @@ find_nvcc() = (c = get(ENV, "NVCC", something(Sys.which("nvcc"), "/usr/local/cud
 const POOL_CU = joinpath(dirname(@__DIR__), "c", "pool.cu")
 const POOL_H = joinpath(dirname(@__DIR__), "c", "pool.h")
 
-# the CUDA runtime library's file next to nvcc (libcudart.so.N, its soname)
+# the CUDA toolkit's folder as nvcc itself reports it (its `TOP`): right also when `nvcc` is a
+# wrapper script (Ubuntu's /usr/bin/nvcc execs a toolkit's nvcc); nothing if nvcc cannot say
+function nvcc_toolkit(nvcc::String)
+    out = try
+        mktempdir() do dir
+            src = joinpath(dir, "t.cu")
+            write(src, "")
+            buf = IOBuffer()   # nvcc --dryrun prints its steps on stderr
+            run(pipeline(`$nvcc --dryrun -c $src -o $(joinpath(dir, "t.o"))`; stdout = buf, stderr = buf))
+            String(take!(buf))
+        end
+    catch
+        return nothing
+    end
+    m = match(r"^#\$ TOP=(.*)$"m, out)
+    m === nothing ? nothing : normpath(strip(m.captures[1]))
+end
+
+# the CUDA runtime library's file of nvcc's toolkit (libcudart.so.N, its soname): the toolkit nvcc
+# reports, else the folders next to nvcc
 function find_cudart(nvcc::String)::String
     bin = dirname(something(Sys.which(nvcc), nvcc))
-    for lib in (joinpath(bin, "..", "lib64"), joinpath(bin, "..", "targets", "x86_64-linux", "lib"))
+    tops = unique(filter(!isnothing, [nvcc_toolkit(nvcc), joinpath(bin, "..")]))
+    tried = String[]
+    for top in tops, lib in (joinpath(top, "lib64"), joinpath(top, "targets", "x86_64-linux", "lib"))
+        push!(tried, lib)
         isdir(lib) || continue
         names = filter(f -> occursin(r"^libcudart\.so\.\d+$", f), readdir(lib))
         isempty(names) || return realpath(joinpath(lib, first(names)))   # the file it links to
     end
-    error("no libcudart.so.N next to $nvcc")
+    error("no libcudart.so.N in the CUDA toolkit of $nvcc (looked in $(join(normpath.(tried), ", "))); " *
+          "set NVCC to the toolkit's nvcc, e.g. NVCC=/usr/local/cuda/bin/nvcc")
 end
 
 # the process-wide GPU pool (pool.cu) in `dir`: libpacpool.so, with a copy of the CUDA runtime
@@ -150,7 +175,8 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
                              gpu_memory::Real = GPU_MEMORY_DEFAULT, gpu_slots::Integer = 0,
                              precision::Symbol = :f64, fmad::Bool = precision == :mixed,
                              runtime_dir::String = dir)::String
-    device in UMAMI_DEVICES || error("device $device: one of $UMAMI_DEVICES")
+    device = umami_device(device)
+    device in UMAMI_DEVICES || error("device $device: one of $UMAMI_DEVICES (or $(join(keys(UMAMI_DEVICE_ALIASES), ", ")))")
     precision in UMAMI_PRECISIONS || error("precision $precision: one of $UMAMI_PRECISIONS")
     cuda = device in (:cuda, :cuda_provider)
     provider_build = device == :cuda_provider
@@ -259,7 +285,7 @@ bit for bit, or `:mixed`: the currents, their arithmetic and the vertex sums in 
 forms, propagator denominators, wavefunctions and amplitudes in f64, the kernels in f32 but the
 backward slices of their denominators (about 1e-7 relative on the matrix element, ~1e-5 at worst);
 `nvflags` adds nvcc flags (`-DPAC_ACC64`: the vertex sums in f64; `-DPAC_AMP32`: the amplitudes in
-f32); `fmad = false`: no contracted multiply-adds. `device = :cuda_provider`: the same GPU build,
+f32); `fmad = false`: no contracted multiply-adds. `device = :cuda_provider` (alias `:cuda_full`): the same GPU build,
 but each library identifies as a CUDA provider for MadSpace's GPU runtime: device pointers, the
 caller's stream (UMAMI_OUT_GPU_STREAM), nothing synchronized; `gpu_memory` is then the workspace
 budget of one launch (a larger call runs as several launches on the stream). The libraries are
@@ -272,6 +298,7 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
                          gpu_slots::Integer = 0, gpu_memory::Real = GPU_MEMORY_DEFAULT,
                          precision::Symbol = :f64, fmad::Bool = precision == :mixed, nvflags::Cmd = `-O3`,
                          quiet::Bool = false)::String
+    device = umami_device(device)
     precision in UMAMI_PRECISIONS || error("precision $precision: one of $UMAMI_PRECISIONS")
     precision == :f64 || device in (:cuda, :cuda_provider) || error("precision = $precision needs device = :cuda or :cuda_provider")
     d = read_export(export_path)
