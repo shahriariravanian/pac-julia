@@ -4,7 +4,11 @@
 
 PACRUNNER_TEST_MG7_MULTI: an mg7 output of two pyAmpliCol processes with color_accuracy = "lc" and
 run.device = ["cpu"], e.g. `generate p p > z j [amplicol]`, `add process p p > z j j [amplicol]`,
-`output mg7 OUTPUT`. The tests compile its libraries (lib/pacrunner/, ~20 s the first time) and add
+`output mg7 OUTPUT`, with fixed scales and the param card's aS the run's alpha_s (MadGraph7's
+test_mg7_amplicol card: tests/acceptance_tests/test_mg7_amplicol.py _edit_run_card, then aS =
+0.13000271085472234): the runs are compared with the stock run bit for bit, and with another alpha_s
+per event (a dynamic scale) PacRunner's (alpha_s / alpha_s0)^power scaling differs from the stock
+library by an ulp, which changes the unweighting. The tests compile its libraries (lib/pacrunner/, ~20 s the first time) and add
 runs to its Events/ (a stock one, then on PacRunner: each a few seconds for this process). The
 param-card reader's test needs nothing."""
 
@@ -174,6 +178,7 @@ class OldNames(unittest.TestCase):
         self.assertIs(pacrunner.MadLibrary, pacrunner.Provider)
         out = pacrunner.Output(OUTPUT)
         s = out.subprocess(out.names[0])
+        s.compile(device="cpu")   # its own build (OutputRuns, which also makes it, runs after this class)
         # a stock library's name (subprocess_provider) still names a subprocess, as MadArtifact's did
         self.assertEqual(out.artifact(s.library_name).name, s.name)
         self.assertEqual([a.library_name for a in out.artifacts()], [a.library_name for a in out.subprocesses()])

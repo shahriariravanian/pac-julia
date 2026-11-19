@@ -7,8 +7,9 @@ holding what the tutorial makes first: artifacts/zgg (tutorial/generate_zgg.sh) 
 
 Optional: not part of the default suite; every test here skips unless PACRUNNER_TEST_TUTORIAL is
 set (~3 minutes: it generates the artifact and two or three MadGraph7 outputs).
-PACRUNNER_PYAMPLICOL: the python of a pyAmpliCol installation with its `pyamplicol` command beside it
-(generate_zgg.sh runs it); PACRUNNER_MADGRAPH7: MadGraph7 (bin/madgraph) for processes/zgg. Without
+PACRUNNER_PYAMPLICOL: a pyAmpliCol installation, the python of a virtual environment with its
+`pyamplicol` command beside it, or an install folder (MadGraph7's pyamplicol/install); generate_zgg.sh
+runs its `pyamplicol`; PACRUNNER_MADGRAPH7: MadGraph7 (bin/madgraph) for processes/zgg. Without
 them the tests skip. The GPU snippets need nvcc (and CuPy, or MadSpace's CUDA build, for
 cuda_provider). Every snippet of tutorial/ must be one of SNIPPETS: a new one fails until it is.
 
@@ -94,13 +95,23 @@ def skip_device(test, device):
         test.skipTest(f"{device}: no nvcc")
 
 
-def pyamplicol_command():
-    """the `pyamplicol` command of PACRUNNER_PYAMPLICOL (beside its python)"""
+def pyamplicol_command(folder):
+    """a `pyamplicol` command of PACRUNNER_PYAMPLICOL: beside its python (a virtual environment), or
+    for an install folder (MadGraph7's pyamplicol/install, whose bin/pyamplicol needs the folder on
+    PYTHONPATH) a wrapper in `folder` running `python -m pyamplicol` with it"""
     if not PYAMPLICOL:
         return None
     path = Path(PYAMPLICOL)
-    command = (path.parent if path.is_file() else path / "bin") / "pyamplicol"
-    return command if command.exists() else None
+    if path.is_file():
+        command = path.parent / "pyamplicol"
+        return command if command.exists() else None
+    if not (path / "pyamplicol").is_dir():
+        return None
+    command = Path(folder) / "bin" / "pyamplicol"
+    command.parent.mkdir(parents=True, exist_ok=True)
+    command.write_text(f'#!/bin/sh\nPYTHONPATH="{path}${{PYTHONPATH:+:$PYTHONPATH}}" exec "{sys.executable}" -m pyamplicol "$@"\n')
+    command.chmod(0o755)
+    return command
 
 
 def make_output(folder, device="cpu", color_accuracy=None):
@@ -151,11 +162,12 @@ class Snippets(unittest.TestCase):
 class ArtifactSnippets(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        command = pyamplicol_command()
-        if command is None:
-            raise unittest.SkipTest(f"no pyamplicol command beside {PYAMPLICOL}")
         cls.tmp = tempfile.TemporaryDirectory()
         cls.folder = Path(cls.tmp.name)
+        command = pyamplicol_command(cls.folder / "tools")
+        if command is None:
+            cls.tmp.cleanup()
+            raise unittest.SkipTest(f"no pyamplicol command for {PYAMPLICOL}")
         env = environment()
         env["PATH"] = os.pathsep.join([str(command.parent), env.get("PATH", "")])
         r = subprocess.run(["sh", str(TUTORIAL / "generate_zgg.sh")], cwd=cls.folder, env=env,
