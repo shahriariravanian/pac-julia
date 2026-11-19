@@ -121,6 +121,10 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         end
     end
 
+    @testset "device aliases" begin
+        @test PacRunner.umami_device(:cuda_full) === :cuda_provider
+        @test all(d -> PacRunner.umami_device(d) === d, PacRunner.UMAMI_DEVICES)
+    end
     @testset "artifacts" begin
         # check_artifact: what pac2json records (a pyAmpliCol LC process or process-set artifact of
         # schema 3, with its UMAMI provider), and the artifact_id that names its capture

@@ -39,16 +39,18 @@ const KERNEL_PRELUDE = """
 #pragma nv_diag_suppress 177  /* a helper a program's kernels do not use */
 #endif
 
-/* the symjit kernels' bit operations on doubles (kernel_c.jl) */
-PAC_FN static inline uint64_t sj_bits(double x) { uint64_t u; memcpy(&u, &x, sizeof u); return u; }
-PAC_FN static inline double sj_double(uint64_t u) { double x; memcpy(&x, &u, sizeof x); return x; }
-PAC_FN static inline double sj_mask(int b) { return sj_double(b ? ~(uint64_t)0 : 0); }
-PAC_FN static inline double sj_and(double a, double b) { return sj_double(sj_bits(a) & sj_bits(b)); }
-PAC_FN static inline double sj_andnot(double a, double b) { return sj_double(~sj_bits(a) & sj_bits(b)); }
-PAC_FN static inline double sj_or(double a, double b) { return sj_double(sj_bits(a) | sj_bits(b)); }
-PAC_FN static inline double sj_xor(double a, double b) { return sj_double(sj_bits(a) ^ sj_bits(b)); }
-PAC_FN static inline double sj_not(double a) { return sj_double(~sj_bits(a)); }
-PAC_FN static inline double sj_sign(double a) { return sj_double(sj_bits(a) & ((uint64_t)1 << 63)); }
+/* the symjit kernels' bit operations on doubles (kernel_c.jl); a program's kernels use some of
+   them, so each is marked unused (clang's -Wunused-function warns of an unused static inline) */
+#define SJ_FN PAC_FN static inline __attribute__((unused))
+SJ_FN uint64_t sj_bits(double x) { uint64_t u; memcpy(&u, &x, sizeof u); return u; }
+SJ_FN double sj_double(uint64_t u) { double x; memcpy(&x, &u, sizeof x); return x; }
+SJ_FN double sj_mask(int b) { return sj_double(b ? ~(uint64_t)0 : 0); }
+SJ_FN double sj_and(double a, double b) { return sj_double(sj_bits(a) & sj_bits(b)); }
+SJ_FN double sj_andnot(double a, double b) { return sj_double(~sj_bits(a) & sj_bits(b)); }
+SJ_FN double sj_or(double a, double b) { return sj_double(sj_bits(a) | sj_bits(b)); }
+SJ_FN double sj_xor(double a, double b) { return sj_double(sj_bits(a) ^ sj_bits(b)); }
+SJ_FN double sj_not(double a) { return sj_double(~sj_bits(a)); }
+SJ_FN double sj_sign(double a) { return sj_double(sj_bits(a) & ((uint64_t)1 << 63)); }
 """
 
 function reg_c(r::Reg)::String
@@ -146,9 +148,12 @@ function emit_c!(g::KernelWriter, i::Bi)
 end
 
 emit_c!(g::KernelWriter, i::Fused) = line!(g, "$(used!(g, i.dst)) = $(FUSED_C[i.op](used!(g, i.a), used!(g, i.b), used!(g, i.c)));")
-emit_c!(g::KernelWriter, i::Mov) = line!(g, "$(used!(g, i.dst)) = $(used!(g, i.s1));")
-emit_c!(g::KernelWriter, i::Load) = line!(g, "$(used!(g, i.dst)) = $(at!(g, i.loc));")
-emit_c!(g::KernelWriter, i::Save) = line!(g, "$(at!(g, i.loc)) = $(used!(g, i.src));")
+# `lhs = rhs;`, but none when they are the same name (a stack slot kept in its local: clang's
+# -Wself-assign); both sides are evaluated first, which records what is used
+assign!(g::KernelWriter, lhs::AbstractString, rhs::AbstractString) = lhs == rhs || line!(g, "$lhs = $rhs;")
+emit_c!(g::KernelWriter, i::Mov) = (lhs = used!(g, i.dst); assign!(g, lhs, used!(g, i.s1)))
+emit_c!(g::KernelWriter, i::Load) = (lhs = used!(g, i.dst); assign!(g, lhs, at!(g, i.loc)))
+emit_c!(g::KernelWriter, i::Save) = (lhs = at!(g, i.loc); assign!(g, lhs, used!(g, i.src)))
 emit_c!(g::KernelWriter, i::LoadConst) = line!(g, "$(used!(g, i.dst)) = $(const_c(g.mir.consts[i.idx+1]));")
 emit_c!(g::KernelWriter, i::LoadComplex) = line!(g, "$(used!(g, i.xd)) = $(at!(g, i.loc)); $(used!(g, i.yd)) = $(at!(g, i.loc, 1));")
 emit_c!(g::KernelWriter, i::SaveComplex) = line!(g, "$(at!(g, i.loc)) = $(used!(g, i.xs)); $(at!(g, i.loc, 1)) = $(used!(g, i.ys));")

@@ -1,0 +1,22 @@
+# pacrunner: the Python interface to pac-julia (PacRunner.jl), installed from a clone of this
+# repository with `python -m pip install -e .` (editable only: the package finds the Julia project,
+# this folder, beside it). Julia must be installed (`julia` on the PATH, or PACRUNNER_JULIA); MadSpace
+# and pyAmpliCol come from a MadGraph7 checkout (pacrunner.configure), not from PyPI.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pacrunner"
+version = "0.3.0"
+description = "pyAmpliCol's LC recurrence programs as UMAMI libraries for MadGraph7/MadSpace (CPU, CUDA), from Python"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy", "juliacall>=0.9.20"]
+
+[project.optional-dependencies]
+cuda = ["cupy-cuda13x"]
+
+[tool.setuptools]
+# only the Python package: the repository root also holds the Julia sources (src/), C (c/), tests
+packages = ["pacrunner"]
