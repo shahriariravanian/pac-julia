@@ -41,11 +41,11 @@ and runs the stock matrix-element generator:
 ```python
 import pacrunner
 
-a = pacrunner.Artifact("artifacts/zgg/")   # a is a pyAmpliCol Artifact
-process, momenta = a.validation_points()[0] 
-batch = momenta[None, :, :]
-provider_stock = a.stock()  # the stock provider, i.e., `libumami.so` 
-rt_stock = provider_stock.runtime() # the stock Madspace runtime
+a = pacrunner.Artifact("artifacts/zgg/")    # a pyAmpliCol artifact
+process, momenta = a.validation_points()[0]
+batch = momenta[None, :, :]                 # a batch of one event
+provider_stock = a.stock()                  # pyAmpliCol's own provider (libumami.so beside the artifact)
+rt_stock = provider_stock.runtime()         # a pacrunner.Runtime of its channel 0
 print(rt_stock(batch, 0).matrix_element)    # should print [2.43239313e-05]
 ```
 
@@ -57,12 +57,12 @@ example shows how to generate a CPU provider using PacRunner:
 ```python
 import pacrunner
 
-a = pacrunner.Artifact("artifacts/zgg/")   # a is a pyAmpliCol Artifact
-process, momenta = a.validation_points()[0] 
-batch = momenta[None, :, :]
-provider_cpu = a.compile(device="cpu") 
-rt_cpu = provider_cpu.runtime() # the stock Madspace runtime
-print(rt_cpu(batch, 0).matrix_element)    # should print [2.43239313e-05]
+a = pacrunner.Artifact("artifacts/zgg/")    # a pyAmpliCol artifact
+process, momenta = a.validation_points()[0]
+batch = momenta[None, :, :]                 # a batch of one event
+provider_cpu = a.compile(device="cpu")      # PacRunner's provider on the CPU
+rt_cpu = provider_cpu.runtime()             # a pacrunner.Runtime of its channel 0
+print(rt_cpu(batch, 0).matrix_element)      # should print [2.43239313e-05]
 ```
 
 The main change is using `a.compile(device="cpu")` instead of `a.stock()`. This function does the 
@@ -83,30 +83,30 @@ kernels. The second one is a full CUDA provider that identifies itself as "CUDA"
 ```python
 import pacrunner
 
-a = pacrunner.Artifact("artifacts/zgg/")   # a is a pyAmpliCol Artifact
-process, momenta = a.validation_points()[0] 
-batch = momenta[None, :, :]
-provider_cuda = a.compile(device="cuda") 
-rt_cuda = provider_cuda.runtime() # the stock Madspace runtime
-print(rt_cuda(batch, 0).matrix_element)    # should print [2.43239313e-05]
+a = pacrunner.Artifact("artifacts/zgg/")    # a pyAmpliCol artifact
+process, momenta = a.validation_points()[0]
+batch = momenta[None, :, :]                 # a batch of one event, in host memory
+provider_cuda = a.compile(device="cuda")    # PacRunner's provider on the GPU, called from the CPU
+rt_cuda = provider_cuda.runtime()           # a pacrunner.Runtime of its channel 0
+print(rt_cuda(batch, 0).matrix_element)     # should print [2.43239313e-05]
 ```
 
 In this example, only the `device` option is changed. The source folder is now `artifacts/.pacrunner-build/zgg/p0-cuda/programs/0000`
-and has additional files, which will be discussed below. Next, the `cuda_provider` option:
+and has additional files, which will be discussed below. Next, the `cuda_full` option (alias `cuda_provider`):
 
 ```python
 import pacrunner
 import cupy as cp
 
-a = pacrunner.Artifact("artifacts/zgg/")   # a is a pyAmpliCol Artifact
-process, momenta = a.validation_points()[0] 
-batch = cp.array(momenta[None, :, :])
-provider_cuda_provider = a.compile(device="cuda_provider") 
-rt_cuda_provider = provider_cuda_provider.runtime() # the stock Madspace runtime
-print(rt_cuda_provider(batch, 0).matrix_element)    # should print [2.43239313e-05]
+a = pacrunner.Artifact("artifacts/zgg/")    # a pyAmpliCol artifact
+process, momenta = a.validation_points()[0]
+batch = cp.array(momenta[None, :, :])       # a batch of one event, in GPU memory
+provider_gpu = a.compile(device="cuda_full")   # PacRunner's CUDA provider (alias: "cuda_provider")
+rt_gpu = provider_gpu.runtime()             # a pacrunner.Runtime of its channel 0, on a CUDA context
+print(rt_gpu(batch, 0).matrix_element)      # should print [2.43239313e-05]
 ```
 
-Note that for `device=cuda_provider`, we need to pass the momenta wrapped in a CuPy array.
+Note that for `device="cuda_full"` (`"cuda_provider"`), we need to pass the momenta wrapped in a CuPy array.
 
 ## MadMatrix
 
@@ -114,9 +114,15 @@ The previous examples all used the pyAmpliCol directly to generate matrix elemen
 Madspace. We start with generating the process:
 
 ```
+$ mkdir -p processes
 mg7> generate u u~ > z g g [amplicol]
-mg7> output mg7 processes/zgg 
+mg7> output mg7 processes/zgg
+mg7> output mg7 processes/zgg_gpu
 ```
+
+`processes/` must exist: MadGraph7 creates no parent folders (it fails with a `FileNotFoundError`).
+The second output, `processes/zgg_gpu`, is for the end-to-end GPU run below, which needs its own run
+card.
 
 We can load the resulting folder using `pacrunner.Output`. Each `Output` has a set of sub-processes,
 which can be names using `names` or accessed using `subprocess(name)` or `subprocesses()`. Each
@@ -132,15 +138,15 @@ a = out.subprocess("A1_uux_zgg")
 
 momenta = np.array([
     [500., 0., 0., 500.],
-    [ 500., 0., 0., -500.],
+    [500., 0., 0., -500.],
     [142.22002372, -53.10090083, 59.0409804, -74.87149502],
     [380.350097, -268.20692462, 256.15852034, -84.34485361],
-    [477.42987928,  321.30782545, -315.19950074, 159.21634863]])
+    [477.42987928, 321.30782545, -315.19950074, 159.21634863]])
 
-batch = momenta[None, :, :]
-provider_cpu = a.compile(device="cpu") 
-rt_cpu = provider_cpu.runtime() # the stock Madspace runtime
-print(rt_cpu(batch, 0).matrix_element)    # should print [2.43239313e-05]
+batch = momenta[None, :, :]                 # a batch of one event
+provider_cpu = a.compile(device="cpu")      # PacRunner's provider, at the param card's parameters
+rt_cpu = provider_cpu.runtime()             # a pacrunner.Runtime of its channel 0
+print(rt_cpu(batch, 0).matrix_element)      # should print [2.43239313e-05]
 ```
 
 We can use Madspace to calculate a process cross-section:
@@ -151,13 +157,41 @@ import pacrunner
 out = pacrunner.Output("processes/zgg")
 a = out.subprocess("A1_uux_zgg")
 
-provider_cuda = a.compile(device="cuda") 
-print(provider_cuda.run().cross_section)    # should print 75.4519586763261
+# the matrix elements on the GPU, MadSpace on the CPU: the output's default run card works
+provider_cuda = a.compile(device="cuda")
+print(provider_cuda.run().cross_section)    # should print about 75.3 (pb, ± 0.2: the default card draws a new seed each run)
 ```
 
-Note that passing `cuda` uses the hybrid mode with a CPU interface; therefore, it works with the 
-CPU-only build of Madspace. We can do an end-to-end GPU run by passing `device="cuda_provider"`, 
-assuming Madspace is built for CUDA.
+Note that passing `cuda` uses the hybrid mode with a CPU interface; therefore, it works with the
+CPU-only build of Madspace and the output's default run card. The default card draws a new random
+seed for each run (`seed = -1`), so the cross section differs from run to run within its error (about
+0.2 pb here); set `seed` in `Cards/run_card.toml` for a reproducible one.
+
+We can do an end-to-end GPU run by passing `device="cuda_full"` (or its alias `"cuda_provider"`),
+assuming Madspace is built for CUDA. MadSpace then runs on the GPU too, which needs the run card's
+`device = ["cuda"]`, and leading colour (`color_accuracy = "lc"`): the full-colour correction is a CPU
+library. Hence the second output:
+
+```python
+import re
+from pathlib import Path
+import pacrunner
+
+# everything on the GPU (MadSpace's CUDA build): the run card needs run.device = ["cuda"] and leading
+# colour (the full-colour correction is a CPU library), so a second output, processes/zgg_gpu
+card = Path("processes/zgg_gpu/Cards/run_card.toml")
+text = re.sub(r'(?m)^device = .*$', 'device = ["cuda"]', card.read_text())
+text = re.sub(r'(?m)^color_accuracy = .*$', 'color_accuracy = "lc"', text)
+card.write_text(text)
+
+out = pacrunner.Output("processes/zgg_gpu")
+a = out.subprocess("A1_uux_zgg")
+provider_gpu = a.compile(device="cuda_full")    # alias of "cuda_provider"
+print(provider_gpu.run().cross_section)    # should print about 94.4 (pb, ± 0.2: leading colour, so above the full-colour 75.3)
+```
+
+The leading-colour cross section is larger than the full-colour one (about 94.4 against 75.5 pb for
+this process): the colour approximation, not a GPU difference.
 
 ## pyAmpliCol 1.0.x: RustiCol's recurrence export
 

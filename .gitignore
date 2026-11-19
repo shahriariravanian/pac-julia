@@ -3,3 +3,6 @@ Manifest.toml
 *.o
 __pycache__/
 *.egg-info/
+
+# pyAmpliCol generate's lock files
+.*.lock
