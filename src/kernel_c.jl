@@ -148,9 +148,12 @@ function emit_c!(g::KernelWriter, i::Bi)
 end
 
 emit_c!(g::KernelWriter, i::Fused) = line!(g, "$(used!(g, i.dst)) = $(FUSED_C[i.op](used!(g, i.a), used!(g, i.b), used!(g, i.c)));")
-emit_c!(g::KernelWriter, i::Mov) = line!(g, "$(used!(g, i.dst)) = $(used!(g, i.s1));")
-emit_c!(g::KernelWriter, i::Load) = line!(g, "$(used!(g, i.dst)) = $(at!(g, i.loc));")
-emit_c!(g::KernelWriter, i::Save) = line!(g, "$(at!(g, i.loc)) = $(used!(g, i.src));")
+# `lhs = rhs;`, but none when they are the same name (a stack slot kept in its local: clang's
+# -Wself-assign); both sides are evaluated first, which records what is used
+assign!(g::KernelWriter, lhs::AbstractString, rhs::AbstractString) = lhs == rhs || line!(g, "$lhs = $rhs;")
+emit_c!(g::KernelWriter, i::Mov) = (lhs = used!(g, i.dst); assign!(g, lhs, used!(g, i.s1)))
+emit_c!(g::KernelWriter, i::Load) = (lhs = used!(g, i.dst); assign!(g, lhs, at!(g, i.loc)))
+emit_c!(g::KernelWriter, i::Save) = (lhs = at!(g, i.loc); assign!(g, lhs, used!(g, i.src)))
 emit_c!(g::KernelWriter, i::LoadConst) = line!(g, "$(used!(g, i.dst)) = $(const_c(g.mir.consts[i.idx+1]));")
 emit_c!(g::KernelWriter, i::LoadComplex) = line!(g, "$(used!(g, i.xd)) = $(at!(g, i.loc)); $(used!(g, i.yd)) = $(at!(g, i.loc, 1));")
 emit_c!(g::KernelWriter, i::SaveComplex) = line!(g, "$(at!(g, i.loc)) = $(used!(g, i.xs)); $(at!(g, i.loc, 1)) = $(used!(g, i.ys));")
