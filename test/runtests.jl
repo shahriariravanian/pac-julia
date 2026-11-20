@@ -123,6 +123,7 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
 
     @testset "device aliases" begin
         @test PacRunner.umami_device(:cuda_full) === :cuda_provider
+        @test PacRunner.umami_device(:gpu) === (Sys.isapple() ? :metal : :cuda)
         @test all(d -> PacRunner.umami_device(d) === d, PacRunner.UMAMI_DEVICES)
     end
     @testset "artifacts" begin

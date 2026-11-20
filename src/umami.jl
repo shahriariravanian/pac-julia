@@ -102,7 +102,9 @@ end
 const UMAMI_DEVICES = (:cpu, :cuda, :cuda_provider, :metal)   # :cuda: on the GPU, a CPU provider; :cuda_provider: a CUDA one;
                                                                # :metal: an Apple GPU, a CPU provider, always :mixed
 const UMAMI_DEVICE_ALIASES = Dict(:cuda_full => :cuda_provider)   # cuda_full: all on the GPU (MadSpace's GPU runtime)
-umami_device(device::Symbol)::Symbol = get(UMAMI_DEVICE_ALIASES, device, device)
+# a device's own name: an alias's target, and :gpu this system's GPU with MadSpace on the CPU
+# (:metal on macOS, :cuda elsewhere)
+umami_device(device::Symbol)::Symbol = device === :gpu ? (Sys.isapple() ? :metal : :cuda) : get(UMAMI_DEVICE_ALIASES, device, device)
 const UMAMI_PRECISIONS = (:f64, :mixed)   # device = :cuda: :mixed is pacops.h's PAC_MIXED
 
 find_nvcc() = (c = get(ENV, "NVCC", something(Sys.which("nvcc"), "/usr/local/cuda/bin/nvcc"));
@@ -319,7 +321,7 @@ One UMAMI library per (process, colour flow, permutation) of the artifact's UMAM
 each channel's flavours, for MadSpace). Returns the path of umami_pac.json. `optimize_programs`:
 the programs after `optimize` (the default; the same values) or as imported. `interpreter`: each
 program as the UIR interpreter's data (`compile(...; interpreter = true)`) instead of straight-line
-C; `cc` and `cflags` build the libraries. `device = :cuda`: each program runs on a CUDA GPU (the
+C; `cc` and `cflags` build the libraries. `device = :cuda` (or `:gpu` off macOS): each program runs on a CUDA GPU (the
 interpreter, built by `nvcc` for `cuda_arch`, default "native": this machine's GPU), the libraries
 still CPU providers for MadSpace. The GPU memory and streams are a process-wide pool
 (`dir/libpacpool.so`, with a copy of the CUDA runtime): `gpu_slots` slots (default 0: one per CPU,
@@ -333,7 +335,7 @@ backward slices of their denominators (about 1e-7 relative on the matrix element
 f32); `fmad = false`: no contracted multiply-adds. `device = :cuda_provider` (alias `:cuda_full`): the same GPU build,
 but each library identifies as a CUDA provider for MadSpace's GPU runtime: device pointers, the
 caller's stream (UMAMI_OUT_GPU_STREAM), nothing synchronized; `gpu_memory` is then the workspace
-budget of one launch (a larger call runs as several launches on the stream). `device = :metal`
+budget of one launch (a larger call runs as several launches on the stream). `device = :metal` (or `:gpu` on macOS)
 (macOS): each program on an Apple GPU through Metal (c/metal/), always in mixed f32/df64 precision
 (`precision` is ignored), the libraries CPU providers; one slot pool per process
 (`dir/libpacmetal.dylib`; PAC_METAL_SLOTS, PAC_METAL_CHUNK, PAC_METAL_SLOT_BYTES). The libraries are
