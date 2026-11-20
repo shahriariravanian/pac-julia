@@ -84,8 +84,8 @@ end
 
 # the interpreter's sources beside runner.c, and runner.c's head
 function compile_vm_head(writer, prog::Lowered)
-    foreach(f -> copy_home(writer, f), ("c/uirvm.c", "c/uirvm.h", "c/uirgpu.c", "c/uirgpu.h", "c/uirgpu_pool.c", "c/uirgpu_umami.c",
-                                     "c/uirgpu_provider.c", "c/pool.cu", "c/pool.h"))
+    foreach(f -> copy_home(writer, f), ("c/uirvm.c", "c/uirvm.h", "c/cuda/uirgpu.c", "c/cuda/uirgpu.h", "c/cuda/uirgpu_pool.c",
+                                     "c/cuda/uirgpu_umami.c", "c/cuda/uirgpu_provider.c", "c/cuda/pool.cu", "c/cuda/pool.h"))
     emit(writer, "/* $(prog.process) $(prog.colour) on the UIR interpreter (uirvm.c), compiled by PacRunner's compile */")
     emit(writer, "#include <stdlib.h>")
     emit(writer, "#include \"uirvm.c\"")

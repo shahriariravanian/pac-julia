@@ -17,12 +17,13 @@ import os
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import numpy as np
 
 import pacrunner
-from pacrunner import _mad, _mgrun
+from pacrunner import _env, _mad, _mgrun
 
 OUTPUT = os.environ.get("PACRUNNER_TEST_MG7_MULTI")
 
@@ -57,6 +58,20 @@ class ParamCard(unittest.TestCase):
         self.assertEqual([_mad.library_folder_name(*v) for v in (("cpu", "f64"), ("cuda", "f64"), ("cuda", "mixed"),
                                                                  ("cuda_provider", "mixed"))],
                          ["pacrunner", "pacrunner-cuda", "pacrunner-cuda-mixed", "pacrunner-cuda_provider-mixed"])
+        # gpu is this system's GPU with MadSpace on the CPU; metal is always mixed (no f64), macOS only
+        with unittest.mock.patch.object(_env.sys, "platform", "linux"):
+            self.assertEqual(_env.compile_target("gpu"), ("cuda", "f64"))
+            self.assertEqual(_mad.library_folder_name("gpu", "f64"), "pacrunner-cuda")
+            with self.assertRaisesRegex(pacrunner.PacRunnerError, "macOS only"):
+                _env.compile_target("metal")
+        with unittest.mock.patch.object(_env.sys, "platform", "darwin"):
+            for device in ("metal", "gpu"):
+                self.assertEqual(_env.compile_target(device, "f64"), ("metal", "mixed"))
+                self.assertEqual(_mad.library_folder_name(device, "f64"), "pacrunner-metal-mixed")
+        with self.assertRaisesRegex(pacrunner.PacRunnerError, "device 'opencl'"):
+            _env.compile_target("opencl")
+        with self.assertRaisesRegex(pacrunner.PacRunnerError, "needs a GPU device"):
+            _env.compile_target("cpu", "mixed")
         # cuda_full is cuda_provider: the same folder (one build)
         self.assertEqual(_mad.library_folder_name("cuda_full", "mixed"), "pacrunner-cuda_provider-mixed")
         self.assertEqual(pacrunner._env.device_name("cuda_full"), "cuda_provider")

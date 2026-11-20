@@ -15,10 +15,13 @@
 # flavour and subprocess ids). MadSpace splits each batch by flavour itself; a library never sees
 # another flavour's events.
 #
-# device = :cuda: the program runs on a CUDA GPU (the UIR interpreter, c/uirgpu.c, built by nvcc);
+# device = :cuda: the program runs on a CUDA GPU (the UIR interpreter, c/cuda/uirgpu.c, built by nvcc);
 # the library still identifies as a CPU provider (host pointers, MadSpace's CPU threads).
 # device = :cuda_provider: the library identifies as CUDA, for MadSpace's GPU runtime (its device
 # pointers and stream; asynchronous, umami_pac.c).
+# device = :metal (macOS): the program runs on an Apple GPU (the UIR interpreter in MSL, c/metal/, mixed
+# f32/df64: Metal has no f64), the library a CPU provider (c/metal/umami_metal.c: the inputs and each
+# event's end on the host in f64, one GPU run per call); one slot pool per process, libpacmetal.dylib.
 #
 # The programs come from RustiCol's recurrence export (load_recurrence_export) of the same artifact,
 # with the same model parameters: a library refuses other values (umami_set_parameter).
@@ -96,16 +99,19 @@ function umami_program_h(lib::UmamiLibrary, l::Lowered, provider, exported_count
     return (tables, String(take!(out)))
 end
 
-const UMAMI_DEVICES = (:cpu, :cuda, :cuda_provider)   # :cuda: on the GPU, a CPU provider; :cuda_provider: a CUDA one
+const UMAMI_DEVICES = (:cpu, :cuda, :cuda_provider, :metal)   # :cuda: on the GPU, a CPU provider; :cuda_provider: a CUDA one;
+                                                               # :metal: an Apple GPU, a CPU provider, always :mixed
 const UMAMI_DEVICE_ALIASES = Dict(:cuda_full => :cuda_provider)   # cuda_full: all on the GPU (MadSpace's GPU runtime)
-umami_device(device::Symbol)::Symbol = get(UMAMI_DEVICE_ALIASES, device, device)
+# a device's own name: an alias's target, and :gpu this system's GPU with MadSpace on the CPU
+# (:metal on macOS, :cuda elsewhere)
+umami_device(device::Symbol)::Symbol = device === :gpu ? (Sys.isapple() ? :metal : :cuda) : get(UMAMI_DEVICE_ALIASES, device, device)
 const UMAMI_PRECISIONS = (:f64, :mixed)   # device = :cuda: :mixed is pacops.h's PAC_MIXED
 
 find_nvcc() = (c = get(ENV, "NVCC", something(Sys.which("nvcc"), "/usr/local/cuda/bin/nvcc"));
                Sys.which(c) !== nothing || isfile(c) ? c : nothing)
 
-const POOL_CU = joinpath(dirname(@__DIR__), "c", "pool.cu")
-const POOL_H = joinpath(dirname(@__DIR__), "c", "pool.h")
+const POOL_CU = joinpath(dirname(@__DIR__), "c", "cuda", "pool.cu")
+const POOL_H = joinpath(dirname(@__DIR__), "c", "cuda", "pool.h")
 
 # the CUDA toolkit's folder as nvcc itself reports it (its `TOP`): right also when `nvcc` is a
 # wrapper script (Ubuntu's /usr/bin/nvcc execs a toolkit's nvcc); nothing if nvcc cannot say
@@ -158,6 +164,20 @@ function build_cuda_runtime(dir::String; nvcc::String = something(find_nvcc(), "
     return so
 end
 
+const METAL_POOL = ("metalpool.h", "metalpool.m")
+const METAL_FRAMEWORKS = `-framework Metal -framework Foundation`
+
+# the process-wide Metal slot pool (c/metal/metalpool.m) in `dir`: libpacmetal.dylib (macOS), which
+# every program library links (rpath @loader_path)
+function build_metal_runtime(dir::String; cc::String = something(find_cc(), "cc"))::String
+    Sys.isapple() || error("device = :metal builds on macOS only")
+    foreach(f -> cp(joinpath(METAL_DIR, f), joinpath(dir, f); force = true), METAL_POOL)
+    so = joinpath(dir, "libpacmetal.dylib")
+    run(`$cc -O2 -fPIC -fobjc-arc -dynamiclib -install_name @rpath/libpacmetal.dylib -o $so $(joinpath(dir, "metalpool.m"))
+         $METAL_FRAMEWORKS`)
+    return so
+end
+
 # the shared library of `lib` in `dir` (compile's folder plus the UMAMI layer). device = :cuda: the
 # interpreter's runner.c built by nvcc for `cuda_arch` (--fmad=false: the CPU's bits), on the
 # process-wide GPU slot pool of libpacpool.so in `runtime_dir` (built there if missing; one CUDA
@@ -178,6 +198,7 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
     device = umami_device(device)
     device in UMAMI_DEVICES || error("device $device: one of $UMAMI_DEVICES (or $(join(keys(UMAMI_DEVICE_ALIASES), ", ")))")
     precision in UMAMI_PRECISIONS || error("precision $precision: one of $UMAMI_PRECISIONS")
+    device == :metal && return build_umami_metal(dir, lib, l, provider, exported_count, parameters; cc, cflags, runtime_dir)
     cuda = device in (:cuda, :cuda_provider)
     provider_build = device == :cuda_provider
     precision == :f64 || cuda || error("precision = $precision needs device = :cuda or :cuda_provider")
@@ -221,6 +242,32 @@ function build_umami_library(dir::String, lib::UmamiLibrary, l::Lowered, provide
 end
 
 # the export's programs by (process_key, colour_id), each with its helicity ids
+# build_umami_library for device = :metal (macOS): compile_metal's folder (the permutation folded into
+# the crossing), the UMAMI layer c/metal/umami_metal.c, linked against libpacmetal.dylib in
+# `runtime_dir` (built there if missing); every symbol but the UMAMI functions hidden
+function build_umami_metal(dir::String, lib::UmamiLibrary, l::Lowered, provider, exported_count, parameters;
+                           cc::String = something(find_cc(), "cc"), cflags::Cmd = `-O2`, runtime_dir::String = dir)::String
+    Sys.isapple() || error("device = :metal builds on macOS only")
+    Int(provider["particle_count"]) == l.legs ||
+        error("$(lib.process) $(lib.colour): the provider has $(provider["particle_count"]) particles, the program $(l.legs) legs")
+    l = permuted(l, lib.permutation)   # the library reads the caller's legs
+    compile_metal(dir, l)
+    (tables, program) = umami_program_h(lib, l, provider, exported_count, parameters)
+    write(joinpath(dir, "umami_tables.h"), tables)
+    write(joinpath(dir, "umami_program.h"), program)
+    cp(joinpath(METAL_DIR, "umami_metal.c"), joinpath(dir, "umami_metal.c"); force = true)
+    cp(UMAMI_FINISH_H, joinpath(dir, "umami_finish.h"); force = true)
+    cp(UMAMI_H, joinpath(dir, "umami.h"); force = true)
+    isfile(joinpath(runtime_dir, "libpacmetal.dylib")) || build_metal_runtime(runtime_dir; cc)
+    file(f) = joinpath(dir, f)
+    so = file("libumami_pac.dylib")
+    rpath = "@loader_path/" * relpath(abspath(runtime_dir), abspath(dir))
+    run(`$cc $cflags -ffp-contract=off -fPIC -fvisibility=hidden -fobjc-arc -dynamiclib -o $so
+         $(file("umami_metal.c")) $(file("uirmetal.m")) $(file("runner_metal.c")) -I$runtime_dir
+         -L$runtime_dir -lpacmetal -Wl,-rpath,$rpath $METAL_FRAMEWORKS -lm`)
+    return so
+end
+
 function export_programs(d, export_path::AbstractString)::Dict{Tuple{String,String},Tuple{Lowered,Vector{String}}}
     ls = load_recurrence_export(export_path; kernels = :none)
     programs = Dict{Tuple{String,String},Tuple{Lowered,Vector{String}}}()
@@ -274,7 +321,7 @@ One UMAMI library per (process, colour flow, permutation) of the artifact's UMAM
 each channel's flavours, for MadSpace). Returns the path of umami_pac.json. `optimize_programs`:
 the programs after `optimize` (the default; the same values) or as imported. `interpreter`: each
 program as the UIR interpreter's data (`compile(...; interpreter = true)`) instead of straight-line
-C; `cc` and `cflags` build the libraries. `device = :cuda`: each program runs on a CUDA GPU (the
+C; `cc` and `cflags` build the libraries. `device = :cuda` (or `:gpu` off macOS): each program runs on a CUDA GPU (the
 interpreter, built by `nvcc` for `cuda_arch`, default "native": this machine's GPU), the libraries
 still CPU providers for MadSpace. The GPU memory and streams are a process-wide pool
 (`dir/libpacpool.so`, with a copy of the CUDA runtime): `gpu_slots` slots (default 0: one per CPU,
@@ -288,7 +335,10 @@ backward slices of their denominators (about 1e-7 relative on the matrix element
 f32); `fmad = false`: no contracted multiply-adds. `device = :cuda_provider` (alias `:cuda_full`): the same GPU build,
 but each library identifies as a CUDA provider for MadSpace's GPU runtime: device pointers, the
 caller's stream (UMAMI_OUT_GPU_STREAM), nothing synchronized; `gpu_memory` is then the workspace
-budget of one launch (a larger call runs as several launches on the stream). The libraries are
+budget of one launch (a larger call runs as several launches on the stream). `device = :metal` (or `:gpu` on macOS)
+(macOS): each program on an Apple GPU through Metal (c/metal/), always in mixed f32/df64 precision
+(`precision` is ignored), the libraries CPU providers; one slot pool per process
+(`dir/libpacmetal.dylib`; PAC_METAL_SLOTS, PAC_METAL_CHUNK, PAC_METAL_SLOT_BYTES). The libraries are
 built in parallel.
 """
 function umami_libraries(export_path::AbstractString, metadata_path::AbstractString, dir::AbstractString;
@@ -300,7 +350,8 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
                          quiet::Bool = false)::String
     device = umami_device(device)
     precision in UMAMI_PRECISIONS || error("precision $precision: one of $UMAMI_PRECISIONS")
-    precision == :f64 || device in (:cuda, :cuda_provider) || error("precision = $precision needs device = :cuda or :cuda_provider")
+    device == :metal && (precision = :mixed)   # Metal has no f64: always mixed f32/df64
+    precision == :f64 || device in (:cuda, :cuda_provider, :metal) || error("precision = $precision needs device = :cuda or :cuda_provider")
     d = read_export(export_path)
     meta = JSON.parse(read(metadata_path, String))
     get(meta, "kind", nothing) == "pyamplicol-umami-metadata" || error("$metadata_path: not a pyAmpliCol UMAMI metadata file")
@@ -316,6 +367,7 @@ function umami_libraries(export_path::AbstractString, metadata_path::AbstractStr
 
     mkpath(dir)
     device in (:cuda, :cuda_provider) && build_cuda_runtime(dir; nvcc, cuda_arch, pool = device == :cuda)
+    device == :metal && build_metal_runtime(dir; cc)
     # the libraries' folders and programs first (Julia work), then their builds (compilers) in parallel
     jobs = map(enumerate(libraries)) do (k, lib)
         sub = joinpath(dir, "programs", lpad(k - 1, 4, '0'))
