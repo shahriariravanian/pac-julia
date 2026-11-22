@@ -32,6 +32,8 @@ module Uir08Script include(joinpath(@__DIR__, "test_uir08.jl")) end
 module ExportScript include(joinpath(@__DIR__, "test_recurrence_export.jl")) end
 module ExportCScript include(joinpath(@__DIR__, "test_recurrence_export_c.jl")) end
 module UmamiScript include(joinpath(@__DIR__, "test_umami.jl")) end
+module MetalShimScript include(joinpath(@__DIR__, "test_metal_shim.jl")) end
+module MetalScript include(joinpath(@__DIR__, "test_metal.jl")) end
 
 const CASES = CompileScript.cases()
 const CC = CompileScript.CC
@@ -121,6 +123,7 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
 
     @testset "device aliases" begin
         @test PacRunner.umami_device(:cuda_full) === :cuda_provider
+        @test PacRunner.umami_device(:gpu) === (Sys.isapple() ? :metal : :cuda)
         @test all(d -> PacRunner.umami_device(d) === d, PacRunner.UMAMI_DEVICES)
     end
     @testset "artifacts" begin
@@ -545,6 +548,34 @@ kernel_files(case) = [joinpath(case, k.path) for k in read_main(joinpath(case, "
         end
     else
         @info "no nvcc or no GPU: the GPU build is not run"
+    end
+    # the Metal runner's sources (c/metal/) on the CPU, through msl_shim.h (any machine with a C++ compiler)
+    if MetalShimScript.have_cxx()
+        @testset "Metal sources on the CPU (msl_shim.h)" begin
+            MetalShimScript.setup()
+            rng = MetalShimScript.Random.Xoshiro(20261115)
+            w = MetalShimScript.check_df64(rng)
+            @test all(w[k] < 2.0^-44 for k in ("+", "-", "*", "/", "sqrt"))
+            @test MetalShimScript.check_wavefunctions(rng) < 1e-12
+            @test MetalShimScript.check_currents(rng) < 1e-5
+            for f in ("pp_3j.json", "zggg_union.json")
+                (me, _) = MetalShimScript.check_programs(joinpath(@__DIR__, "data", "export", f))
+                @test maximum(me) < 1e-4 && MetalShimScript.median(me) < 1e-6
+            end
+        end
+    else
+        @info "no C++ compiler: the Metal sources are not checked on the CPU"
+    end
+    # the Metal runner on an Apple GPU (macOS)
+    if MetalScript.have_metal()
+        @testset "Metal runner on the GPU" begin
+            for f in ("pp_3j.json", "zggg_union.json")
+                path = joinpath(@__DIR__, "data", "export", f)
+                (me, _) = MetalScript.check_gpu(path)
+                @test maximum(me) < 1e-4 && MetalScript.median(me) < 1e-6
+                @test isempty(UmamiScript.check(path; quiet = true, metal = true))
+            end
+        end
     end
 
     @testset "recurrence export" begin

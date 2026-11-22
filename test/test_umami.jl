@@ -68,9 +68,10 @@ end
 same(x::Float64, y::Float64) = reinterpret(UInt64, x) == reinterpret(UInt64, y)
 
 # the failures for the first program of `path` that has an alpha_s power; precision = :mixed (CUDA):
-# within MIXED_RTOL instead of bit for bit
+# within MIXED_RTOL instead of bit for bit; metal = true (macOS): the Metal library, always mixed
 const MIXED_RTOL = 1e-4
-function check(path::String; quiet::Bool = false, cuda::Bool = false, precision::Symbol = :f64)
+function check(path::String; quiet::Bool = false, cuda::Bool = false, precision::Symbol = :f64, metal::Bool = false)
+    metal && (precision = :mixed)
     agree(x, y) = precision == :f64 ? same(x, y) : isapprox(x, y; rtol = MIXED_RTOL)
     ls = load_recurrence_export(path; kernels = :none)
     refs = recurrence_references(path)
@@ -80,10 +81,11 @@ function check(path::String; quiet::Bool = false, cuda::Bool = false, precision:
     (a0, power) = l.alpha_s
     bad = String[]
     # (interpreter, device); CUDA f64 after the straight-line C, to compare them at another alpha_s
-    builds = cuda ? (precision == :f64 ? [(false, :cpu), (true, :cuda)] : [(true, :cuda)]) : [(false, :cpu), (true, :cpu)]
+    builds = metal ? [(true, :metal)] :
+             cuda ? (precision == :f64 ? [(false, :cpu), (true, :cuda)] : [(true, :cuda)]) : [(false, :cpu), (true, :cpu)]
     scaled = Dict{Int,Float64}()   # the first build's values at 1.1 alpha_s0: every f64 build's, bit for bit
     for (interpreter, device) in builds, known in (true, false)
-        what = "$(device == :cuda ? "CUDA $precision" : interpreter ? "interpreter" : "straight-line C"), alpha_s power $(known ? power : "unknown")"
+        what = "$(device == :metal ? "Metal" : device == :cuda ? "CUDA $precision" : interpreter ? "interpreter" : "straight-line C"), alpha_s power $(known ? power : "unknown")"
         lib = open_library(known ? l : with(l; alpha_s = (a0, nothing)), mktempdir(); interpreter, device, precision)
         try
             alpha_s_supported(lib) || push!(bad, "$what: alpha_s not a supported input")

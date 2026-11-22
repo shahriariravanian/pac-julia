@@ -41,7 +41,10 @@ include("compile_vm.jl")
 include("sjb.jl")
 include("complexify.jl")
 include("kernel_c.jl")
+include("kernel_msl.jl")
 include("kernel_lib.jl")
+# the Metal runner (Apple GPUs): c/metal/, mixed f32/df64
+include("compile_metal.jl")
 # RustiCol's recurrence export (pyAmpliCol 1.0.x)
 include("recurrence_export.jl")
 # UMAMI libraries for MadSpace, one per program
@@ -62,9 +65,9 @@ export load_recurrence_export, recurrence_references, umami_libraries
 # UIR
 export Lowered, LArena, evaluate, validate, sort_runs, fuse, reuse_planes, optimize, Encoded, encode, decode
 # the C
-export compile, ArenaIndex
+export compile, ArenaIndex, compile_metal
 # the kernels
-export read_sjb, SavedApplication, MIR, complexify, listing, kernel_c
+export read_sjb, SavedApplication, MIR, complexify, listing, kernel_c, kernel_msl
 # v1: main.json, pac2json
 export Program, Arena, read_main, load_artifact, load_programs, load_examples, lower, install, capture, alpha_s_power
 

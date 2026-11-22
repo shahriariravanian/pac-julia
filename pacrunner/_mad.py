@@ -67,7 +67,7 @@ def card_parameters(param_card, references):
 
 def library_folder_name(device="cpu", precision="f64"):
     """lib/<this>/<name>: pacrunner (cpu, f64), pacrunner-<device>[-<precision>] (cuda_full: cuda_provider's)"""
-    device = _env.device_name(device)
+    device, precision = _env.compile_target(device, precision)
     if device == "cpu" and precision == "f64":
         return "pacrunner"
     return f"pacrunner-{device}" + ("" if precision == "f64" else f"-{precision}")

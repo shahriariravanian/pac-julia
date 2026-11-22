@@ -79,7 +79,13 @@ PacRunner currently supports two types of GPU backend: `compile(device="cuda")` 
 (also called `device="cuda_full"`: everything on the GPU). 
 
 The first one is a hybrid provider, where the UMAMI library identies itself as a "CPU" provider but actually runs CUDA 
-kernels. The second one is a full CUDA provider that identifies itself as "CUDA". First, the `cuda` option:
+kernels. The second one is a full CUDA provider that identifies itself as "CUDA".
+
+On macOS, `compile(device="metal")` builds the same kind of hybrid provider for an Apple GPU through
+Metal; it always computes in mixed precision (f32 and double-f32), since Metal has no f64. For code
+that runs on both, `compile(device="gpu")` picks `metal` on macOS and `cuda` elsewhere.
+
+First, the `cuda` option:
 
 ```python
 import pacrunner

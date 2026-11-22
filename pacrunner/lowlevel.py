@@ -27,10 +27,10 @@ EXPORTS = (
     # UIR
     "Lowered", "LArena", "evaluate", "validate", "sort_runs", "fuse", "reuse_planes", "optimize", "Encoded", "encode",
     "decode",
-    # the C
-    "compile", "ArenaIndex",
+    # the C (compile_metal: the Metal runner's folder, macOS)
+    "compile", "ArenaIndex", "compile_metal",
     # the kernels
-    "read_sjb", "SavedApplication", "MIR", "complexify", "listing", "kernel_c",
+    "read_sjb", "SavedApplication", "MIR", "complexify", "listing", "kernel_c", "kernel_msl",
 )
 V1 = ("Program", "Arena", "read_main", "load_artifact", "load_programs", "load_examples", "lower", "install",
       "capture", "alpha_s_power")

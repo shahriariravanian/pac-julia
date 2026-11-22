@@ -55,8 +55,11 @@ end
 # the points of examples.json as the drivers read them: one line of 4 × legs momenta per point
 points_text(points) = join([join([repr(Float64(x)) for v in pt.momenta for x in v], " ") for pt in points], "\n") * "\n"
 
-# the executable of the compiled program in `dir` (compile.jl's runner.c) with `driver`
+# the executable of the compiled program in `dir` (compile.jl's runner.c) with `driver`. The generated
+# C keeps self-moves (`g4 = g4;`) and unused static inline kernel helpers (sj_or, ...): clang warns
+# about both under -Wall (gcc does not), and kernel_c's output stays as it is, so they are silenced.
+const QUIET_GENERATED = `-Wno-self-assign -Wno-unused-function`
 function build(dir::String, driver::String, exe::String, flags::Cmd)::String
-    run(`$CC $flags -std=c99 -o $exe $(joinpath(dir, "runner.c")) $(joinpath(dir, "pacops.c")) $driver -lm`)
+    run(`$CC $flags $QUIET_GENERATED -std=c99 -o $exe $(joinpath(dir, "runner.c")) $(joinpath(dir, "pacops.c")) $driver -lm`)
     return exe
 end

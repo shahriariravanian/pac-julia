@@ -10,6 +10,7 @@ tests of the producer check and the provider choice need nothing."""
 
 import json
 import os
+import sys
 import shutil
 import tempfile
 import unittest
@@ -117,6 +118,16 @@ class Artifact(unittest.TestCase):
         for c in range(a.channels):
             self.assertTrue(same(sp.runtime(c)(momenta, 0).matrix_element, a.runtime(c)(momenta, 0).matrix_element))
             self.assertEqual(sp.flavor_arguments(c)["flavor_remap"], list(range(a.flavours(c))))
+        # device="gpu" on macOS: the Metal libraries (mixed f32/df64), the stock library's values to
+        # mixed precision (the Julia suite's Metal tolerance)
+        if sys.platform == "darwin":
+            gpu = a.compile(self.dir / "libs-gpu", device="gpu")
+            self.assertEqual((gpu.device, gpu.precision), ("metal", "mixed"))
+            for c in range(a.channels):
+                for f in range(a.flavours(c)):
+                    want = a.runtime(c)(momenta, f, random_helicity=r).matrix_element
+                    got = gpu.runtime(c)(momenta, f, random_helicity=r).matrix_element
+                    self.assertLess(float(np.max(np.abs(got / want - 1))), 1e-4, f"metal: channel {c} flavour {f}")
         # unchanged: the stamp skips the build; force rebuilds
         stamp = (self.dir / "libs" / "pacrunner-build.json").stat().st_mtime_ns
         a.compile(self.dir / "libs", device="cpu")

@@ -18,12 +18,36 @@ class PacRunnerError(RuntimeError):
 REPOSITORY = Path(__file__).resolve().parent.parent
 
 
+DEVICES = ("cpu", "cuda", "cuda_provider", "metal")
 DEVICE_ALIASES = {"cuda_full": "cuda_provider"}   # cuda_full: everything on the GPU (MadSpace's GPU runtime)
+PRECISIONS = ("f64", "mixed")
 
 
 def device_name(device: str) -> str:
-    """a compile device's own name (an alias's target: cuda_full is cuda_provider)"""
+    """a compile device's own name: an alias's target (cuda_full is cuda_provider), and "gpu" this
+    system's GPU with MadSpace on the CPU: metal on macOS, cuda elsewhere"""
+    if device == "gpu":
+        return "metal" if sys.platform == "darwin" else "cuda"
     return DEVICE_ALIASES.get(device, device)
+
+
+def compile_target(device: str, precision: str = "f64") -> tuple[str, str]:
+    """(device, precision) of a build: the device's own name (device_name), and for metal always
+    "mixed" (Metal has no f64: mixed f32/df64); an unknown device or precision, or metal off macOS,
+    is a PacRunnerError"""
+    name = device_name(device)
+    if name not in DEVICES:
+        raise PacRunnerError(f"device {device!r}: one of {', '.join(DEVICES)}, or gpu, "
+                             f"{', '.join(DEVICE_ALIASES)}")
+    if precision not in PRECISIONS:
+        raise PacRunnerError(f"precision {precision!r}: one of {', '.join(PRECISIONS)}")
+    if name == "metal":
+        if sys.platform != "darwin":
+            raise PacRunnerError(f"device {device!r} is metal (an Apple GPU): macOS only")
+        return name, "mixed"
+    if precision != "f64" and name == "cpu":
+        raise PacRunnerError(f"precision {precision!r} needs a GPU device (cuda, cuda_provider, metal)")
+    return name, precision
 
 
 def repository() -> Path:

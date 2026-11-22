@@ -3,10 +3,11 @@ changing MadGraph7: the AmplicolSubprocess class is replaced, in this process on
 loads the libraries of umami_libraries (one per program, flavour 0) and lets MadSpace split each
 batch by flavour (one DifferentialCrossSection per library of the UMAMI channel).
 
-  python mg7_run.py prepare OUTPUT [--device cpu|cuda] [--precision f64|mixed|...] [--julia JULIA]
+  python mg7_run.py prepare OUTPUT [--device cpu|cuda|cuda_provider|metal] [--precision f64|mixed|...] [--julia JULIA]
       the recurrence export of every SubProcesses/*/lc artifact and, per UMAMI provider, the
-      libraries in OUTPUT/lib/pacrunner[-cuda]/<name>_<provider>/umami_pac.json
-  python mg7_run.py run OUTPUT [--device cpu|cuda|cuda_provider|<device>-<precision>] [generate_events arguments, default -f]
+      libraries in OUTPUT/lib/pacrunner[-<device>]/<name>_<provider>/umami_pac.json (metal: macOS, always
+      mixed f32/df64; its libraries are CPU providers, run with run.device = ["cpu"])
+  python mg7_run.py run OUTPUT [--device cpu|cuda|cuda_provider|metal|<device>-<precision>] [generate_events arguments, default -f]
       bin/generate_events with the replaced subprocess class (stock libraries still built: the
       full-colour pass keeps the stock ratio library); PAC_UMAMI_TIMER=LOG times every call of the
       PacRunner libraries (test/umami_timer.c)
